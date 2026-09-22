@@ -63,8 +63,22 @@ class OneBotChannel:
         self._flag_index: dict[str, dict[str, Any]] = {}
 
     @property
+    def connected(self) -> bool:
+        """协议端是否已建立反向 WS 连接。
+
+        没有连接时任何 call_action 都会失败，据此提前短路，避免刷屏。
+        """
+        if self.bot is None:
+            return False
+        api_clients = getattr(self.bot, "_wsr_api_clients", None)
+        if isinstance(api_clients, dict):
+            return len(api_clients) > 0
+        # 非 aiocqhttp 的 OneBot 实现：无法判断时保守视为可用
+        return True
+
+    @property
     def available(self) -> bool:
-        return self.bot is not None
+        return self.connected
 
     def dry_run(self) -> bool:
         if self._dry_run_getter is None:
@@ -100,10 +114,11 @@ class OneBotChannel:
         try:
             return await call(action, **params)
         except Exception as exc:
+            detail = str(exc) or type(exc).__name__
             if self._logger is not None:
-                self._logger.warning("OneBot %s 调用失败：%s", action, exc)
+                self._logger.debug("OneBot %s 调用失败：%s", action, detail)
             raise QQApiError(
-                action + " 失败：" + str(exc),
+                action + " 失败：" + detail,
                 semantic="transport_error",
                 hint="请查看协议端日志",
             ) from exc
@@ -291,6 +306,14 @@ class OneBotChannel:
 
     async def probe(self, group_id: str, *, caller: str = "probe") -> dict[str, Any]:
         results: dict[str, CapabilityResult] = {}
+        if not self.connected:
+            for cap in CAPABILITIES:
+                results[cap] = CapabilityResult(
+                    capability=cap,
+                    ok=False,
+                    note="协议端未连接（OneBot 客户端不在线）",
+                )
+            return results
 
         def mark(cap: str, ok: bool, note: str = "") -> None:
             results[cap] = CapabilityResult(capability=cap, ok=ok, note=note)

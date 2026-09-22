@@ -8,6 +8,7 @@ import pytest
 from src.api_client import QQApiError
 from src.models import (
     CAP_BLACKLIST,
+    CAP_GROUP_INFO,
     CAP_IS_ADMIN,
     CAP_MEMBER_LIST,
     CAPABILITIES,
@@ -221,3 +222,36 @@ def test_router_audit_setattr_forwards_to_base():
     router.audit = sentinel
     assert base.audit is sentinel
     assert router.audit is sentinel
+
+
+def test_onebot_connected_property():
+    bot = FakeOneBotClient()
+    ch = OneBotChannel(bot, "onebot-1")
+    # 非 aiocqhttp 实现无法判断时保守视为可用
+    assert ch.connected is True
+    bot._wsr_api_clients = {}
+    assert ch.connected is False
+    assert ch.available is False
+    bot._wsr_api_clients = {"1482759239": object()}
+    assert ch.connected is True
+
+
+def test_onebot_probe_short_circuits_when_disconnected():
+    bot = FakeOneBotClient(responses={"get_group_info": {"group_name": "g"}})
+    bot._wsr_api_clients = {}
+    ch = OneBotChannel(bot, "onebot-1", self_id="12345")
+    results = asyncio.run(ch.probe("999"))
+    assert bot.calls == []
+    assert all(not item.ok for item in results.values())
+    assert "未连接" in results[CAP_GROUP_INFO].note
+
+
+def test_onebot_error_message_uses_exception_type():
+    class _Boom(Exception):
+        pass
+
+    bot = FakeOneBotClient(error=_Boom())
+    ch = OneBotChannel(bot, "onebot-1")
+    with pytest.raises(QQApiError) as exc:
+        asyncio.run(ch.recall_message("1", "2"))
+    assert "_Boom" in str(exc.value)
