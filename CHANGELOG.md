@@ -7,6 +7,26 @@
 
 ---
 
+## [0.10.0] - 2026-09-22
+
+> QQ 双通道适配：新增 OneBot v11（aiocqhttp）支持，官方族行为零回归。
+
+### ✨ 新增
+- 新增 src/platforms/ 通道抽象层：官方族（qq_official / qq_official_webhook）与 OneBot（aiocqhttp）。
+- OneBot 通道：撤回（delete_msg）、禁言（set_group_ban）、踢人（set_group_kick）、群信息/成员列表、能力探测。
+- OneBot 入群申请改为 request 事件驱动，审批走 set_group_add_request。
+- 群配置新增 platform_id 字段，定时任务按平台实例路由。
+
+### ⚙️ 变更
+- support_platforms 增加 qq_official_webhook、aiocqhttp。
+- 官方族沿用原有 QQGroupAPI 与 botpy 传输层，行为不变；OneBot 无原生黑名单时降级为「踢出 + 本地名单」。
+
+### 🧪 真机验证
+- 已用 NapCat（OneBot v11）端到端验证：群档案、撤回（delete_msg）、禁言/解禁（set_group_ban）、黑名单（set_group_kick）、入群申请事件、入群通过（set_group_add_request）。
+- 联调修复：入口装饰器放宽到 aiocqhttp；OneBot 通道 get_group_info/get_bot_state 返回 GroupProfile/BotState（修复「群信息」报错）。
+
+---
+
 ## [0.9.1] - 2026-09-18
 
 > 📖 提供 `intro.md`：安装「菜单导航」插件后，发送 `插件介绍` 即可看到本插件的完整功能清单。

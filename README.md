@@ -194,3 +194,10 @@ QQ 官方群管理接口分三档，插件会**逐项探测并把受限原因写
 ## 许可
 
 [MIT](LICENSE)
+
+## 支持平台（QQ 双通道）
+
+- **QQ 官方**：qq_official（WebSocket）/ qq_official_webhook（Webhook），复用 botpy 通道；群信息、禁言、撤回、入群审批等能力受白名单/内邀/群管理员限制。
+- **QQ 非官方**：aiocqhttp（OneBot v11，如 NapCat / Lagrange / go-cqhttp）；群管理通过 call_action 调用协议端接口。
+- 能力差异（如 OneBot 无原生黑名单、入群审批走 request 事件）会显式降级并留痕，不会崩溃或刷屏。
+- 平台判定与通道抽象位于 src/platforms/，官方族行为与改造前保持一致。

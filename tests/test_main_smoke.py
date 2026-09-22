@@ -20,7 +20,11 @@ def test_metadata_contract():
     yaml = importlib.import_module("yaml")
     meta = yaml.safe_load((PLUGIN_ROOT / "metadata.yaml").read_text(encoding="utf-8"))
     assert meta["name"] == PLUGIN_ROOT.name
-    assert meta["support_platforms"] == ["qq_official"]
+    assert meta["support_platforms"] == [
+        "qq_official",
+        "qq_official_webhook",
+        "aiocqhttp",
+    ]
     assert meta["version"]
     assert meta["author"]
     assert meta["desc"]

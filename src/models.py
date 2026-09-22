@@ -185,6 +185,7 @@ class GroupConfig:
     """单群插件配置（存 KV groups[group_id]）。"""
 
     group_id: str
+    platform_id: str = ""
     name: str = ""
     moderation_enabled: bool = False
     mode: str = ""
@@ -208,6 +209,7 @@ class GroupConfig:
         capabilities = payload.get("capabilities") or {}
         return cls(
             group_id=group_id,
+            platform_id=str(payload.get("platform_id") or ""),
             name=str(payload.get("name") or ""),
             moderation_enabled=bool(payload.get("moderation_enabled")),
             mode=str(payload.get("mode") or ""),

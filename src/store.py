@@ -294,13 +294,19 @@ class PluginStore:
         return self._groups.get(group_id) or GroupConfig(group_id=group_id)
 
     async def ensure_group(
-        self, group_id: str, *, name: str = "", source: str = "auto"
+        self,
+        group_id: str,
+        *,
+        name: str = "",
+        source: str = "auto",
+        platform_id: str = "",
     ) -> GroupConfig:
         """确保群记录存在（不存在则新建），返回该记录。"""
         config = self._groups.get(group_id)
         if config is None:
             config = GroupConfig(
                 group_id=group_id,
+                platform_id=str(platform_id or ""),
                 name=name,
                 added_at=now_ts(),
                 last_seen=now_ts(),
@@ -311,16 +317,23 @@ class PluginStore:
                 join_review_mode="",
             )
             self._groups[group_id] = config
-        elif name and config.name != name:
-            config.name = name
+        else:
+            if name and config.name != name:
+                config.name = name
+            if platform_id and config.platform_id != platform_id:
+                config.platform_id = str(platform_id)
         self._dirty.add(KEY_GROUPS)
         return config
 
-    async def touch_group(self, group_id: str, *, name: str = "") -> None:
+    async def touch_group(
+        self, group_id: str, *, name: str = "", platform_id: str = ""
+    ) -> None:
         """消息到达时登记活跃群（只更新内存，由调度器批量落盘）。"""
         if not group_id:
             return
-        await self.ensure_group(group_id, name=name, source="auto")
+        await self.ensure_group(
+            group_id, name=name, source="auto", platform_id=platform_id
+        )
         self._groups[group_id].last_seen = now_ts()
 
     async def update_group(self, group_id: str, patch: dict[str, Any]) -> GroupConfig:

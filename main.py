@@ -34,6 +34,7 @@ from .src.commands import (
     CONFIG_COMMANDS,
     DRYRUN_COMMANDS,
     FULL_MSG_GUIDE,
+    GLOBAL_BLACKLIST_COMMANDS,
     GROUP_ADMIN_COMMANDS,
     INFO_COMMANDS,
     JOIN_APPROVE_COMMANDS,
@@ -49,7 +50,6 @@ from .src.commands import (
     MODE_LABELS,
     MUTE_COMMANDS,
     RECALL_COMMANDS,
-    GLOBAL_BLACKLIST_COMMANDS,
     SELFCHECK_COMMANDS,
     STATS_COMMANDS,
     STATUS_COMMANDS,
@@ -85,6 +85,7 @@ from .src.models import (
 )
 from .src.moderator import LLMModerator, ModerationRequest, choose_provider_id
 from .src.normalize import skeleton_text
+from .src.platforms.router import ChannelRouter
 from .src.policy import ApprovalPolicyService
 from .src.rules import SCORE_RULES, RuleEngine
 from .src.scheduler import TaskScheduler, TaskSpec
@@ -102,7 +103,7 @@ from .src.utils import (
 from .src.web_api import EventBus, WebApi
 
 PLUGIN_NAME = "astrbot_plugin_qq_group_manager"
-VERSION = "0.9.1"
+VERSION = "0.10.0"
 
 STATE_FLUSH_INTERVAL = 30.0
 MAINTENANCE_INTERVAL = 3600.0
@@ -119,7 +120,13 @@ class QQGroupManager(Star):
         self.store = PluginStore(AstrBotKVBackend(self), logger=self.logger)
         self.bus = EventBus()
         self.scheduler = TaskScheduler(logger=self.logger)
-        self.api = QQGroupAPI(None, dry_run_getter=self.store.dry_run)
+        self.qq_api = QQGroupAPI(None, dry_run_getter=self.store.dry_run)
+        self.api = ChannelRouter(
+            self.qq_api,
+            dry_run_getter=self.store.dry_run,
+            logger=self.logger,
+            context=context,
+        )
         self.audit: AuditStore | None = None
         settings = self.store.settings()
         self.rules = RuleEngine(
@@ -247,6 +254,7 @@ class QQGroupManager(Star):
         if not self._resolve_transport():
             return
         for group_id, config in list(self.store.groups().items()):
+            self.api.bind_platform(config.platform_id)
             results = await self.probe_group(group_id, caller="scheduler")
             full_msg = results.get(CAP_FULL_MSG)
             if (
@@ -288,6 +296,9 @@ class QQGroupManager(Star):
             mode = str(config.join_review_mode or default_mode)
             if mode in ("", "off"):
                 continue
+            # OneBot 的入群申请走 request 事件，不在此轮询
+            if self.api.kind_for(config.platform_id) != "official":
+                continue
             try:
                 pending += len(await self.joins.poll_group(group_id))
             except Exception as exc:
@@ -303,6 +314,9 @@ class QQGroupManager(Star):
         for group_id, config in list(self.store.groups().items()):
             if not config.capability_ok("mute"):
                 continue
+            if self.api.kind_for(config.platform_id) != "official":
+                continue
+            self.api.bind_platform(config.platform_id)
             try:
                 response = await self.api.get_restrict_setting(group_id, caller="mute_sync")
             except QQApiError:
@@ -357,7 +371,7 @@ class QQGroupManager(Star):
     # 平台通道与状态
     # ------------------------------------------------------------------
     def _resolve_transport(self) -> bool:
-        """确保 API 客户端拿到 botpy 传输层（优先平台实例）。"""
+        """确保通道路由可用：官方族绑定 botpy 传输层，OneBot 绑定协议端。"""
         if self.api.available:
             return True
         try:
@@ -365,18 +379,32 @@ class QQGroupManager(Star):
             instances = get_insts() if callable(get_insts) else []
         except Exception:  # pragma: no cover
             instances = []
+        # 官方族优先：复用 botpy 已持有的 access_token
         for instance in instances or []:
             try:
                 meta = instance.meta()
             except Exception:
                 continue
-            if getattr(meta, "name", "") != "qq_official":
+            if getattr(meta, "name", "") not in ("qq_official", "qq_official_webhook"):
                 continue
             transport = BotpyTransport.from_platform(instance)
             if transport is not None and transport.available:
                 self.api.transport = transport
                 self._platform_id = getattr(meta, "id", "") or self._platform_id
+                self.api.bind_platform(self._platform_id)
                 return True
+        # OneBot：绑定协议端客户端
+        for instance in instances or []:
+            try:
+                meta = instance.meta()
+            except Exception:
+                continue
+            if getattr(meta, "name", "") != "aiocqhttp":
+                continue
+            platform_id = getattr(meta, "id", "") or self._platform_id
+            self.api.bind_platform(platform_id)
+            self._platform_id = platform_id or self._platform_id
+            return self.api.available
         return False
 
     def transport_status(self) -> dict[str, Any]:
@@ -703,7 +731,11 @@ class QQGroupManager(Star):
     # ------------------------------------------------------------------
     # 消息处理：登记 → 指令 → 内容审核
     # ------------------------------------------------------------------
-    @filter.platform_adapter_type(filter.PlatformAdapterType.QQOFFICIAL)
+    @filter.platform_adapter_type(
+        filter.PlatformAdapterType.QQOFFICIAL
+        | filter.PlatformAdapterType.QQOFFICIAL_WEBHOOK
+        | filter.PlatformAdapterType.AIOCQHTTP
+    )
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
     async def on_group_message(self, event: AstrMessageEvent):
         """群消息入口：登记活跃群/成员，处理管理指令，并执行内容审核。
@@ -713,11 +745,16 @@ class QQGroupManager(Star):
         """
         try:
             self._bind_event(event)
+            if await self._handle_onebot_request(event):
+                return
             group_id = event.get_group_id() or ""
             if not group_id:
                 return
+            platform_id = str(event.get_platform_id() or "")
             sender_openid, sender_name, sender_role = self._sender_meta(event)
-            await self.store.touch_group(group_id, name=self._group_name(event))
+            await self.store.touch_group(
+                group_id, name=self._group_name(event), platform_id=platform_id
+            )
             await self.store.remember_member(
                 group_id, sender_openid, name=sender_name, role=sender_role
             )
@@ -765,7 +802,11 @@ class QQGroupManager(Star):
         except Exception as exc:  # pragma: no cover - 不让插件异常影响群聊
             self.logger.error("处理群消息失败：%s", exc, exc_info=True)
 
-    @filter.platform_adapter_type(filter.PlatformAdapterType.QQOFFICIAL)
+    @filter.platform_adapter_type(
+        filter.PlatformAdapterType.QQOFFICIAL
+        | filter.PlatformAdapterType.QQOFFICIAL_WEBHOOK
+        | filter.PlatformAdapterType.AIOCQHTTP
+    )
     @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE)
     async def on_private_message(self, event: AstrMessageEvent):
         """私聊入口：群管理指令只作用于群聊，这里给出明确回复（而不是静默无响应）。"""
@@ -786,16 +827,29 @@ class QQGroupManager(Star):
         except Exception as exc:  # pragma: no cover
             self.logger.error("处理私聊消息失败：%s", exc, exc_info=True)
 
+    async def _handle_onebot_request(self, event: AstrMessageEvent) -> bool:
+        """OneBot 加群申请事件：写入待审缓存并立即走审批流程。"""
+        raw = getattr(event.message_obj, "raw_message", None)
+        if not isinstance(raw, dict) or str(raw.get("post_type") or "") != "request":
+            return False
+        feed = getattr(self.api, "feed_request", None)
+        if callable(feed):
+            feed(event)
+        group_id = str(raw.get("group_id") or "")
+        if group_id:
+            try:
+                await self.joins.poll_group(group_id)
+            except Exception as exc:  # pragma: no cover - 不影响消息链路
+                self.logger.warning("处理 OneBot 入群申请失败：%s", exc)
+        return True
+
     def _bind_event(self, event: AstrMessageEvent) -> None:
-        """从事件里绑定平台实例 ID 与 botpy 传输层。"""
+        """从事件里绑定平台实例 ID 与对应通道。"""
         try:
             self._platform_id = event.get_platform_id() or self._platform_id
         except Exception:
             pass
-        if not self.api.available:
-            transport = BotpyTransport.from_event(event)
-            if transport is not None and transport.available:
-                self.api.transport = transport
+        self.api.bind_event(event)
 
     @staticmethod
     def _group_name(event: AstrMessageEvent) -> str:
@@ -804,16 +858,25 @@ class QQGroupManager(Star):
 
     @staticmethod
     def _sender_meta(event: AstrMessageEvent) -> tuple[str, str, str]:
-        """从原始消息里取发送者 openid / 昵称 / 群内角色。"""
+        """从原始消息里取发送者 ID / 昵称 / 群内角色（兼容官方族与 OneBot）。"""
         sender_openid = str(event.get_sender_id() or "")
         sender_name = str(event.get_sender_name() or "")
         role = ""
         raw = getattr(event.message_obj, "raw_message", None)
         author = getattr(raw, "author", None)
         if author is not None:
+            # 官方族：openid + member_role
             sender_openid = str(getattr(author, "member_openid", "") or sender_openid)
             sender_name = str(getattr(author, "username", "") or sender_name)
             role = str(getattr(author, "member_role", "") or "")
+        else:
+            # OneBot：sender.role（owner / admin / member）
+            sender = raw.get("sender") if isinstance(raw, dict) else getattr(raw, "sender", None)
+            if sender is not None:
+                if isinstance(sender, dict):
+                    role = str(sender.get("role") or "")
+                else:
+                    role = str(getattr(sender, "role", "") or "")
         return sender_openid, sender_name, role
 
     @staticmethod
