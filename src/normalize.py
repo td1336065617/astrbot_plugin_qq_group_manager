@@ -212,6 +212,29 @@ MULTI_PHRASES: dict[str, str] = {
     "禾中": "种",
 }
 
+#: 拉丁拼音/缩写别名（在骨架化之前按词边界折叠）。
+#: 全角字母经 NFKC 后是纯拉丁（`ｊｉａ群领资料` → `jia群领资料`），
+#: 若不映射回汉字，骨架视图就看不见"加群"（实测漏检）。
+LATIN_ALIAS: dict[str, str] = {
+    "jiaqun": "加群",
+    "kouqun": "扣群",
+    "jinjun": "进群",
+    "ziliao": "资料",
+    "weixin": "微信",
+    "fuli": "福利",
+    "ling": "领",
+    "jia": "加",
+    "qun": "群",
+    "kou": "扣",
+    "vx": "微信",
+    "wx": "微信",
+}
+
+#: 词边界：两侧都不能是字母/数字，避免 wxid_abc 这类标识符被拆坏
+_LATIN_ALIAS_RE = re.compile(
+    r"(?<![a-z0-9])(" + "|".join(sorted(LATIN_ALIAS, key=len, reverse=True)) + r")(?![a-z0-9])"
+)
+
 #: 干扰符号（compact 视图会去掉）：空白、常见标点、装饰符号
 _INTERFERENCE = set(
     " \t\r\n\v\f.,-_~^*|/\\+=!?;:\"'()[]{}<>@#$%&",
@@ -354,6 +377,7 @@ def skeleton_text(text: str, homoglyph: dict[str, str] | None = None) -> tuple[s
     for phrase, replacement in MULTI_PHRASES.items():
         if phrase in compact:
             compact = compact.replace(phrase, replacement)
+    compact = _LATIN_ALIAS_RE.sub(lambda match: LATIN_ALIAS[match.group(1)], compact)
     hits: list[str] = []
     mapped: list[str] = []
     for char in compact:

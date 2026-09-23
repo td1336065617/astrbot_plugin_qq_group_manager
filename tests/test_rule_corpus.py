@@ -137,6 +137,56 @@ def test_normalize_disabled_falls_back_to_old_behaviour():
     assert evaluation.hits and evaluation.score >= 60
 
 
+def test_fullwidth_latin_folds_into_hanzi():
+    """全角字母经 NFKC 后仍是拉丁，必须再映射回汉字，否则骨架看不见"加群"。"""
+    from src.normalize import normalize
+
+    view = normalize("ｊｉａ群领资料")
+    assert view.compact == "jia群领资料", "NFKC 负责全角→半角"
+    assert view.skeleton == "加群领资料", "拉丁拼音别名负责 jia→加"
+    engine, moderator = build()
+    assert will_send(engine, moderator, "ｊｉａ群领资料") is True
+
+
+def test_latin_alias_respects_word_boundary():
+    """别名折叠必须按词边界，不能把 wxid_abc123 这类标识符拆坏。"""
+    from src.normalize import normalize
+
+    assert normalize("wxid_abc123").skeleton == "wxidabc123"
+    assert normalize("jia qun").skeleton == "加群"
+
+
+def test_kouqun_variants_count_as_channel():
+    """叩/抠 折叠成扣后，"扣群"必须算真实渠道，否则 require_channel 的模板全不生效。"""
+    engine, moderator = build()
+    for text in ("扣群领资料", "叩群领资料 秒通过", "抠群领资料"):
+        evaluation = engine.evaluate(text, group_id="g1")
+        assert evaluation.template_hits, text
+        assert will_send(engine, moderator, text) is True, text
+
+
+def test_soft_open_group_lure_is_sent_but_not_enforced():
+    """无外链的软性开群话术：场景 + 诱饵 + 催促 三件套齐备才送审，且不直接处置。"""
+    engine, moderator = build()
+    text = "新群开张，福利多多，手慢无"
+    evaluation = engine.evaluate(text, group_id="g1")
+    assert [hit.rule_id for hit in evaluation.template_hits] == ["ad_open"]
+    assert evaluation.enforce_actions == []
+    assert will_send(engine, moderator, text) is True
+
+
+def test_weak_scene_words_do_not_trigger_open_template():
+    """弱场景词（本群/群内）与只有场景词的消息都不该被送审。"""
+    engine, moderator = build()
+    for text in (
+        "本群资料限时开放，抓紧",
+        "群内公告：本周比赛时间改到周日",
+        "我建了个新群，大家来玩",
+        "新群开张，福利多多",
+    ):
+        assert not will_send(engine, moderator, text), text
+
+
 def test_pinyin_matching_when_available():
     """同音匹配：安装了 pypinyin 时，拼音规则应能命中同音变体。"""
     from src.normalize import pinyin_available

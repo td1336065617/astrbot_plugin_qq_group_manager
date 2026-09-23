@@ -187,6 +187,9 @@ CHANNEL_MARKERS = (
     "抠抠",
     "企鹅号",
     "电报",
+    # 扣群/叩群：QQ 群的口语写法，骨架视图会把 叩/抠 折叠成 扣
+    "扣群",
+    "叩群",
 )
 
 #: 玩梗语境：模仿诈骗/银行短信格式、经典梗、AI 越狱文案。命中后不应按违规处理。
@@ -372,6 +375,32 @@ STRONG_MARKERS = (
     "速上",
 )
 
+#: 软性开群话术的"催促"词（配合 场景词 + 诱饵词 三件套识别）
+OPEN_URGE_WORDS = (
+    "手慢无",
+    "秒通过",
+    "先到先得",
+    "名额有限",
+    "仅限今天",
+    "别错过",
+    "速来",
+    "抓紧",
+    "不多了",
+    "限时",
+    "限量",
+)
+
+#: 开群/拉新场景词。只收"新建/开张"语义：
+#: "本群/群内/群里"这类弱场景词会把正常公告（本群资料限时开放，抓紧）也拉进来，故不收。
+OPEN_SCENE_WORDS = (
+    "新群",
+    "开张",
+    "开业",
+    "新开",
+    "建群",
+    "新建的群",
+)
+
 #: 内置广告模板（可被 KV keywords.templates 覆盖/追加）
 BUILTIN_TEMPLATES: list[dict[str, Any]] = [
     {
@@ -387,6 +416,22 @@ BUILTIN_TEMPLATES: list[dict[str, Any]] = [
         "category": "广告引流",
         "severity": 3,
         "action": ["warn", "recall"],
+    },
+    {
+        "id": "ad_open",
+        "name": "开群福利引流",
+        "all_of": [
+            {"any_of": list(OPEN_SCENE_WORDS)},
+            {"any_of": list(BAIT_NOUNS)},
+            {"any_of": list(OPEN_URGE_WORDS)},
+        ],
+        # 软性开群话术：没有外链/号码，靠"场景 + 诱饵 + 催促"三件套识别。
+        # 三个分组同时成立才命中，且模板只送审、不直接处置。
+        "require_channel": False,
+        "score": 55,
+        "category": "广告引流",
+        "severity": 3,
+        "action": ["warn"],
     },
     {
         "id": "ad_lure",
