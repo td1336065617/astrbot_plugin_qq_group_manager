@@ -9,7 +9,7 @@ QQ 群消息 ──► 本地规则（形近字/黑话/模板，零成本）
                                                         └──► SQLite 审计 + 管理台可视化
 ```
 
-- **版本**：0.11.0 ｜ **平台**：`qq_official` / `qq_official_webhook`（QQ 官方）+ `aiocqhttp`（OneBot v11）｜ **许可**：MIT
+- **版本**：0.11.1 ｜ **平台**：`qq_official` / `qq_official_webhook`（QQ 官方）+ `aiocqhttp`（OneBot v11）｜ **许可**：MIT
 - **零第三方依赖**：只用标准库 `sqlite3` + AstrBot 官方 SDK（`pypinyin` 为可选增强）
 
 ---
