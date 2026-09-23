@@ -265,6 +265,10 @@ class Verdict:
     latency_ms: int = 0
     #: 图片中二维码承载的文本（由多模态模型填写；解析不到即忽略）
     qr_text: str = ""
+    #: 模型给出的判断过程（先推理后结论，供审计与调参）
+    analysis: str = ""
+    #: 模型逐字摘录的判断依据（找不到可执行渠道时为空）
+    evidence: str = ""
 
     @property
     def is_violation(self) -> bool:
@@ -292,6 +296,8 @@ class Verdict:
             parse_error=self.parse_error,
             latency_ms=self.latency_ms,
             qr_text=self.qr_text[:300],
+            analysis=self.analysis[:500],
+            evidence=self.evidence[:300],
         )
 
 
@@ -342,6 +348,8 @@ def default_settings() -> dict[str, Any]:
         "image_review_max": 1,
         "cache_ttl": 600,
         "circuit_break_threshold": 5,
+        # 送审时附带最近 N 条群消息作为语境（0 = 关闭，退回"只看单条消息"）
+        "llm_context_messages": 8,
         "block_llm_on_violation": False,
         # 标准档处置矩阵；首次安装以 mode=lenient 兜底（只保留 warn/report），
         # 因此"安装即温和"与"切到标准档即完整处置"两个诉求可以同时成立。
@@ -395,6 +403,7 @@ NUMERIC_BOUNDS: dict[str, tuple[float, float]] = {
     "llm_daily_budget": (0, 1_000_000),
     "cache_ttl": (0, 86400),
     "circuit_break_threshold": (1, 50),
+    "llm_context_messages": (0, 20),
     "max_mute_days": (1, 30),
     "join_poll_interval": (30, 600),
     "join_min_confidence": (0.0, 1.0),

@@ -154,6 +154,7 @@ async def run_chain(
     service.rules = RuleEngine(store.keywords())
     service.logger = logging.getLogger("qqgm-chain-test")
     service._seen_messages = {}
+    service._context_buffer = {}
     service._last_provider_id = ""
     service._platform_id = ""
 
@@ -625,6 +626,48 @@ def test_chain_without_qr_text_keeps_original_severity(tmp_path):
         row = events["items"][0]
         assert row["severity"] == 2
         assert "qr_content" not in (row["rule_hits"] or "")
+        await chain.close()
+
+    asyncio.run(scenario())
+
+
+def test_chain_records_recent_context_and_respects_setting(tmp_path):
+    async def scenario():
+        chain = await run_chain(tmp_path, text="第一条：今天比赛真难")
+        bucket = chain.service._context_buffer.get("g1") or []
+        assert [item["text"] for item in bucket] == ["第一条：今天比赛真难"]
+        assert chain.service._recent_context("g1")[-1]["text"] == "第一条：今天比赛真难"
+        await chain.store.update_settings({"llm_context_messages": 0})
+        assert chain.service._recent_context("g1") == []
+        await chain.close()
+
+    asyncio.run(scenario())
+
+
+def test_chain_passes_recent_context_to_llm(tmp_path):
+    async def scenario():
+        chain = await run_chain(tmp_path, text="第一条：今天比赛真难")
+        captured = {}
+
+        async def provider_call(request, system_prompt, user_prompt):
+            del request, system_prompt
+            captured["user"] = user_prompt
+            return LLM_ALLOW
+
+        chain.service.moderator.provider_call = provider_call
+        chain.service._seen_messages.clear()
+        event = FakeEvent(AD_MESSAGE)
+        await chain.main.QQGroupManager._moderate(
+            chain.service,
+            event,
+            group_id="g1",
+            config=chain.store.group("g1"),
+            sender_openid="u1",
+            sender_name="小号",
+            sender_role="member",
+        )
+        assert "今天比赛真难" in captured.get("user", "")
+        assert captured["user"].index("今天比赛真难") < captured["user"].index("<<<MESSAGE")
         await chain.close()
 
     asyncio.run(scenario())

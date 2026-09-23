@@ -131,6 +131,7 @@ def build_service(
     service.actions = ActionExecutor(api=api, store=store, audit=audit)
     service.logger = logging.getLogger("qqgm-appeal-test")
     service._seen_messages = {}
+    service._context_buffer = {}
     service._last_provider_id = ""
     service._platform_id = ""
     service.notifications = []

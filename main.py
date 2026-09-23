@@ -103,12 +103,14 @@ from .src.utils import (
 from .src.web_api import EventBus, WebApi
 
 PLUGIN_NAME = "astrbot_plugin_qq_group_manager"
-VERSION = "0.10.1"
+VERSION = "0.11.0"
 
 STATE_FLUSH_INTERVAL = 30.0
 MAINTENANCE_INTERVAL = 3600.0
 MUTE_SYNC_INTERVAL = 300.0
 SEEN_MESSAGE_TTL = 600.0
+#: 每群保留的最近语境消息条数上限（送审时按 llm_context_messages 截取）
+CONTEXT_BUFFER_MAX = 20
 DEFAULT_MUTE_SECONDS = 600
 
 
@@ -150,6 +152,7 @@ class QQGroupManager(Star):
         self._platform_id: str = ""
         self._last_prune_day: str = ""
         self._seen_messages: dict[str, float] = {}
+        self._context_buffer: dict[str, list[dict[str, Any]]] = {}
         self._last_provider_id: str = ""
         WebApi(self).register()
 
@@ -956,6 +959,28 @@ class QQGroupManager(Star):
         self._seen_messages[key] = now
         return False
 
+    def _note_context(self, group_id: str, sender_name: str, text: str) -> None:
+        """把群消息记入最近语境缓冲（仅内存、有上限、不落库）。"""
+        body = " ".join(str(text or "").split())
+        if not body:
+            return
+        if len(self._context_buffer) > 500:
+            self._context_buffer.clear()
+        bucket = self._context_buffer.setdefault(group_id, [])
+        bucket.append({"sender": str(sender_name or ""), "text": body[:200]})
+        if len(bucket) > CONTEXT_BUFFER_MAX:
+            del bucket[:-CONTEXT_BUFFER_MAX]
+
+    def _recent_context(self, group_id: str) -> list[dict[str, str]]:
+        """取送审用的最近 N 条语境消息（不含本条；0 表示关闭）。"""
+        try:
+            limit = int(self.store.get_setting("llm_context_messages", 8) or 0)
+        except (TypeError, ValueError):
+            limit = 8
+        if limit <= 0:
+            return []
+        return list(self._context_buffer.get(group_id, []))[-limit:]
+
     def _is_exempt(
         self,
         event: AstrMessageEvent,
@@ -1005,6 +1030,9 @@ class QQGroupManager(Star):
             send_images = images[: max(1, limit)]
         if not text.strip() and not send_images:
             return
+        # 先取上文再记录本条：语境区块里不含当前消息
+        context_messages = self._recent_context(group_id)
+        self._note_context(group_id, sender_name, text)
         if self._is_exempt(event, group_id, sender_openid, sender_role):
             return
 
@@ -1160,6 +1188,7 @@ class QQGroupManager(Star):
                 days_in_group=days,
                 umo=event.unified_msg_origin,
                 message_id=msg_id,
+                context_messages=context_messages,
             )
             templates = {
                 "system": str(settings.get("prompt_system") or ""),

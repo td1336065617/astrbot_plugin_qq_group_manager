@@ -1,4 +1,5 @@
-面向 QQ 官方机器人的群管理插件：基于 AstrBot 已配置 LLM 的群消息审核与处置、入群申请智能审批、
+面向 QQ 官方机器人（qq_official / qq_official_webhook）与 QQ 非官方 OneBot v11（aiocqhttp）的群管理插件：
+基于 AstrBot 已配置 LLM 的群消息审核与处置、入群申请智能审批、
 成员与黑名单管理、申诉闭环，配套 SQLite 审计库与 WebUI 管理台。
 
 ## 内容审核

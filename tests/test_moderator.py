@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 
 from src.moderator import (
+    USER_TEMPLATE_DEFAULT,
     LLMModerator,
     ModerationRequest,
     extract_json_object,
@@ -210,3 +211,89 @@ def test_llm_provider_id_is_editable_and_persisted():
         assert kv.data["settings"]["llm_provider_id"] == "mod-provider"
 
     asyncio.run(scenario())
+
+
+def test_context_messages_render_into_user_prompt():
+    request = ModerationRequest(
+        group_id="g1",
+        text="我，秦始皇，打钱",
+        sender_name="小明",
+        rule_summary="模板:拉群引流",
+        context_messages=[
+            {"sender": "小红", "text": "哈哈哈哈又来了"},
+            {"sender": "小刚", "text": "接梗"},
+        ],
+    )
+    prompt = request.render_user_prompt(USER_TEMPLATE_DEFAULT)
+    assert "【群聊上下文】" in prompt
+    assert "最近 2 条" in prompt
+    assert "小红: 哈哈哈哈又来了" in prompt
+    assert "小刚: 接梗" in prompt
+    assert "<<<MESSAGE" in prompt
+    # 语境在正文之前，"可疑点"在正文之后且带免责说明（避免先入为主）
+    assert prompt.index("【群聊上下文】") < prompt.index("<<<MESSAGE")
+    assert prompt.index("<<<MESSAGE") < prompt.index("【可疑点】")
+    assert "不构成违规证据" in prompt
+
+
+def test_context_placeholder_is_not_double_rendered():
+    request = ModerationRequest(
+        group_id="g1",
+        text="正文",
+        rules_brief="群规",
+        context_messages=[{"sender": "群友", "text": "占位符 {rules_brief} 不该被替换"}],
+    )
+    prompt = request.render_user_prompt(USER_TEMPLATE_DEFAULT)
+    assert "占位符 {rules_brief} 不该被替换" in prompt
+    assert "群规" in prompt
+
+
+def test_render_context_without_history():
+    request = ModerationRequest(group_id="g1", text="正文")
+    assert "暂无历史消息" in request.render_context()
+    assert "最近 0 条" in request.render_user_prompt(USER_TEMPLATE_DEFAULT)
+
+
+def test_parse_verdict_reads_analysis_and_evidence():
+    verdict = parse_verdict(
+        '{"analysis":"复读经典梗，没有人会被引导去转账","evidence":"","verdict":"allow",'
+        '"category":"无","severity":1,"confidence":0.9,"reason":"玩梗","suggested_action":"none"}'
+    )
+    assert verdict.verdict == "allow"
+    assert verdict.analysis == "复读经典梗，没有人会被引导去转账"
+    assert verdict.evidence == ""
+
+
+def test_low_confidence_downgrade_keeps_analysis():
+    response = (
+        '{"analysis":"像广告但缺可触达渠道","evidence":"加群","verdict":"violation",'
+        '"category":"广告引流","severity":3,"confidence":0.4,"reason":"疑似",'
+        '"suggested_action":"mute"}'
+    )
+    moderator, _ = make_moderator(response=response)
+    verdict = run(moderator.judge(ModerationRequest(group_id="g1", text="加群")))
+    assert verdict.verdict == "review"
+    assert "置信度不足" in verdict.reason
+    assert verdict.analysis == "像广告但缺可触达渠道"
+    assert verdict.evidence == "加群"
+
+
+def test_context_reaches_provider_prompt():
+    seen = {}
+
+    async def provider_call(request, system_prompt, user_prompt):
+        seen["system"] = system_prompt
+        seen["user"] = user_prompt
+        return '{"verdict":"allow","category":"无","severity":1,"confidence":0.9,"reason":"正常"'
+
+    moderator = LLMModerator(provider_call, settings_getter=make_settings())
+    request = ModerationRequest(
+        group_id="g1",
+        text="加群领资料",
+        context_messages=[{"sender": "小红", "text": "上一条在聊比赛"}],
+    )
+    run(moderator.judge(request))
+    assert "上一条在聊比赛" in seen["user"]
+    # 提示词要求先写 analysis 再给结论
+    assert "analysis" in seen["system"]
+    assert "evidence" in seen["system"]
