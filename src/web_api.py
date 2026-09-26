@@ -137,6 +137,7 @@ class WebApi:
             (f"/{PLUGIN_NAME}/joins", self.joins_get, ["GET"], "入群申请列表"),
             (f"/{PLUGIN_NAME}/joins/fetch", self.joins_fetch, ["POST"], "立即拉取入群申请"),
             (f"/{PLUGIN_NAME}/joins/decide", self.joins_decide, ["POST"], "人工审批入群申请"),
+            (f"/{PLUGIN_NAME}/joins/settings", self.joins_settings, ["POST"], "保存入群审批配置"),
             (f"/{PLUGIN_NAME}/appeals", self.appeals_get, ["GET"], "申诉列表"),
             (f"/{PLUGIN_NAME}/appeals/decide", self.appeals_decide, ["POST"], "处理申诉"),
             (
@@ -770,6 +771,35 @@ class WebApi:
         if not result.get("ok"):
             return error_response(str(result.get("message") or "审批失败"), data=result)
         return json_response(result)
+
+    async def joins_settings(self):
+        """保存入群审批相关配置（画像 / 门槛 / 全局模式）。"""
+        if not self._service_ready():
+            return error_response("插件尚未初始化完成，请稍后重试")
+        payload = await request.json(default={})
+        if not isinstance(payload, dict):
+            return error_response("请求体必须是 JSON 对象")
+        allowed = (
+            "join_review_mode",
+            "join_poll_interval",
+            "join_min_confidence",
+            "join_decline_blacklist",
+            "join_trust_inviter",
+            "join_profile_enabled",
+            "join_min_account_days",
+            "join_min_qq_level",
+            "join_require_qid",
+            "join_gate_action",
+            "join_profile_missing",
+            "join_avatar_review",
+            "join_avatar_only_below",
+            "join_profile_cache_days",
+            "join_profile_qpm",
+            "join_profile_concurrency",
+        )
+        patch_data = {key: payload[key] for key in allowed if key in payload}
+        settings = await self.service.store.update_settings(patch_data)
+        return json_response({"settings": {key: settings.get(key) for key in allowed}})
 
     async def appeals_get(self):
         """申诉列表（state/group_id/days 筛选）。"""

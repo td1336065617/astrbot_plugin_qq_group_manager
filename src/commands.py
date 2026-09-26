@@ -433,10 +433,18 @@ def join_list_text(pending: list[dict[str, Any]]) -> str:
     for index, item in enumerate(pending[:10], start=1):
         request = item.get("request") or {}
         verify = request.get("verify_info") or {}
+        profile = request.get("profile") or {}
+        marks: list[str] = []
+        if isinstance(profile.get("qq_level"), int):
+            marks.append(f"等级 {profile['qq_level']}")
+        if isinstance(profile.get("account_age_days"), int):
+            marks.append(f"账号 {profile['account_age_days']} 天")
+        extra = "｜" + "｜".join(marks) if marks else ""
         lines.append(
-            "{idx}. {name}｜来源 {source}｜验证：{verify}".format(
+            "{idx}. {name}{extra}｜来源 {source}｜验证：{verify}".format(
                 idx=index,
                 name=str(request.get("username") or "未知")[:16],
+                extra=extra,
                 source=str(request.get("apply_source") or "-"),
                 verify=str(verify.get("verify_message") or "（无）")[:40],
             )

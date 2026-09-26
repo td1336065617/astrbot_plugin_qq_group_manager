@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -87,12 +88,14 @@ from .src.moderator import LLMModerator, ModerationRequest, choose_provider_id
 from .src.normalize import skeleton_text
 from .src.platforms.router import ChannelRouter
 from .src.policy import ApprovalPolicyService
+from .src.profiles import ApplicantProfileService
 from .src.rules import SCORE_RULES, RuleEngine
 from .src.scheduler import TaskScheduler, TaskSpec
 from .src.store import AstrBotKVBackend, PluginStore
 from .src.utils import (
     digest_text,
     mask_openid,
+    mask_uid,
     normalize_command,
     now_ts,
     parse_duration,
@@ -103,7 +106,7 @@ from .src.utils import (
 from .src.web_api import EventBus, WebApi
 
 PLUGIN_NAME = "astrbot_plugin_qq_group_manager"
-VERSION = "0.11.1"
+VERSION = "0.12.0"
 
 STATE_FLUSH_INTERVAL = 30.0
 MAINTENANCE_INTERVAL = 3600.0
@@ -145,6 +148,11 @@ class QQGroupManager(Star):
         )
         self.moderator = LLMModerator(settings_getter=self.store.settings, logger=self.logger)
         self.actions = ActionExecutor(api=self.api, store=self.store, logger=self.logger)
+        self.profiles = ApplicantProfileService(
+            store=self.store,
+            channel_for=self.api.channel_for,
+            logger=self.logger,
+        )
         self.joins = JoinReviewer(api=self.api, store=self.store, logger=self.logger)
         self.policy = ApprovalPolicyService(api=self.api, store=self.store, logger=self.logger)
         self.initialized = False
@@ -176,7 +184,14 @@ class QQGroupManager(Star):
         self.actions.audit = self.audit
         self.joins.audit = self.audit
         self.moderator.provider_call = self._llm_call
+        self.joins.profile_getter = self.profiles.get
         self.joins.judge_call = self._join_judge_call
+        try:
+            await self.store.drop_expired_profiles(
+                int(settings.get("join_profile_cache_days", 7) or 0)
+            )
+        except Exception:  # pragma: no cover - 清理失败不影响启动
+            self.logger.debug("画像缓存清理失败", exc_info=True)
         self.actions.notifier = self._notify
         self.joins.notifier = self._notify
         self.rules.reload(self.store.keywords())
@@ -634,14 +649,37 @@ class QQGroupManager(Star):
         )
         return str(getattr(response, "completion_text", "") or "")
 
-    async def _join_judge_call(self, system_prompt: str, user_prompt: str) -> str:
-        """入群申请审核的 LLM 调用（无事件上下文）。"""
-        request = ModerationRequest(
-            group_id="",
-            text=user_prompt,
-            umo=str(self.store.get_setting("notify_session") or ""),
-        )
-        return await self._llm_call(request, system_prompt, user_prompt)
+    async def _join_judge_call(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        image_urls: list[str] | None = None,
+        group_id: str = "",
+    ) -> str:
+        """入群申请审核的 LLM 调用（无事件上下文；与内容审核共享日预算/熔断/限频/并发）。"""
+        blocked = self.moderator.gate_reason()
+        if blocked:
+            raise RuntimeError(blocked)
+        if not await self.moderator.acquire(group_id):
+            raise RuntimeError("已触发单群 QPM 限流")
+        ok = False
+        error = ""
+        try:
+            request = ModerationRequest(
+                group_id=group_id,
+                text=user_prompt,
+                umo=str(self.store.get_setting("notify_session") or ""),
+                image_urls=list(image_urls or []),
+            )
+            text = await self._llm_call(request, system_prompt, user_prompt)
+            ok = True
+            return text
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            raise
+        finally:
+            self.moderator.release()
+            self.moderator.note_call(ok=ok, error=error)
 
     async def _notify(self, kind: str, payload: dict[str, Any]) -> None:
         """通知管理员（优先使用配置的会话，其次写日志）。"""
@@ -655,6 +693,17 @@ class QQGroupManager(Star):
             except Exception as exc:  # pragma: no cover - 主动消息可能受限
                 self.logger.warning("通知发送失败：%s", exc)
         self.logger.info("[通知:%s] %s", kind, text.replace("\n", " | "))
+
+    @staticmethod
+    def _parse_profile_json(raw: Any) -> dict[str, Any]:
+        """解析审计库里存的画像 JSON（脏数据一律退化为空画像）。"""
+        if not raw:
+            return {}
+        try:
+            payload = json.loads(raw)
+        except (TypeError, ValueError):
+            return {}
+        return payload if isinstance(payload, dict) else {}
 
     def _render_notification(self, kind: str, payload: dict[str, Any]) -> str:
         """构造通知文本。"""
@@ -682,13 +731,20 @@ class QQGroupManager(Star):
                 "待审入群申请\n"
                 "群：{group}\n"
                 "申请人：{name}（{openid}）\n"
+                "画像：等级 {level}｜账号 {age} 天\n"
                 "验证消息：{verify}\n"
                 "风险提示：{risk}\n"
                 "机器建议：{suggestion}\n"
                 "请在管理台「入群审批」或群内使用「入群申请」处理。".format(
                     group=payload.get("group_name") or mask_openid(payload.get("group_id")),
                     name=payload.get("username") or "未知",
-                    openid=mask_openid(payload.get("member_openid")),
+                    openid=mask_uid(payload.get("member_openid")),
+                    level=payload.get("qq_level") if payload.get("qq_level") is not None else "未知",
+                    age=(
+                        payload.get("account_age_days")
+                        if payload.get("account_age_days") is not None
+                        else "未知"
+                    ),
                     verify=payload.get("verify_message") or "（无）",
                     risk=payload.get("risk_tips") or "无",
                     suggestion=payload.get("suggestion") or "-",
@@ -2295,6 +2351,8 @@ class QQGroupManager(Star):
         history: list[dict[str, Any]] = []
         if self.audit is not None:
             history = await self.audit.list_joins(group_id, limit=50)
+            for row in history:
+                row["profile"] = self._parse_profile_json(row.get("profile_json"))
         group_ids = [group_id] if group_id else list(self.store.groups())
         conflicts = await self.policy.conflicts([gid for gid in group_ids if gid])
         return {

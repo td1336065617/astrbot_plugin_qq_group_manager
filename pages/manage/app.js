@@ -163,6 +163,22 @@ function tag(text, kind) {
   return el('span', { class: 'tag ' + (kind || ''), text });
 }
 
+function fmtProfileNumber(profile, key) {
+  const value = profile ? profile[key] : null;
+  if (value === null || value === undefined || value === '') {
+    return profile && profile.degraded ? '本通道不支持' : '—';
+  }
+  return String(value);
+}
+
+function fmtProfileAge(profile) {
+  const value = profile ? profile.account_age_days : null;
+  if (value === null || value === undefined) {
+    return profile && profile.degraded ? '本通道不支持' : '—';
+  }
+  return value + ' 天';
+}
+
 function fmtTime(value) {
   if (!value) return '—';
   return String(value).replace('T', ' ').slice(0, 19);
@@ -1531,6 +1547,7 @@ async function viewMembers(root) {
 
 async function viewJoins(root) {
   const config = await loadConfig();
+  const settings = config.settings || {};
   const groups = config.groups || [];
   clear(root);
   if (!groups.length) {
@@ -1590,6 +1607,67 @@ async function viewJoins(root) {
     ]),
   ]));
 
+  /* 申请人画像与门槛配置 */
+  const selectField = (label, pairs, value) => {
+    const select = el('select');
+    pairs.forEach((pair) => select.appendChild(el('option', {
+      value: pair[0],
+      text: pair[1],
+      selected: pair[0] === value ? 'selected' : null,
+    })));
+    return { node: el('label', { class: 'field' }, [el('span', { text: label }), select]), input: select };
+  };
+  const profileEnabled = checkField('启用申请人画像采集（OneBot 可取 QQ 等级/账号年龄/头像）', settings.join_profile_enabled !== false);
+  const requireQid = checkField('要求有 QID', settings.join_require_qid);
+  const declineBlacklist = checkField('自动拒绝时加入群黑名单（内邀能力，可能失败）', settings.join_decline_blacklist !== false);
+  const trustInviter = checkField('信任邀请人：被邀请入群直接通过', settings.join_trust_inviter);
+  const minDays = numField('账号年龄门槛（天，0=关闭）', settings.join_min_account_days || 0, 0, 3650, 1);
+  const minLevel = numField('QQ 等级门槛（0=关闭）', settings.join_min_qq_level || 0, 0, 144, 1);
+  const gateAction = selectField('门槛命中动作', [['decline', '自动拒绝'], ['manual', '转人工'], ['pass', '放行']], settings.join_gate_action || 'decline');
+  const missingPolicy = selectField('资料缺失策略（仅对可提供画像的通道生效）', [['manual', '转人工'], ['pass', '放行'], ['decline', '拒绝']], settings.join_profile_missing || 'manual');
+  const avatarReview = selectField('头像多模态复核', [['off', '关闭'], ['approve_only', '仅复核拟放行的'], ['always', '每次都复核']], settings.join_avatar_review || 'off');
+  const avatarBelow = numField('头像复核触发阈值（置信度低于此值才复核）', settings.join_avatar_only_below === undefined ? 0.95 : settings.join_avatar_only_below, 0, 1, 0.05);
+  const minConfidence = numField('自动审批置信度门槛', settings.join_min_confidence === undefined ? 0.8 : settings.join_min_confidence, 0, 1, 0.05);
+  const pollInterval = numField('轮询间隔（秒，仅官方通道）', settings.join_poll_interval || 60, 30, 600, 5);
+  const cacheDays = numField('画像缓存（天）', settings.join_profile_cache_days || 7, 0, 90, 1);
+  const profileQpm = numField('画像调用限频（次/分钟）', settings.join_profile_qpm || 30, 1, 300, 1);
+  const profileConcurrency = numField('画像调用并发', settings.join_profile_concurrency || 2, 1, 8, 1);
+  const saveJoinSettings = el('button', { class: 'btn', text: '保存入群审批配置', onclick: async () => {
+    saveJoinSettings.disabled = true;
+    try {
+      await bridge.apiPost('joins/settings', {
+        join_profile_enabled: profileEnabled.input.checked,
+        join_require_qid: requireQid.input.checked,
+        join_decline_blacklist: declineBlacklist.input.checked,
+        join_trust_inviter: trustInviter.input.checked,
+        join_min_account_days: Number(minDays.input.value),
+        join_min_qq_level: Number(minLevel.input.value),
+        join_gate_action: gateAction.input.value,
+        join_profile_missing: missingPolicy.input.value,
+        join_avatar_review: avatarReview.input.value,
+        join_avatar_only_below: Number(avatarBelow.input.value),
+        join_min_confidence: Number(minConfidence.input.value),
+        join_poll_interval: Number(pollInterval.input.value),
+        join_profile_cache_days: Number(cacheDays.input.value),
+        join_profile_qpm: Number(profileQpm.input.value),
+        join_profile_concurrency: Number(profileConcurrency.input.value),
+      });
+      state.config = null;
+      toast('入群审批配置已保存', 'ok');
+      await render();
+    } catch (error) { toast('保存失败：' + error.message, 'bad'); }
+    finally { saveJoinSettings.disabled = false; }
+  } });
+  root.appendChild(card('入群审批配置',
+    '画像与门槛默认全关；官方通道不提供头像/账号等级，「资料缺失策略」对其不生效。',
+    [
+      el('div', { class: 'row' }, [profileEnabled.node, requireQid.node, declineBlacklist.node, trustInviter.node]),
+      el('div', { class: 'row' }, [minDays.node, minLevel.node, gateAction.node, missingPolicy.node]),
+      el('div', { class: 'row' }, [avatarReview.node, avatarBelow.node, minConfidence.node, pollInterval.node]),
+      el('div', { class: 'row' }, [cacheDays.node, profileQpm.node, profileConcurrency.node]),
+      el('div', { class: 'field-actions' }, [saveJoinSettings]),
+    ]));
+
   let snapshot = null;
   try {
     snapshot = await bridge.apiGet('joins', { group_id: groupSelect.value });
@@ -1629,8 +1707,20 @@ async function viewJoins(root) {
   pending.forEach((item) => {
     const request = item.request || {};
     const verify = request.verify_info || {};
+    const profile = request.profile || {};
     pendingBody.appendChild(el('tr', {}, [
-      el('td', { text: request.username || '未知' }),
+      el('td', {}, [el('div', { class: 'row' }, [
+        profile.avatar_url
+          ? el('img', {
+            src: profile.avatar_url,
+            style: 'width:28px;height:28px;border-radius:50%;object-fit:cover;',
+            onerror: (event) => { event.target.style.visibility = 'hidden'; },
+          })
+          : el('span', { class: 'muted', text: '—' }),
+        el('span', { text: request.username || '未知' }),
+      ])]),
+      el('td', { text: fmtProfileNumber(profile, 'qq_level') }),
+      el('td', { text: fmtProfileAge(profile) }),
       el('td', { text: request.apply_source === 'invited' ? '被邀请' : '主动申请' }),
       el('td', { text: (verify.verify_message || '（无）').slice(0, 40) }),
       el('td', { text: request.risk_tips || '无' }),
@@ -1644,7 +1734,7 @@ async function viewJoins(root) {
   root.appendChild(card('待人工审批（' + pending.length + '）', '轮询 ' + (progress.polls || 0) + ' 次，累计获取 ' + (progress.fetched || 0) + ' 条申请', pending.length ? [
     el('div', { class: 'table-wrap' }, [
       el('table', {}, [
-        el('thead', {}, [el('tr', {}, ['申请人', '来源', '验证消息', '风险提示', '机器建议', '操作'].map((text) => el('th', { text })))]),
+        el('thead', {}, [el('tr', {}, ['申请人', 'QQ等级', '账号年龄', '来源', '验证消息', '风险提示', '机器建议', '操作'].map((text) => el('th', { text })))]),
         pendingBody,
       ]),
     ]),
@@ -1656,6 +1746,8 @@ async function viewJoins(root) {
     historyBody.appendChild(el('tr', {}, [
       el('td', { text: fmtTime(row.ts_unix ? new Date(row.ts_unix * 1000).toISOString() : '') }),
       el('td', { text: row.username || '未知' }),
+      el('td', { text: fmtProfileNumber(row.profile || {}, 'qq_level') }),
+      el('td', { text: fmtProfileAge(row.profile || {}) }),
       el('td', { text: row.decision || '-' }),
       el('td', { text: row.decided_by || '-' }),
       el('td', { text: typeof row.confidence === 'number' ? row.confidence.toFixed(2) : '-' }),
@@ -1665,7 +1757,7 @@ async function viewJoins(root) {
   root.appendChild(card('历史记录（' + history.length + '）', null, history.length ? [
     el('div', { class: 'table-wrap' }, [
       el('table', {}, [
-        el('thead', {}, [el('tr', {}, ['时间', '申请人', '决策', '决策方', '置信度', '原因'].map((text) => el('th', { text })))]),
+        el('thead', {}, [el('tr', {}, ['时间', '申请人', 'QQ等级', '账号年龄', '决策', '决策方', '置信度', '原因'].map((text) => el('th', { text })))]),
         historyBody,
       ]),
     ]),
