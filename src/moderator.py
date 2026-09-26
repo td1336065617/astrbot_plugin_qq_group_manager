@@ -11,12 +11,13 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from datetime import datetime
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
 from .models import MODERATION_MODES, RISK_CONDITION_PREFIX, Verdict
-from .utils import clamp_float, clamp_int, digest_text, now_ts, truncate
+from .utils import CN_TZ, clamp_float, clamp_int, digest_text, now_ts, truncate
 
 #: 单群限频窗口（秒）
 RATE_WINDOW = 60.0
@@ -393,7 +394,8 @@ class LLMModerator:
 
     def note_call(self, *, ok: bool, error: str = "") -> None:
         """登记一次外部发起的 LLM 调用（入群审批），与内容审核共享日预算与熔断。"""
-        today = time.strftime("%Y-%m-%d", time.localtime())
+        # 与插件统一口径（CN_TZ）：否则 UTC 服务器上"当日预算"会在北京时间 08:00 重置（BUG-055）
+        today = datetime.now(CN_TZ).strftime("%Y-%m-%d")
         if self.stats.day != today:
             self.stats.day = today
             self.stats.day_calls = 0
@@ -462,7 +464,8 @@ class LLMModerator:
         budget = int(self.settings().get("llm_daily_budget", 0) or 0)
         if budget <= 0:
             return False
-        today = time.strftime("%Y-%m-%d", time.localtime())
+        # 统一用北京日期（BUG-055）：与 note_call/judge 的日键口径一致
+        today = datetime.now(CN_TZ).strftime("%Y-%m-%d")
         if self.stats.day != today:
             self.stats.day = today
             self.stats.day_calls = 0
@@ -537,7 +540,8 @@ class LLMModerator:
             return Verdict.review("已触发单群 QPM 限流", source="llm")
 
         started = self._clock()
-        today = time.strftime("%Y-%m-%d", time.localtime())
+        # 统一用北京日期（BUG-055）：与 note_call/judge 的日键口径一致
+        today = datetime.now(CN_TZ).strftime("%Y-%m-%d")
         if self.stats.day != today:
             self.stats.day = today
             self.stats.day_calls = 0
