@@ -7,6 +7,39 @@
 
 ---
 
+## [0.12.0] - 2026-09-26
+
+> ✨ 入群审批新增「申请人画像」：OneBot 通道可取 QQ 等级、注册时间/账号年龄、QID 与头像，
+> 支持账号门槛与头像多模态复核；官方通道没有这些字段，按「无数据源」跳过，行为与旧版一致。
+
+### ✨ 新增
+- **申请人画像采集**：OneBot 通道用 `get_stranger_info` 取昵称、QQ 等级（`qqLevel`）、注册时间（`reg_time`）、QID、性别、VIP；头像由 QQ 号拼 `q1.qlogo.cn` 直链。
+- **画像硬规则门槛**：`join_min_account_days`（账号年龄）、`join_min_qq_level`（QQ 等级）、`join_require_qid`，命中动作可选 `decline / manual / pass`（`join_gate_action`）。
+- **资料缺失策略** `join_profile_missing`（`pass / manual / decline`，默认 `manual`）：只对**可能提供画像的通道**（OneBot）生效；官方/未知平台没有数据源，直接跳过，保证升级零行为变更。
+- **头像多模态复核** `join_avatar_review`（`off / approve_only / always`）：把头像 URL 作为图片送审，识别擦边图与引流二维码；只允许把「拟放行」收紧为拒绝，模型不可用时静默降级。
+- **画像缓存与限频**：`join_profile_cache_days / join_profile_qpm / join_profile_concurrency`，连续失败自动熔断 300 秒；只缓存成功画像。
+- **管理台**：「入群审批」视图新增配置区（含此前只能在配置里改的全局模式、置信度门槛、轮询间隔等），待审/历史表新增头像、QQ 等级、账号年龄列；画像缺失时显示「本通道不支持」。
+- **LLM 调用闸门真正生效**：单群 QPM（令牌窗口，超限先等待、等待上限内仍满则跳过本次判定）与全局并发（信号量），内容审核与入群审批共享同一套闸门与日预算/熔断。
+- 入群审批的 LLM 调用接入与内容审核**共享的日预算与熔断**闸门。
+
+### 🐛 修复
+- **`llm_qpm_per_group` / `llm_max_concurrency` 此前从未生效**：两个配置项在默认值、范围校验与 WebUI 里都存在，但 `src/moderator.py` 里只有一个从未被使用的 `_semaphore` 空壳字段，限频与并发**从未实现**（管理台怎么调都没用）。现已补全，并纳入统计（`skipped_by_qpm` / `rate_waits` / `peak_concurrency`）。
+- **OneBot 入群申请昵称恒为空**：加群请求事件本身不含 `username`，此前直接读该字段导致昵称为空；现在通过 `get_stranger_info` 补齐。
+
+### ⚙️ 变更
+- `join_requests` 表新增画像列（`profile_source / avatar_url / qq_level / account_age_days / reg_time / qid / profile_json / gate`），老库启动时自动补列。
+- 判定结果新增 `gate` 字段（`account_age / qq_level / qid / profile_missing / avatar`），便于审计与申诉回溯。
+- `docs/设计方案.md` 中「是否新号」的表述已修正：官方通道无账号年龄数据源。
+
+### ⚠️ 升级注意
+- 所有新增阈值**默认关闭**（`0 / off / manual`），升级后行为与 0.11.x 一致；官方通道不会产生任何画像相关请求。
+- `qqLevel` / `reg_time` 是 NapCat 扩展字段，换协议端可能拿不到；拿不到时按「资料缺失策略」处理，不会误判为可疑。
+- 画像属个人信息，随 `retention_join_days`（默认 90 天）一并清理。
+- **真机验证（NapCat v4.18.28 + QQ 3.2.32，2026-09-26）**：`get_stranger_info` 确实返回 `qqLevel`（整数，如 11/53）与 `reg_time`（Unix 秒，如 1641000818），`nickname` / `long_nick` / `sex` / `age` / `is_vip` / `vip_level` 均可用；`login_days` 恒为 0（官方已废弃）；`q1.qlogo.cn` 头像直链返回 640×640 合法 JPEG。
+- ⚠️ **`qid` 对真实账号普遍为空字符串**（实测机器人自身与普通账号都是 `""`）：不要开启 `join_require_qid`，否则会拒绝所有申请人。
+
+---
+
 ## [0.11.1] - 2026-09-23
 
 > 🐛 补齐三处漏判：全角/拉丁拼音写法、`扣群`口语写法、无外链的软性开群话术。
