@@ -385,6 +385,7 @@ def stats_text(summary: dict[str, Any], *, days: int) -> str:
     return "\n".join(lines)
 
 
+# keep-alive: 预留 API（当前无调用方，接线前请保留；扫描见 tools/deadcode_scan.py）——mutes_text
 def mutes_text(rows: list[dict[str, Any]]) -> str:
     """禁言台账文案。"""
     if not rows:
@@ -457,6 +458,7 @@ def join_list_text(pending: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+# keep-alive: 预留 API（当前无调用方，接线前请保留；扫描见 tools/deadcode_scan.py）——mute_usage_text
 def mute_usage_text() -> str:
     return "用法：禁言 @某人 [时长]，例如「禁言 @张三 10分钟」（默认 10 分钟，最长 30 天）。"
 
@@ -465,5 +467,6 @@ def format_duration(seconds: int | None) -> str:
     return human_duration(seconds)
 
 
+# keep-alive: 预留 API（当前无调用方，接线前请保留；扫描见 tools/deadcode_scan.py）——join_lines
 def join_lines(items: Iterable[str]) -> str:
     return "\n".join(str(item) for item in items)
