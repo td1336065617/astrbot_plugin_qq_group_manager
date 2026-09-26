@@ -107,7 +107,15 @@ DDL_STATEMENTS: tuple[str, ...] = (
       reason TEXT,
       blacklisted INTEGER NOT NULL DEFAULT 0,
       err_code INTEGER,
-      trace_id TEXT
+      trace_id TEXT,
+      profile_source TEXT,
+      avatar_url TEXT,
+      qq_level INTEGER,
+      account_age_days INTEGER,
+      reg_time INTEGER,
+      qid TEXT,
+      profile_json TEXT,
+      gate TEXT
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_join_group ON join_requests(group_id, ts_unix DESC)",
@@ -280,6 +288,18 @@ EVENT_EXTRA_COLUMNS: dict[str, str] = {
     "appeal_note": "TEXT",
 }
 
+#: 入群申请画像相关补列（申请人画像增强，0.12.0）
+JOIN_EXTRA_COLUMNS: dict[str, str] = {
+    "profile_source": "TEXT",
+    "avatar_url": "TEXT",
+    "qq_level": "INTEGER",
+    "account_age_days": "INTEGER",
+    "reg_time": "INTEGER",
+    "qid": "TEXT",
+    "profile_json": "TEXT",
+    "gate": "TEXT",
+}
+
 #: NOT NULL 列的兜底默认值（未提供时避免 IntegrityError）
 COLUMN_DEFAULTS: dict[str, Any] = {
     "ok": 0,
@@ -362,9 +382,10 @@ class AuditStore:
         # 老库补列（幂等）：失败只记 warning，不阻塞启动
         try:
             self._ensure_columns_sync(conn, "mod_events", EVENT_EXTRA_COLUMNS)
+            self._ensure_columns_sync(conn, "join_requests", JOIN_EXTRA_COLUMNS)
         except Exception as exc:  # pragma: no cover - 迁移失败不应阻塞启动
             if self.logger is not None:
-                self.logger.warning("审计库补列失败（申诉功能可能不可用）：%s", exc)
+                self.logger.warning("审计库补列失败（申诉/画像功能可能不可用）：%s", exc)
         conn.execute(
             "INSERT INTO meta(k, v) VALUES('schema_version', ?) "
             "ON CONFLICT(k) DO UPDATE SET v=excluded.v",
@@ -922,6 +943,14 @@ class AuditStore:
             "blacklisted",
             "err_code",
             "trace_id",
+            "profile_source",
+            "avatar_url",
+            "qq_level",
+            "account_age_days",
+            "reg_time",
+            "qid",
+            "profile_json",
+            "gate",
         )
         values = tuple(self._coerce(payload.get(column), column=column) for column in columns)
         async with self._lock:
