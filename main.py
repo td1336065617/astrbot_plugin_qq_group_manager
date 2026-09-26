@@ -108,7 +108,7 @@ from .src.utils import (
 from .src.web_api import EventBus, WebApi
 
 PLUGIN_NAME = "astrbot_plugin_qq_group_manager"
-VERSION = "0.13.7"
+VERSION = "0.13.8"
 
 STATE_FLUSH_INTERVAL = 30.0
 MAINTENANCE_INTERVAL = 3600.0
@@ -498,10 +498,7 @@ class QQGroupManager(Star):
                     "type": str(getattr(meta, "type", "") or ""),
                 }
             )
-        configured = str(self.store.get_setting(provider_setting) or "")
-        if not configured and provider_setting != "llm_provider_id":
-            # 入群审批没单独配模型时，跟随发言审核模型（WebUI 的默认选项）
-            configured = str(self.store.get_setting("llm_provider_id") or "")
+        configured = str(self.store.get_setting("llm_provider_id") or "")
         return {
             "items": items,
             "configured": configured,
@@ -646,7 +643,10 @@ class QQGroupManager(Star):
         except Exception:
             session_default = ""
         available = self.available_provider_ids()
-        configured = str(self.store.get_setting("llm_provider_id") or "")
+        configured = str(self.store.get_setting(provider_setting) or "")
+        if not configured and provider_setting != "llm_provider_id":
+            # 入群审批没单独配模型时，跟随发言审核模型（WebUI 的默认选项）
+            configured = str(self.store.get_setting("llm_provider_id") or "")
         provider_id = choose_provider_id(configured, session_default, available)
         if configured and provider_id != configured:
             self.logger.warning(

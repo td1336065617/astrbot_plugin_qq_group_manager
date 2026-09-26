@@ -266,3 +266,17 @@ def test_join_review_model_selector_is_wired():
 
     models_py = (PLUGIN_ROOT / "src/models.py").read_text(encoding="utf-8")
     assert '"join_llm_provider_id"' in models_py
+
+
+def test_no_undefined_names_in_main():
+    """静态守卫：main.py 里不能出现未定义名（用 ruff F821 判定）。"""
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [sys.executable, "-m", "ruff", "check", "--select", "F821", "--output-format=concise", "main.py"],
+        cwd=str(PLUGIN_ROOT),
+        capture_output=True,
+        text=True,
+    )
+    assert "F821" not in (result.stdout or ""), result.stdout
