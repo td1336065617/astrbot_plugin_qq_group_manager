@@ -241,3 +241,10 @@ def test_db_backup_route_is_get():
     app = app_js()
     assert "bridge.download('db/backup'" in app
     assert "bridge.download('db/maintain'" not in app
+
+
+def test_maintenance_gate_uses_beijing_date():
+    """BUG-043：每日维护的「当天」判定要用北京日期（不能用裸 datetime.now()）。"""
+    text = (PLUGIN_ROOT / "main.py").read_text(encoding="utf-8")
+    assert 'datetime.now(CN_TZ).strftime("%Y-%m-%d")' in text
+    assert 'datetime.now().strftime("%Y-%m-%d")' not in text

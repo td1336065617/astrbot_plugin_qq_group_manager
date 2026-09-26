@@ -94,6 +94,7 @@ from .src.rules import SCORE_RULES, RuleEngine
 from .src.scheduler import TaskScheduler, TaskSpec
 from .src.store import AstrBotKVBackend, PluginStore
 from .src.utils import (
+    CN_TZ,
     digest_text,
     mask_openid,
     mask_uid,
@@ -107,7 +108,7 @@ from .src.utils import (
 from .src.web_api import EventBus, WebApi
 
 PLUGIN_NAME = "astrbot_plugin_qq_group_manager"
-VERSION = "0.13.4"
+VERSION = "0.13.5"
 
 STATE_FLUSH_INTERVAL = 30.0
 MAINTENANCE_INTERVAL = 3600.0
@@ -368,7 +369,8 @@ class QQGroupManager(Star):
         """每日裁剪与统计归档。"""
         if self.audit is None:
             return
-        today = datetime.now().strftime("%Y-%m-%d")
+        # 用北京日期做「当天只跑一次」的键：与插件其它时间口径一致（BUG-043）
+        today = datetime.now(CN_TZ).strftime("%Y-%m-%d")
         if today == self._last_prune_day:
             return
         settings = self.store.settings()
