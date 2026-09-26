@@ -7,6 +7,25 @@
 
 ---
 
+## [0.13.2] - 2026-09-26
+
+> 🐛 修复：OneBot 通道把 aiocqhttp 的「魔法属性」当成机器人 QQ 号，协议端刷 Uin2Uid Error。
+
+### 🐛 修复
+- _self_id() 不再直接依赖 getattr(bot, "self_id")：aiocqhttp 的 Api.__getattr__ 对任意未知属性
+  返回 partial(call_action, 名字)，于是这个可调用对象被当成 QQ 号传给 get_group_member_info
+  （生产 NapCat 日志：Uin2Uid Error: 用户ID functools.partial(...) 不存在）。
+  现在只接受字符串/整数，取不到就返回空。
+- 新增 _ensure_self_id()：缓存缺失时向协议端要一次 get_login_info 并记下来；
+  仍取不到就不发 get_group_member_info，能力标记为「无法判定」，不再误判为失败/受限。
+- 影响：机器人群内角色与管理员能力不再误判，协议端不再被此类错误日志刷屏。
+
+### ✅ 验证
+- 新增 3 条用例（模拟 aiocqhttp 魔法属性 / 优先用事件缓存 / 取不到时跳过探测），
+  qqgm 全量 335 条用例通过。
+
+---
+
 ## [0.13.1] - 2026-09-26
 
 > 🐛 修复：官方通道的群名一直显示「（未获取群名）」——补上主动拉取与后台入口。

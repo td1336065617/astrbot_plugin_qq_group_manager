@@ -110,8 +110,27 @@ class OneBotChannel:
     def _self_id(self) -> str:
         if self.self_id:
             return self.self_id
-        value = getattr(self.bot, "self_id", "") if self.bot is not None else ""
-        return str(value or "")
+        if self.bot is None:
+            return ""
+        # 注意：aiocqhttp 的 Api.__getattr__ 对**任意未知属性**都返回
+        # partial(call_action, 名字)，因此 getattr(bot, "self_id") 拿到的是可调用对象。
+        # 生产上它被当成 QQ 号传给 get_group_member_info，NapCat 报 Uin2Uid Error（BUG-040）。
+        candidate = getattr(self.bot, "self_id", None)
+        if isinstance(candidate, (str, int)) and str(candidate).strip():
+            return str(candidate).strip()
+        return ""
+
+    async def _ensure_self_id(self) -> str:
+        """优先用事件缓存；取不到时向协议端要一次登录信息并缓存。"""
+        value = self._self_id()
+        if value:
+            return value
+        try:
+            info = await self._call("get_login_info")
+        except Exception:
+            return ""
+        self.self_id = str((info or {}).get("user_id") or "").strip()
+        return self.self_id
 
     async def _call(self, action: str, **params: Any) -> Any:
         if self.bot is None:
@@ -231,7 +250,7 @@ class OneBotChannel:
         return GroupProfile.from_api(str(group_id), payload)
 
     async def get_bot_state(self, group_id: str, *, caller: str = "probe") -> BotState:
-        self_id = self._self_id()
+        self_id = await self._ensure_self_id()
         role = ""
         if self_id:
             info = await self._call(
@@ -391,7 +410,7 @@ class OneBotChannel:
             mark(CAP_GROUP_INFO, False, str(exc))
 
         role = ""
-        self_id = self._self_id()
+        self_id = await self._ensure_self_id()
         if self_id:
             try:
                 info = await self._call(

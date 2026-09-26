@@ -336,3 +336,40 @@ def test_onebot_profile_without_qq_number_skips_call():
     profile = asyncio.run(ch.get_applicant_profile({"user_id": "not-a-number"}))
     assert profile["degraded"] is True
     assert bot.calls == []
+
+class _AiocqhttpLikeBot(FakeOneBotClient):
+    """模拟 aiocqhttp 的 Api.__getattr__：未知属性一律返回 partial(call_action, 名字)。
+
+    这正是生产事故（BUG-040）的现场：getattr(bot, "self_id") 拿到的是可调用对象。
+    """
+
+    def __getattr__(self, item):
+        import functools
+
+        return functools.partial(self.call_action, item)
+
+
+def test_onebot_self_id_rejects_aiocqhttp_magic_attribute():
+    bot = _AiocqhttpLikeBot(responses={"get_login_info": {"user_id": 1482759239}})
+    ch = OneBotChannel(bot, "onebot-1")
+    # 关键：不能把 partial(call_action, "self_id") 当 QQ 号
+    assert ch._self_id() == ""
+    assert asyncio.run(ch._ensure_self_id()) == "1482759239"
+    assert ch._self_id() == "1482759239"  # 已缓存
+    assert bot.calls[-1][0] == "get_login_info"
+
+
+def test_onebot_self_id_prefers_event_cache():
+    bot = _AiocqhttpLikeBot(responses={"get_login_info": {"user_id": 1}})
+    ch = OneBotChannel(bot, "onebot-1", self_id="12345")
+    assert ch._self_id() == "12345"
+    assert asyncio.run(ch._ensure_self_id()) == "12345"
+    assert bot.calls == []  # 有缓存就不发 API
+
+
+def test_onebot_probe_skips_dirty_self_id():
+    bot = _AiocqhttpLikeBot(responses={})  # get_login_info 返回 {}
+    ch = OneBotChannel(bot, "onebot-1")
+    asyncio.run(ch.probe("g1"))
+    # 取不到 self_id 时不得发 get_group_member_info（避免把脏值传给协议端）
+    assert all(action != "get_group_member_info" for action, _ in bot.calls)
