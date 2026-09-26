@@ -331,6 +331,9 @@ class QQGroupAPI:
         self._clock = clock
         self._cap_dedupe = max(0.0, float(capability_log_dedupe))
         self._cap_log_at: dict[tuple[str, str, bool], float] = {}
+        # 白名单/权限类失败的能力：一段时间内不再重复探测（避免对腾讯接口做无效调用与刷屏日志）
+        self._cap_unavailable: dict[tuple[str, str], tuple[float, str]] = {}
+        self._cap_unavailable_ttl = 6 * 3600.0
 
     # ---------------- 基础 ----------------
     @property
@@ -1004,6 +1007,32 @@ class QQGroupAPI:
         results: dict[str, CapabilityResult] = {}
         checked = now_ts()
 
+        def recently_unavailable(cap: str) -> bool:
+            """近期已知不可用（白名单/权限类）→ 直接复用结论，不再打接口。"""
+            item = self._cap_unavailable.get((str(group_id), cap))
+            if item is None:
+                return False
+            until, note = item
+            if until <= self._clock():
+                self._cap_unavailable.pop((str(group_id), cap), None)
+                return False
+            results[cap] = CapabilityResult(
+                capability=cap,
+                ok=False,
+                note=note,
+                checked_at=checked,
+                probed=False,
+            )
+            return True
+
+        def remember_unavailable(cap: str, exc) -> None:
+            if not getattr(exc, "denied", False):
+                return
+            self._cap_unavailable[(str(group_id), cap)] = (
+                self._clock() + self._cap_unavailable_ttl,
+                exc.hint or exc.message,
+            )
+
         def ok(cap: str, note: str = "") -> None:
             results[cap] = CapabilityResult(capability=cap, ok=True, note=note, checked_at=checked)
 
@@ -1057,18 +1086,28 @@ class QQGroupAPI:
         is_admin = state.is_admin if state else False
 
         if is_admin:
+            skip_restrict = recently_unavailable(CAP_MUTE)
+            if skip_restrict:                       # 结论同样适用于 recall（同一接口）
+                results.setdefault(
+                    CAP_RECALL,
+                    results[CAP_MUTE],
+                )
             try:
-                await self.get_restrict_setting(group_id, caller=caller)
-                ok(CAP_MUTE)
-                ok(CAP_RECALL, "群管理员可撤回普通成员消息")
+                if not skip_restrict:
+                    await self.get_restrict_setting(group_id, caller=caller)
+                    ok(CAP_MUTE)
+                    ok(CAP_RECALL, "群管理员可撤回普通成员消息")
             except QQApiError as exc:
                 fail(CAP_MUTE, exc)
                 fail(CAP_RECALL, exc)
-            try:
-                await self.join_request_list(group_id, limit=1, caller=caller)
-                ok(CAP_JOIN_REVIEW)
-            except QQApiError as exc:
-                fail(CAP_JOIN_REVIEW, exc)
+                remember_unavailable(CAP_MUTE, exc)
+            if not recently_unavailable(CAP_JOIN_REVIEW):
+                try:
+                    await self.join_request_list(group_id, limit=1, caller=caller)
+                    ok(CAP_JOIN_REVIEW)
+                except QQApiError as exc:
+                    fail(CAP_JOIN_REVIEW, exc)
+                    remember_unavailable(CAP_JOIN_REVIEW, exc)
         else:
             for cap in (CAP_MUTE, CAP_RECALL, CAP_JOIN_REVIEW):
                 results[cap] = CapabilityResult(
@@ -1078,17 +1117,21 @@ class QQGroupAPI:
                     checked_at=checked,
                 )
 
-        try:
-            await self.list_members(group_id, caller=caller)
-            ok(CAP_MEMBER_LIST)
-        except QQApiError as exc:
-            fail(CAP_MEMBER_LIST, exc)
+        if not recently_unavailable(CAP_MEMBER_LIST):
+            try:
+                await self.list_members(group_id, caller=caller)
+                ok(CAP_MEMBER_LIST)
+            except QQApiError as exc:
+                fail(CAP_MEMBER_LIST, exc)
+                remember_unavailable(CAP_MEMBER_LIST, exc)
 
-        try:
-            await self.get_blacklist(group_id, limit=1, caller=caller)
-            ok(CAP_BLACKLIST)
-        except QQApiError as exc:
-            fail(CAP_BLACKLIST, exc)
+        if not recently_unavailable(CAP_BLACKLIST):
+            try:
+                await self.get_blacklist(group_id, limit=1, caller=caller)
+                ok(CAP_BLACKLIST)
+            except QQApiError as exc:
+                fail(CAP_BLACKLIST, exc)
+                remember_unavailable(CAP_BLACKLIST, exc)
 
         results[CAP_REMOVE_MEMBER] = CapabilityResult(
             capability=CAP_REMOVE_MEMBER,
