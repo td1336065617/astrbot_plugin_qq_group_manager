@@ -4,7 +4,8 @@ from __future__ import annotations
 from typing import Any
 
 from ..api_client import QQApiError
-from ..models import CAPABILITIES, CapabilityResult
+from ..models import CAPABILITIES, ApplicantProfile, CapabilityResult
+from ..utils import now_ts
 
 
 class NullChannel:
@@ -31,6 +32,19 @@ class NullChannel:
             cap: CapabilityResult(capability=cap, ok=False, note="不支持的平台")
             for cap in CAPABILITIES
         }
+
+    async def get_applicant_profile(
+        self, request: dict, *, caller: str = "join_review"
+    ) -> dict[str, Any]:
+        """未知平台：返回降级画像，绝不让审批链炸掉。"""
+        return ApplicantProfile(
+            platform_id=self.platform_id,
+            kind="null",
+            source="none",
+            degraded=True,
+            note="不支持的平台通道",
+            fetched_at=now_ts(),
+        ).to_dict()
 
     def __getattr__(self, name: str) -> Any:
         async def _unsupported(*args: Any, **kwargs: Any) -> Any:

@@ -20,11 +20,12 @@ from ..models import (
     CAP_RECALL,
     CAP_REMOVE_MEMBER,
     CAPABILITIES,
+    ApplicantProfile,
     BotState,
     CapabilityResult,
     GroupProfile,
 )
-from ..utils import now_ts
+from ..utils import now_ts, optional_int
 
 WRITE_ACTIONS = {
     "delete_msg",
@@ -40,6 +41,24 @@ def _int(value: Any) -> Any:
     if text.lstrip("-").isdigit():
         return int(text)
     return text
+
+
+#: 头像直链（与 NapCat 内部使用的 qlogo CDN 同源）
+AVATAR_TEMPLATE = "https://q1.qlogo.cn/g?b=qq&nk={uin}&s=640"
+
+
+def _text(value: Any) -> str:
+    return "" if value is None else str(value).strip()
+
+
+def _qq_level(value: Any) -> int | None:
+    """QQ 等级：不同协议端可能是数字 / 字符串 / {"level": n} 三种形态。"""
+    if isinstance(value, dict):
+        for key in ("level", "qqLevel", "value", "lv"):
+            if key in value:
+                return _qq_level(value.get(key))
+        return None
+    return optional_int(value)
 
 
 class OneBotChannel:
@@ -267,6 +286,53 @@ class OneBotChannel:
             bucket.append(request)
         self._flag_index[flag] = request
         return request
+
+    async def get_applicant_profile(
+        self, request: dict, *, caller: str = "join_review"
+    ) -> dict[str, Any]:
+        """用 QQ 号调 get_stranger_info 取昵称/QQ等级/注册时间，并拼出头像直链。
+
+        协议端差异（qqLevel / reg_time 是 NapCat 扩展，标准 OneBot 可能没有）：
+        拿不到的字段一律留空并置 degraded，由上层按「资料缺失策略」处理。
+        """
+        payload = request if isinstance(request, dict) else {}
+        uid = _text(payload.get("user_id") or payload.get("member_openid"))
+        profile = ApplicantProfile(
+            platform_id=self.platform_id,
+            kind="onebot",
+            user_id=uid,
+            source="onebot_stranger",
+            degraded=True,
+        )
+        if not uid.isdigit():
+            profile.note = "缺少 QQ 号，无法获取申请人资料"
+            profile.fetched_at = now_ts()
+            return profile.to_dict()
+        try:
+            info = await self._call("get_stranger_info", user_id=_int(uid), no_cache=False)
+        except Exception as exc:
+            profile.failed = True
+            profile.note = f"get_stranger_info 失败：{type(exc).__name__}"
+            profile.fetched_at = now_ts()
+            return profile.to_dict()
+        data = info if isinstance(info, dict) else {}
+        profile.nickname = _text(
+            data.get("nickname") or data.get("long_nick") or data.get("remark")
+        )
+        profile.qq_level = _qq_level(data.get("qqLevel") or data.get("qq_level"))
+        profile.qid = _text(data.get("qid"))
+        profile.sex = _text(data.get("sex"))
+        profile.age = optional_int(data.get("age"))
+        profile.reg_time = optional_int(data.get("reg_time") or data.get("regTime"))
+        if profile.reg_time:
+            profile.account_age_days = max(0, (now_ts() - profile.reg_time) // 86400)
+        profile.is_vip = bool(data.get("is_vip"))
+        profile.vip_level = optional_int(data.get("vip_level")) or 0
+        profile.avatar_url = AVATAR_TEMPLATE.format(uin=uid)
+        profile.degraded = not (profile.nickname and profile.has_account_signals)
+        profile.note = "" if not profile.degraded else "协议端未返回昵称或账号等级/注册时间"
+        profile.fetched_at = now_ts()
+        return profile.to_dict()
 
     async def join_request_list(
         self,
