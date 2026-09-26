@@ -5,7 +5,7 @@ import asyncio
 
 import pytest
 
-from src.api_client import QQApiError
+from src.api_client import QQApiError, QQGroupAPI
 from src.models import (
     CAP_BLACKLIST,
     CAP_GROUP_INFO,
@@ -18,6 +18,7 @@ from src.platforms.null import NullChannel
 from src.platforms.official import OfficialChannel
 from src.platforms.onebot import OneBotChannel
 from src.platforms.router import ChannelRouter
+from tests.fakes import FakeTransport
 
 
 class FakeOneBotClient:
@@ -255,3 +256,83 @@ def test_onebot_error_message_uses_exception_type():
     with pytest.raises(QQApiError) as exc:
         asyncio.run(ch.recall_message("1", "2"))
     assert "_Boom" in str(exc.value)
+
+
+def test_official_channel_profile_is_degraded_without_requests():
+    transport = FakeTransport()
+    ch = OfficialChannel(QQGroupAPI(transport), "p1")
+    profile = asyncio.run(
+        ch.get_applicant_profile({"member_openid": "o1", "username": "张三"})
+    )
+    assert profile["nickname"] == "张三"
+    assert profile["degraded"] is True
+    assert profile["source"] == "official_request"
+    assert profile["avatar_url"] == ""
+    assert transport.calls == []
+
+
+def test_null_channel_profile_does_not_raise():
+    ch = NullChannel("p1")
+    profile = asyncio.run(ch.get_applicant_profile({"member_openid": "o1"}))
+    assert profile["degraded"] is True
+    assert profile["kind"] == "null"
+
+
+def test_onebot_profile_mapping_and_avatar():
+    bot = FakeOneBotClient(
+        responses={
+            "get_stranger_info": {
+                "nickname": "小号",
+                "qqLevel": 12,
+                "reg_time": 1600000000,
+                "qid": "q-1",
+                "sex": "male",
+                "age": 20,
+            }
+        }
+    )
+    ch = OneBotChannel(bot, "onebot-1")
+    profile = asyncio.run(ch.get_applicant_profile({"user_id": "10001"}))
+    assert profile["nickname"] == "小号"
+    assert profile["qq_level"] == 12
+    assert profile["qid"] == "q-1"
+    assert profile["account_age_days"] > 0
+    assert profile["avatar_url"] == "https://q1.qlogo.cn/g?b=qq&nk=10001&s=640"
+    assert profile["degraded"] is False
+    assert bot.calls[0][0] == "get_stranger_info"
+
+
+def test_onebot_profile_degrades_when_extensions_missing():
+    bot = FakeOneBotClient(responses={"get_stranger_info": {"nickname": "标准协议端"}})
+    ch = OneBotChannel(bot, "onebot-1")
+    profile = asyncio.run(ch.get_applicant_profile({"user_id": "10001"}))
+    assert profile["qq_level"] is None
+    assert profile["account_age_days"] is None
+    assert profile["degraded"] is True
+
+
+def test_onebot_profile_qq_level_shapes():
+    cases = [(16, 16), ("16", 16), ({"level": 16}, 16), (None, None), ("x", None)]
+    for raw, expected in cases:
+        bot = FakeOneBotClient(
+            responses={"get_stranger_info": {"nickname": "n", "qqLevel": raw}}
+        )
+        ch = OneBotChannel(bot, "onebot-1")
+        profile = asyncio.run(ch.get_applicant_profile({"user_id": "10001"}))
+        assert profile["qq_level"] == expected, raw
+
+
+def test_onebot_profile_failure_degrades():
+    bot = FakeOneBotClient(error=RuntimeError("boom"))
+    ch = OneBotChannel(bot, "onebot-1")
+    profile = asyncio.run(ch.get_applicant_profile({"user_id": "10001"}))
+    assert profile["degraded"] is True
+    assert "get_stranger_info 失败" in profile["note"]
+
+
+def test_onebot_profile_without_qq_number_skips_call():
+    bot = FakeOneBotClient()
+    ch = OneBotChannel(bot, "onebot-1")
+    profile = asyncio.run(ch.get_applicant_profile({"user_id": "not-a-number"}))
+    assert profile["degraded"] is True
+    assert bot.calls == []

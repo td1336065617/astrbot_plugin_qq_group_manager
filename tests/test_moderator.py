@@ -297,3 +297,139 @@ def test_context_reaches_provider_prompt():
     # 提示词要求先写 analysis 再给结论
     assert "analysis" in seen["system"]
     assert "evidence" in seen["system"]
+
+
+def test_gate_reason_and_note_call_share_budget_and_breaker():
+    moderator, _calls = make_moderator()
+    assert moderator.gate_reason() == ""
+
+    moderator.note_call(ok=True)
+    assert moderator.stats.day_calls == 1
+    assert moderator.stats.calls == 1
+
+    for _ in range(3):
+        moderator.note_call(ok=False, error="boom")
+    assert moderator.stats.failures == 3
+    assert moderator.circuit_open() is True
+    assert moderator.gate_reason() == "LLM 审核处于熔断期"
+
+
+def test_gate_reason_reports_budget_exhausted():
+    moderator, _calls = make_moderator(llm_daily_budget=1)
+    moderator.note_call(ok=True)
+    assert "预算" in moderator.gate_reason()
+
+
+def test_gate_reason_without_provider():
+    moderator = LLMModerator(None, settings_getter=make_settings())
+    assert moderator.gate_reason() == "未配置可用的对话模型"
+
+
+
+# --------------------------------------------------------------------------
+# 调用闸门：单群 QPM（令牌窗口）+ 全局并发（信号量）
+# --------------------------------------------------------------------------
+def make_gated_moderator(**settings):
+    calls = {'n': 0}
+    slept: list[float] = []
+
+    async def provider_call(request, system_prompt, user_prompt):
+        calls['n'] += 1
+        return VALID
+
+    async def fake_sleep(seconds):
+        slept.append(seconds)
+
+    moderator = LLMModerator(
+        provider_call,
+        settings_getter=make_settings(**settings),
+        clock=FakeClock().monotonic,
+        sleep=fake_sleep,
+    )
+    return moderator, calls, slept
+
+
+def test_qpm_per_group_limits_and_skips():
+    moderator, calls, slept = make_gated_moderator(llm_qpm_per_group=2)
+    run(moderator.judge(ModerationRequest(group_id='g1', text='一')))
+    run(moderator.judge(ModerationRequest(group_id='g1', text='二')))
+    assert calls['n'] == 2
+
+    verdict = run(moderator.judge(ModerationRequest(group_id='g1', text='三')))
+    assert calls['n'] == 2, '超出单群 QPM 后不应再调用模型'
+    assert verdict.verdict == 'review'
+    assert 'QPM' in verdict.reason
+    assert slept and slept[0] > 0
+    assert moderator.stats.skipped_by_qpm == 1
+    assert moderator.stats.rate_waits == 1
+
+    run(moderator.judge(ModerationRequest(group_id='g2', text='四')))
+    assert calls['n'] == 3, '按群独立计桶，另一个群不应受影响'
+
+
+def test_qpm_window_allows_after_clock_advances():
+    calls = {'n': 0}
+
+    async def provider_call(request, system_prompt, user_prompt):
+        calls['n'] += 1
+        return VALID
+
+    clock = FakeClock()
+    moderator = LLMModerator(
+        provider_call,
+        settings_getter=make_settings(llm_qpm_per_group=1),
+        clock=clock.monotonic,
+        sleep=lambda _s: asyncio.sleep(0),
+    )
+    run(moderator.judge(ModerationRequest(group_id='g1', text='一')))
+    assert calls['n'] == 1
+    clock.now += 61.0
+    run(moderator.judge(ModerationRequest(group_id='g1', text='二')))
+    assert calls['n'] == 2
+    assert moderator.stats.skipped_by_qpm == 0
+
+
+def test_max_concurrency_is_enforced():
+    state = {'started': 0, 'inflight': 0, 'peak': 0}
+    release = asyncio.Event()
+
+    async def provider_call(request, system_prompt, user_prompt):
+        state['started'] += 1
+        state['inflight'] += 1
+        state['peak'] = max(state['peak'], state['inflight'])
+        await release.wait()
+        state['inflight'] -= 1
+        return VALID
+
+    moderator = LLMModerator(
+        provider_call,
+        settings_getter=make_settings(llm_max_concurrency=2, llm_qpm_per_group=100),
+        clock=FakeClock().monotonic,
+        sleep=lambda _s: asyncio.sleep(0),
+    )
+
+    async def scenario():
+        tasks = [
+            asyncio.create_task(
+                moderator.judge(ModerationRequest(group_id='g' + str(i), text='t' + str(i)))
+            )
+            for i in range(5)
+        ]
+        await asyncio.sleep(0.05)
+        started = state['started']
+        release.set()
+        await asyncio.gather(*tasks)
+        return started
+
+    started = run(scenario())
+    assert started == 2, '并发上限为 2，实际同时发起 ' + str(started) + ' 个请求'
+    assert state['peak'] <= 2
+    assert moderator.stats.peak_concurrency <= 2
+
+
+def test_acquire_release_are_paired_on_failure():
+    moderator, _calls = make_moderator(response=RuntimeError('boom'))
+    run(moderator.judge(ModerationRequest(group_id='g1', text='一')))
+    assert moderator._inflight == 0
+    run(moderator.judge(ModerationRequest(group_id='g1', text='二')))
+    assert moderator._inflight == 0

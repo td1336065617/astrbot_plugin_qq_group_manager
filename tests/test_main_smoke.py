@@ -89,6 +89,7 @@ def test_web_api_registers_prefixed_routes():
         prefix + "joins",
         prefix + "joins/fetch",
         prefix + "joins/decide",
+        prefix + "joins/settings",
         prefix + "policy",
     ):
         assert expected in paths, expected
@@ -104,3 +105,24 @@ def test_event_bus_pub_sub():
     assert queue.get_nowait()["kind"] == "events"
     bus.unsubscribe("audit", queue)
     assert bus.subscriber_count("audit") == 0
+
+
+def test_join_pending_notification_contains_profile():
+    main = _import_main()
+    text = main.QQGroupManager._render_notification(
+        None,
+        "join_pending",
+        {
+            "group_name": "测试群",
+            "username": "张三",
+            "member_openid": "10001",
+            "verify_message": "你好",
+            "risk_tips": "",
+            "suggestion": "信息正常",
+            "qq_level": 16,
+            "account_age_days": 30,
+        },
+    )
+    assert "等级 16" in text
+    assert "账号 30 天" in text
+    assert "10001" not in text  # openid 必须脱敏

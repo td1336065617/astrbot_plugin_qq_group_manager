@@ -64,3 +64,13 @@ def test_clamp_helpers():
     assert clamp_int(True, 7, 1, 10) == 7
     assert clamp_float(1.5, 0.0, 0.0, 1.0) == 1.0
     assert clamp_float("bad", 0.5, 0.0, 1.0) == 0.5
+
+
+def test_mask_uid_covers_qq_numbers_and_openids():
+    from src.utils import mask_uid
+
+    assert mask_uid("10001") == "100…01"
+    assert mask_uid("A" * 32) == "AAAAAA…AAAA"
+    assert mask_uid("123") == "123"
+    assert mask_uid(None) == ""
+    assert "10001" not in mask_uid("10001")

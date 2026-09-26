@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 
-
 from src.links import qr_risk_text
 from src.models import Verdict
 from src.moderator import parse_verdict

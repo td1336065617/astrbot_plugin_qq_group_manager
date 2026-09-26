@@ -113,3 +113,68 @@ def test_appeals_view_contract():
     assert defaults["appeal_enabled"] is True
     assert defaults["appeal_auto_whitelist"] is False
     assert defaults["appeal_notify"] is True
+
+
+def test_joins_settings_payload_keys_are_known_settings():
+    text = app_js()
+    block = re.search(r"bridge\.apiPost\('joins/settings', \{(.*?)\n      \}\);", text, re.S)
+    assert block, "未找到入群审批配置 payload"
+    keys = re.findall(r"^\s{8}([a-z_]+):", block.group(1), re.M)
+    assert keys, "入群审批配置 payload 解析为空"
+    known = default_settings()
+    missing = [key for key in keys if key not in known]
+    assert not missing, f"入群审批配置提交了未声明的配置键（保存后会被丢弃）：{missing}"
+    for key in (
+        "join_profile_enabled",
+        "join_min_account_days",
+        "join_min_qq_level",
+        "join_require_qid",
+        "join_gate_action",
+        "join_profile_missing",
+        "join_avatar_review",
+        "join_avatar_only_below",
+        "join_profile_cache_days",
+        "join_profile_qpm",
+        "join_profile_concurrency",
+    ):
+        assert key in keys, f"入群审批配置缺少 payload 键：{key}"
+
+
+def test_joins_view_renders_profile_columns():
+    text = app_js()
+    start = text.index("async function viewJoins")
+    end = text.index("async function viewAppeals", start)
+    block = text[start:end]
+    for token in ("'QQ等级'", "'账号年龄'", "avatar_url", "fmtProfileNumber", "fmtProfileAge"):
+        assert token in block, f"入群审批视图缺少：{token}"
+    assert "本通道不支持" in text, "画像缺失时未给出「本通道不支持」提示"
+
+
+def test_join_profile_settings_roundtrip():
+    from src.store import normalize_settings
+
+    normalized = normalize_settings(
+        {
+            "join_min_account_days": 3,
+            "join_min_qq_level": 8,
+            "join_require_qid": True,
+            "join_gate_action": "manual",
+            "join_profile_missing": "manual",
+            "join_avatar_review": "approve_only",
+            "join_avatar_only_below": 0.9,
+            "join_profile_cache_days": 3,
+            "join_profile_qpm": 20,
+            "join_profile_concurrency": 3,
+        }
+    )
+    assert normalized["join_min_account_days"] == 3
+    assert normalized["join_min_qq_level"] == 8
+    assert normalized["join_require_qid"] is True
+    assert normalized["join_gate_action"] == "manual"
+    assert normalized["join_profile_missing"] == "manual"
+    assert normalized["join_avatar_review"] == "approve_only"
+    assert normalized["join_avatar_only_below"] == 0.9
+    assert normalized["join_profile_cache_days"] == 3
+    assert normalized["join_profile_qpm"] == 20
+    assert normalized["join_profile_concurrency"] == 3
+

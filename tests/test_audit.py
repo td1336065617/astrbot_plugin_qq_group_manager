@@ -167,6 +167,51 @@ def test_queue_overflow_counts_dropped(tmp_path):
     run(scenario())
 
 
+def test_join_profile_columns_written_and_read(tmp_path):
+    async def scenario():
+        store = await make_store(tmp_path)
+        await store.record_join(
+            join_request_id="j1",
+            group_id="g1",
+            member_openid="10001",
+            username="张三",
+            decision="decline",
+            decided_by="rule",
+            profile_source="onebot_stranger",
+            avatar_url="https://q1.qlogo.cn/g?b=qq&nk=10001&s=640",
+            qq_level=16,
+            account_age_days=3,
+            reg_time=1700000000,
+            qid="qid-1",
+            profile_json='{"qq_level": 16}',
+            gate="account_age",
+        )
+        await store.flush()
+        row = await store.get_join("j1")
+        assert row is not None
+        assert row["qq_level"] == 16
+        assert row["account_age_days"] == 3
+        assert row["reg_time"] == 1700000000
+        assert row["qid"] == "qid-1"
+        assert row["profile_source"] == "onebot_stranger"
+        assert row["avatar_url"].endswith("nk=10001&s=640")
+        assert row["gate"] == "account_age"
+        await store.close()
+
+    run(scenario())
+
+
+def test_join_profile_migration_is_idempotent(tmp_path):
+    async def scenario():
+        path = tmp_path / "audit.db"
+        for _ in range(2):
+            store = AuditStore(path, flush_interval=0.05)
+            await store.initialize()
+            await store.close()
+
+    run(scenario())
+
+
 def test_backup_creates_file(tmp_path):
     async def scenario():
         store = await make_store(tmp_path)

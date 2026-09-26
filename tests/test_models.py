@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from src.models import (
+    ApplicantProfile,
     BotState,
     CapabilityResult,
     GroupConfig,
@@ -67,6 +68,45 @@ def test_verdict_clamped():
     assert verdict.confidence == 1.0
     assert len(verdict.reason) == 200
     assert verdict.is_violation is False
+
+
+def test_applicant_profile_roundtrip():
+    profile = ApplicantProfile(
+        user_id="10001", nickname="张三", qq_level=16, account_age_days=120, avatar_url="http://a"
+    )
+    assert profile.has_account_signals is True
+    restored = ApplicantProfile.from_dict(profile.to_dict())
+    assert restored.user_id == "10001"
+    assert restored.qq_level == 16
+    assert restored.account_age_days == 120
+    assert restored.degraded is True
+
+
+def test_applicant_profile_dirty_data_is_safe():
+    profile = ApplicantProfile.from_dict(
+        {"qq_level": "16", "account_age_days": "x", "reg_time": None, "degraded": 0}
+    )
+    assert profile.qq_level == 16
+    assert profile.account_age_days is None
+    assert profile.reg_time is None
+    assert profile.degraded is False
+    assert ApplicantProfile.from_dict(None).user_id == ""
+    assert ApplicantProfile.from_dict("boom").degraded is True
+
+
+def test_applicant_profile_without_account_signals():
+    assert ApplicantProfile(nickname="仅昵称").has_account_signals is False
+
+
+def test_join_profile_settings_default_to_off():
+    settings = default_settings()
+    assert settings["join_profile_enabled"] is True
+    assert settings["join_min_account_days"] == 0
+    assert settings["join_min_qq_level"] == 0
+    assert settings["join_require_qid"] is False
+    assert settings["join_gate_action"] == "decline"
+    assert settings["join_profile_missing"] == "manual"
+    assert settings["join_avatar_review"] == "off"
 
 
 def test_default_settings_is_safe():

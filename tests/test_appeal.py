@@ -470,7 +470,7 @@ def test_appeal_web_routes_registered():
         for line in metadata.splitlines()
         if line.startswith("version:")
     )
-    assert main.VERSION == declared
+    assert declared == main.VERSION
 
 
 # 13. summary_by_category / summary_by_group（B2 周报聚合基础）

@@ -4,7 +4,14 @@ from __future__ import annotations
 
 import asyncio
 
-from src.store import KEY_GROUPS, KEY_SETTINGS, PluginStore, normalize_settings
+from src.store import (
+    KEY_GROUPS,
+    KEY_PROFILE_CACHE,
+    KEY_SETTINGS,
+    PluginStore,
+    normalize_settings,
+)
+from src.utils import now_ts
 from tests.fakes import FakeKV
 
 
@@ -108,6 +115,52 @@ def test_prompt_and_flood_settings_are_editable():
     # 越界值被钳制、类型错误回退默认
     assert normalize_settings({"flood_threshold": 999})["flood_threshold"] == 100
     assert normalize_settings({"flood_threshold": "x"})["flood_threshold"] == 8
+
+
+def test_profile_cache_roundtrip_and_persistence():
+    async def scenario():
+        kv = FakeKV()
+        store = PluginStore(kv)
+        await store.load()
+        await store.put_profile(
+            "p:10001", {"user_id": "10001", "qq_level": 16, "fetched_at": now_ts()}
+        )
+        await store.flush()
+        assert store.get_profile("p:10001")["qq_level"] == 16
+        assert kv.data[KEY_PROFILE_CACHE]["p:10001"]["qq_level"] == 16
+        reloaded = PluginStore(kv)
+        await reloaded.load()
+        assert reloaded.get_profile("p:10001")["qq_level"] == 16
+        assert reloaded.get_profile("missing") is None
+
+    asyncio.run(scenario())
+
+
+def test_drop_expired_profiles():
+    async def scenario():
+        store = PluginStore(FakeKV())
+        await store.load()
+        await store.put_profile("old", {"fetched_at": 1})
+        await store.put_profile("new", {"fetched_at": now_ts()})
+        assert await store.drop_expired_profiles(7) == 1
+        assert store.get_profile("old") is None
+        assert store.get_profile("new") is not None
+        assert await store.drop_expired_profiles(0) == 0
+
+    asyncio.run(scenario())
+
+
+def test_normalize_join_profile_settings():
+    assert normalize_settings({"join_profile_missing": "bad"})["join_profile_missing"] == "manual"
+    assert normalize_settings({"join_gate_action": "bad"})["join_gate_action"] == "decline"
+    assert normalize_settings({"join_avatar_review": "bad"})["join_avatar_review"] == "off"
+    assert normalize_settings({"join_profile_enabled": 0})["join_profile_enabled"] is False
+    assert normalize_settings({"join_require_qid": 1})["join_require_qid"] is True
+    assert normalize_settings({"join_min_account_days": 10**9})["join_min_account_days"] == 3650
+    assert normalize_settings({"join_min_qq_level": 9999})["join_min_qq_level"] == 144
+    assert normalize_settings({"join_avatar_only_below": 9})["join_avatar_only_below"] == 1.0
+    assert normalize_settings({"join_profile_qpm": 0})["join_profile_qpm"] == 1
+    assert normalize_settings({"join_profile_concurrency": 99})["join_profile_concurrency"] == 8
 
 
 def test_prompt_settings_roundtrip_through_store():
