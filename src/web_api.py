@@ -822,6 +822,7 @@ class WebApi:
             "join_min_confidence",
             "join_decline_blacklist",
             "join_trust_inviter",
+            "join_llm_provider_id",
             "join_profile_enabled",
             "join_min_account_days",
             "join_min_qq_level",

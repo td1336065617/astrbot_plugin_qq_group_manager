@@ -108,7 +108,7 @@ from .src.utils import (
 from .src.web_api import EventBus, WebApi
 
 PLUGIN_NAME = "astrbot_plugin_qq_group_manager"
-VERSION = "0.13.6"
+VERSION = "0.13.7"
 
 STATE_FLUSH_INTERVAL = 30.0
 MAINTENANCE_INTERVAL = 3600.0
@@ -498,7 +498,10 @@ class QQGroupManager(Star):
                     "type": str(getattr(meta, "type", "") or ""),
                 }
             )
-        configured = str(self.store.get_setting("llm_provider_id") or "")
+        configured = str(self.store.get_setting(provider_setting) or "")
+        if not configured and provider_setting != "llm_provider_id":
+            # 入群审批没单独配模型时，跟随发言审核模型（WebUI 的默认选项）
+            configured = str(self.store.get_setting("llm_provider_id") or "")
         return {
             "items": items,
             "configured": configured,
@@ -627,8 +630,14 @@ class QQGroupManager(Star):
     # LLM 绑定与通知
     # ------------------------------------------------------------------
     async def _llm_call(
-        self, request: ModerationRequest, system_prompt: str, user_prompt: str
+        self,
+        request: ModerationRequest,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        provider_setting: str = "llm_provider_id",
     ) -> str:
+        """provider_setting 可指定用哪个设置项挑模型（入群审批用 join_llm_provider_id）。"""
         """调用 AstrBot 已配置的 LLM（复用官方 SDK）。"""
         umo = request.umo or str(self.store.get_setting("notify_session") or "")
         session_default = ""
@@ -687,7 +696,10 @@ class QQGroupManager(Star):
                 umo=str(self.store.get_setting("notify_session") or ""),
                 image_urls=list(image_urls or []),
             )
-            text = await self._llm_call(request, system_prompt, user_prompt)
+            text = await self._llm_call(
+                request, system_prompt, user_prompt,
+                provider_setting="join_llm_provider_id",
+            )
             ok = True
             return text
         except Exception as exc:

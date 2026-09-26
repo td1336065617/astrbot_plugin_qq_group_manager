@@ -1656,6 +1656,19 @@ async function viewJoins(root) {
     return { node: el('label', { class: 'field' }, [el('span', { text: label }), input]), input };
   };
   const expectedAnswer = textField('期望答案（留空=不校验，子串匹配）', settings.join_expected_answer, '例：ACM');
+  const joinProviderInfo = config.providers || {};
+  const joinProviderSelect = el('select');
+  joinProviderSelect.appendChild(el('option', { value: '', text: '跟随发言审核模型' }));
+  (joinProviderInfo.items || []).forEach((item) => {
+    joinProviderSelect.appendChild(el('option', {
+      value: item.id,
+      text: (item.model || item.id) + (item.type ? '（' + item.type + '）' : ''),
+      selected: item.id === (settings.join_llm_provider_id || '') ? 'selected' : null,
+    }));
+  });
+  const joinProviderHint = el('p', { class: 'card-desc', text: settings.join_llm_provider_id
+    ? '入群审批当前使用：' + settings.join_llm_provider_id
+    : '入群审批当前跟随发言审核模型（' + (joinProviderInfo.last_used || joinProviderInfo.configured || '会话默认模型') + '）' });
   const answerKeywords = areaField('答案关键词（一行一个，命中任一即可）', (settings.join_answer_keywords || []).join('\n'), '例：ACM\n校赛');
   const answerRegex = textField('答案正则（留空=不校验）', settings.join_answer_regex, '例：^AC[0-9]{4}$');
   const answerAction = selectField('答案校验未通过时', [['manual', '转人工（推荐）'], ['decline', '自动拒绝'], ['pass', '放行']], settings.join_answer_action || 'manual');
@@ -1668,6 +1681,7 @@ async function viewJoins(root) {
         join_require_qid: requireQid.input.checked,
         join_decline_blacklist: declineBlacklist.input.checked,
         join_trust_inviter: trustInviter.input.checked,
+        join_llm_provider_id: joinProviderSelect.value,
         join_min_account_days: Number(minDays.input.value),
         join_min_qq_level: Number(minLevel.input.value),
         join_gate_action: gateAction.input.value,
@@ -1699,6 +1713,8 @@ async function viewJoins(root) {
       el('div', { class: 'row' }, [avatarReview.node, avatarBelow.node, minConfidence.node, pollInterval.node]),
       el('div', { class: 'row' }, [cacheDays.node, profileQpm.node, profileConcurrency.node]),
       el('div', { class: 'row' }, [expectedAnswer.node, answerKeywords.node]),
+      el('div', { class: 'row' }, [el('label', { class: 'field' }, [el('span', { text: '审核模型' }), joinProviderSelect])]),
+      joinProviderHint,
       el('div', { class: 'row' }, [answerRegex.node, answerAction.node, answerCase.node]),
       el('div', { class: 'field-actions' }, [saveJoinSettings]),
     ]));

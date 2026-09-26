@@ -248,3 +248,21 @@ def test_maintenance_gate_uses_beijing_date():
     text = (PLUGIN_ROOT / "main.py").read_text(encoding="utf-8")
     assert 'datetime.now(CN_TZ).strftime("%Y-%m-%d")' in text
     assert 'datetime.now().strftime("%Y-%m-%d")' not in text
+
+
+def test_join_review_model_selector_is_wired():
+    """入群审批必须能选模型（BUG-052）：前端选择器 + 保存字段 + 后端白名单与回退。"""
+    js = (PLUGIN_ROOT / "pages/manage/app.js").read_text(encoding="utf-8")
+    assert "joinProviderSelect" in js
+    assert "跟随发言审核模型" in js
+    assert "join_llm_provider_id: joinProviderSelect.value" in js
+
+    api = (PLUGIN_ROOT / "src/web_api.py").read_text(encoding="utf-8")
+    assert '"join_llm_provider_id"' in api
+
+    main_py = (PLUGIN_ROOT / "main.py").read_text(encoding="utf-8")
+    assert 'provider_setting="join_llm_provider_id"' in main_py
+    assert 'provider_setting != "llm_provider_id"' in main_py
+
+    models_py = (PLUGIN_ROOT / "src/models.py").read_text(encoding="utf-8")
+    assert '"join_llm_provider_id"' in models_py

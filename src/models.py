@@ -442,6 +442,7 @@ def default_settings() -> dict[str, Any]:
         "join_min_confidence": 0.8,
         "join_decline_blacklist": True,
         "join_trust_inviter": False,
+        "join_llm_provider_id": "",   # 入群审批专用模型；留空=跟随发言审核模型
         # 入群申请人画像（默认全关：升级后行为与旧版一致）
         "join_profile_enabled": True,
         "join_min_account_days": 0,
