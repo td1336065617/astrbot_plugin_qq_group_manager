@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from .utils import clamp_float, clamp_int, now_ts
+from .utils import clamp_float, clamp_int, now_ts, optional_int
 
 # --------------------------------------------------------------------------
 # 能力标识
@@ -81,6 +81,12 @@ BLACKLIST_PAGE_MAX = 100
 
 MODERATION_MODES: tuple[str, ...] = ("strict", "standard", "lenient", "log_only")
 JOIN_REVIEW_MODES: tuple[str, ...] = ("off", "strict", "standard", "human")
+#: 画像不可得时的策略：pass 放行 / manual 转人工 / decline 拒绝
+JOIN_PROFILE_MISSING_MODES: tuple[str, ...] = ("pass", "manual", "decline")
+#: 画像硬规则命中后的动作
+JOIN_GATE_ACTIONS: tuple[str, ...] = ("decline", "manual", "pass")
+#: 头像多模态复核：off 关闭 / approve_only 仅复核拟放行的 / always 每次
+JOIN_AVATAR_REVIEW_MODES: tuple[str, ...] = ("off", "approve_only", "always")
 
 IMAGE_REVIEW_MODES: tuple[str, ...] = ("off", "with_text", "always")
 
@@ -235,6 +241,68 @@ class GroupConfig:
 
 
 @dataclass(slots=True)
+class ApplicantProfile:
+    """入群申请人画像。
+
+    OneBot（NapCat）可拿到账号等级与注册时间，官方通道只有昵称 —— 拿不到的字段
+    一律留 None 并置 degraded=True，由上层按「资料缺失策略」处理，绝不臆测。
+    """
+
+    platform_id: str = ""
+    kind: str = ""
+    user_id: str = ""
+    nickname: str = ""
+    avatar_url: str = ""
+    qq_level: int | None = None
+    qid: str = ""
+    sex: str = ""
+    age: int | None = None
+    reg_time: int | None = None
+    account_age_days: int | None = None
+    is_vip: bool = False
+    vip_level: int = 0
+    source: str = "none"  # onebot_stranger / official_request / cache / none
+    degraded: bool = True
+    #: True 表示「远端调用失败」；degraded 也可能只是协议端没有该字段
+    failed: bool = False
+    note: str = ""
+    fetched_at: int = 0
+
+    @property
+    def has_account_signals(self) -> bool:
+        """是否拿到账号维度信号（等级或注册时间）。"""
+        return self.qq_level is not None or self.account_age_days is not None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, payload: Any) -> ApplicantProfile:
+        if not isinstance(payload, dict):
+            return cls()
+        return cls(
+            platform_id=str(payload.get("platform_id") or ""),
+            kind=str(payload.get("kind") or ""),
+            user_id=str(payload.get("user_id") or ""),
+            nickname=str(payload.get("nickname") or ""),
+            avatar_url=str(payload.get("avatar_url") or ""),
+            qq_level=optional_int(payload.get("qq_level")),
+            qid=str(payload.get("qid") or ""),
+            sex=str(payload.get("sex") or ""),
+            age=optional_int(payload.get("age")),
+            reg_time=optional_int(payload.get("reg_time")),
+            account_age_days=optional_int(payload.get("account_age_days")),
+            is_vip=bool(payload.get("is_vip")),
+            vip_level=optional_int(payload.get("vip_level")) or 0,
+            source=str(payload.get("source") or "none"),
+            degraded=bool(payload.get("degraded", True)),
+            failed=bool(payload.get("failed")),
+            note=str(payload.get("note") or ""),
+            fetched_at=clamp_int(payload.get("fetched_at"), 0, 0, 2**31),
+        )
+
+
+@dataclass(slots=True)
 class ActionResult:
     """一次处置动作的执行结果。"""
 
@@ -372,6 +440,18 @@ def default_settings() -> dict[str, Any]:
         "join_min_confidence": 0.8,
         "join_decline_blacklist": True,
         "join_trust_inviter": False,
+        # 入群申请人画像（默认全关：升级后行为与旧版一致）
+        "join_profile_enabled": True,
+        "join_min_account_days": 0,
+        "join_min_qq_level": 0,
+        "join_require_qid": False,
+        "join_gate_action": "decline",
+        "join_profile_missing": "manual",
+        "join_avatar_review": "off",
+        "join_avatar_only_below": 0.95,
+        "join_profile_cache_days": 7,
+        "join_profile_qpm": 30,
+        "join_profile_concurrency": 2,
         "notify_session": "",
         # 申诉闭环：默认接受申诉；误判自学习白名单默认关（避免被社工利用）
         "appeal_enabled": True,
@@ -407,6 +487,12 @@ NUMERIC_BOUNDS: dict[str, tuple[float, float]] = {
     "max_mute_days": (1, 30),
     "join_poll_interval": (30, 600),
     "join_min_confidence": (0.0, 1.0),
+    "join_min_account_days": (0, 3650),
+    "join_min_qq_level": (0, 144),
+    "join_avatar_only_below": (0.0, 1.0),
+    "join_profile_cache_days": (0, 90),
+    "join_profile_qpm": (1, 300),
+    "join_profile_concurrency": (1, 8),
     "retention_events_days": (1, 365),
     "retention_api_days": (1, 365),
     "retention_capability_days": (1, 365),

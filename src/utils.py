@@ -82,6 +82,20 @@ def mask_openid(openid: Any) -> str:
     return value[:6] + "…" + value[-4:]
 
 
+def mask_uid(value: Any) -> str:
+    """脱敏用户标识：QQ 号（短数字）与 openid（长串）都适用。
+
+    mask_openid 只处理超长 openid；OneBot 通道的 member_openid 就是真实 QQ 号，
+    长度不足以触发脱敏，因此群内文案与通知统一改用本函数。
+    """
+    text = "" if value is None else str(value)
+    if len(text) <= 4:
+        return text
+    if len(text) <= 12:
+        return text[:3] + "…" + text[-2:]
+    return text[:6] + "…" + text[-4:]
+
+
 def parse_duration(text: Any) -> int | None:
     """解析时长，统一返回秒数。
 
@@ -164,6 +178,20 @@ def clamp_float(value: Any, default: float, minimum: float, maximum: float) -> f
     except (TypeError, ValueError, OverflowError):
         return default
     return max(minimum, min(maximum, parsed))
+
+
+def optional_int(value: Any) -> int | None:
+    """尽力把任意值转成 int，失败返回 None（画像字段「宽进严出」用）。"""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    text = str(value).strip()
+    if text.lstrip("-").isdigit():
+        return int(text)
+    return None
 
 
 def safe_json_dumps(value: Any, *, limit: int = 2000) -> str:
