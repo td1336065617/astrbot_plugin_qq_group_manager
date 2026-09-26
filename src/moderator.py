@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from collections.abc import Awaitable, Callable
@@ -16,6 +17,11 @@ from typing import Any
 
 from .models import MODERATION_MODES, RISK_CONDITION_PREFIX, Verdict
 from .utils import clamp_float, clamp_int, digest_text, now_ts, truncate
+
+#: 单群限频窗口（秒）
+RATE_WINDOW = 60.0
+#: 限频后最多等待多久，超过则跳过本次调用（避免把消息管线卡死）
+RATE_MAX_WAIT = 15.0
 
 SYSTEM_PROMPT_DEFAULT = """你是 QQ 群聊内容审核员。你的任务是读懂"这个人在这段对话里想干什么"，而不是检查有没有出现敏感词。
 
@@ -242,6 +248,9 @@ class ModeratorStats:
     parse_errors: int = 0
     cache_hits: int = 0
     skipped_by_budget: int = 0
+    skipped_by_qpm: int = 0
+    rate_waits: int = 0
+    peak_concurrency: int = 0
     circuit_open_until: float = 0.0
     last_error: str = ""
     day: str = ""
@@ -254,6 +263,9 @@ class ModeratorStats:
             "parse_errors": self.parse_errors,
             "cache_hits": self.cache_hits,
             "skipped_by_budget": self.skipped_by_budget,
+            "skipped_by_qpm": self.skipped_by_qpm,
+            "rate_waits": self.rate_waits,
+            "peak_concurrency": self.peak_concurrency,
             "circuit_open": self.circuit_open_until > time.monotonic(),
             "last_error": self.last_error,
             "day": self.day,
@@ -280,16 +292,21 @@ class LLMModerator:
         *,
         settings_getter: Callable[[], dict[str, Any]] | None = None,
         clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], Any] = asyncio.sleep,
         logger: Any = None,
     ) -> None:
         self.provider_call = provider_call
         self._settings_getter = settings_getter or (lambda: {})
         self._clock = clock
+        self._sleep = sleep
         self.logger = logger
         self.stats = ModeratorStats()
         self._cache: dict[str, _CacheEntry] = {}
         self._consecutive_failures = 0
-        self._semaphore: Any = None
+        self._semaphore: asyncio.Semaphore | None = None
+        self._semaphore_size = 0
+        self._inflight = 0
+        self._rate_buckets: dict[str, list[float]] = {}
 
     # ------------------------------------------------------------------
     def settings(self) -> dict[str, Any]:
@@ -363,6 +380,83 @@ class LLMModerator:
         import random
 
         return random.random() < rate
+
+    def gate_reason(self) -> str:
+        """共享闸门：返回非空字符串表示当前不允许调用 LLM。"""
+        if not self.available():
+            return "未配置可用的对话模型"
+        if self.circuit_open():
+            return "LLM 审核处于熔断期"
+        if self._budget_exhausted():
+            return "已达当日 LLM 调用预算"
+        return ""
+
+    def note_call(self, *, ok: bool, error: str = "") -> None:
+        """登记一次外部发起的 LLM 调用（入群审批），与内容审核共享日预算与熔断。"""
+        today = time.strftime("%Y-%m-%d", time.localtime())
+        if self.stats.day != today:
+            self.stats.day = today
+            self.stats.day_calls = 0
+        self.stats.day_calls += 1
+        if ok:
+            self.stats.calls += 1
+            self._consecutive_failures = 0
+            return
+        self._record_failure(error or "调用失败")
+
+    # ------------------------------------------------------------------
+    # 调用闸门：单群 QPM（令牌窗口）+ 全局并发（信号量）
+    # ------------------------------------------------------------------
+    def _bucket_key(self, group_id: str) -> str:
+        return str(group_id or "__global__")
+
+    def _semaphore_for(self) -> asyncio.Semaphore:
+        size = int(self.settings().get("llm_max_concurrency", 4) or 4)
+        size = max(1, size)
+        if self._semaphore is None or self._semaphore_size != size:
+            self._semaphore = asyncio.Semaphore(size)
+            self._semaphore_size = size
+        return self._semaphore
+
+    async def _wait_rate(self, group_id: str) -> bool:
+        """单群限频：有空位则占用并返回 True；等待上限内仍满则返回 False。"""
+        limit = max(1, int(self.settings().get("llm_qpm_per_group", 20) or 20))
+        key = self._bucket_key(group_id)
+        now = self._clock()
+        window = [item for item in self._rate_buckets.get(key, []) if now - item < RATE_WINDOW]
+        if len(window) < limit:
+            window.append(now)
+            self._rate_buckets[key] = window
+            return True
+        wait = RATE_WINDOW - (now - window[0])
+        if wait > 0:
+            self.stats.rate_waits += 1
+            await self._sleep(min(wait, RATE_MAX_WAIT))
+        now = self._clock()
+        window = [item for item in window if now - item < RATE_WINDOW]
+        if len(window) >= limit:
+            self.stats.skipped_by_qpm += 1
+            self._rate_buckets[key] = window
+            return False
+        window.append(now)
+        self._rate_buckets[key] = window
+        return True
+
+    async def acquire(self, group_id: str = "") -> bool:
+        """占用一个 LLM 调用槽位；False 表示已触发单群 QPM，调用方应跳过本次调用。"""
+        if not await self._wait_rate(group_id):
+            return False
+        await self._semaphore_for().acquire()
+        self._inflight += 1
+        self.stats.peak_concurrency = max(self.stats.peak_concurrency, self._inflight)
+        return True
+
+    def release(self) -> None:
+        """释放 acquire 占用的槽位（必须成对调用）。"""
+        if self._inflight > 0:
+            self._inflight -= 1
+        if self._semaphore is not None:
+            self._semaphore.release()
 
     def _budget_exhausted(self) -> bool:
         budget = int(self.settings().get("llm_daily_budget", 0) or 0)
@@ -439,17 +533,18 @@ class LLMModerator:
                 "原样填入 JSON 的 qr_text 字段；识别不出就填空字符串，不要编造"
             )
 
+        if not await self.acquire(request.group_id):
+            return Verdict.review("已触发单群 QPM 限流", source="llm")
+
         started = self._clock()
-        self.stats.calls += 1
-        self.stats.day_calls += 1
         today = time.strftime("%Y-%m-%d", time.localtime())
         if self.stats.day != today:
             self.stats.day = today
-            self.stats.day_calls = 1
+            self.stats.day_calls = 0
+        self.stats.calls += 1
+        self.stats.day_calls += 1
         timeout = float(settings.get("llm_timeout", 20) or 20)
         try:
-            import asyncio
-
             raw = await asyncio.wait_for(
                 self.provider_call(request, system_prompt, user_prompt),  # type: ignore[misc]
                 timeout=max(1.0, timeout),
@@ -457,6 +552,8 @@ class LLMModerator:
         except Exception as exc:
             self._record_failure(f"{type(exc).__name__}: {exc}")
             return Verdict.review(f"模型调用失败：{type(exc).__name__}", source="llm")
+        finally:
+            self.release()
 
         latency_ms = int((self._clock() - started) * 1000)
         verdict = parse_verdict(raw if isinstance(raw, str) else str(raw), latency_ms=latency_ms)
