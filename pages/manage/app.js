@@ -379,8 +379,21 @@ async function viewGroups(root) {
     finally { probeAllBtn.disabled = false; }
   } });
 
-  root.appendChild(card('群列表', '群在收到消息后会自动登记；也可手动添加。启用审核前必须先开启「接收全部消息」。', [
-    el('div', { class: 'row' }, [idInput, nameInput, el('div', { class: 'field-actions' }, [addBtn, probeAllBtn])]),
+  const refreshNamesBtn = el('button', { class: 'btn ghost', text: '刷新群名', title: '给还没有名字的群补一次（官方通道走开放接口）', onclick: async () => {
+    refreshNamesBtn.disabled = true;
+    try {
+      const result = await bridge.apiPost('groups/refresh-names', { limit: 50 });
+      state.config = null;
+      toast('群名已更新 ' + ((result && result.updated) || 0) + ' 个' +
+        (result && result.failed ? ('，失败 ' + result.failed + ' 个') : '') +
+        (result && result.skipped ? ('，还剩 ' + result.skipped + ' 个未处理') : ''), 'ok');
+      await render();
+    } catch (error) { toast('刷新群名失败：' + error.message, 'bad'); }
+    finally { refreshNamesBtn.disabled = false; }
+  } });
+
+  root.appendChild(card('群列表', '群在收到消息后会自动登记；也可手动添加。启用审核前必须先开启「接收全部消息」。官方通道的群名需要点「刷新群名」主动获取。', [
+    el('div', { class: 'row' }, [idInput, nameInput, el('div', { class: 'field-actions' }, [addBtn, probeAllBtn, refreshNamesBtn])]),
   ]));
 
   if (!groups.length) {

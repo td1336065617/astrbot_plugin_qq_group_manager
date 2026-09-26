@@ -85,6 +85,12 @@ class WebApi:
             (f"/{PLUGIN_NAME}/groups", self.groups, ["GET"], "群列表与能力矩阵"),
             (f"/{PLUGIN_NAME}/groups/probe", self.group_probe, ["POST"], "能力探测"),
             (
+                f"/{PLUGIN_NAME}/groups/refresh-names",
+                self.group_refresh_names,
+                ["POST"],
+                "刷新群名称",
+            ),
+            (
                 f"/{PLUGIN_NAME}/groups/moderation",
                 self.group_moderation,
                 ["POST"],
@@ -319,6 +325,22 @@ class WebApi:
         if not self._service_ready():
             return error_response("插件尚未初始化完成，请稍后重试")
         return json_response({"groups": self.service.groups_snapshot()})
+
+    async def group_refresh_names(self):
+        """补齐缺失的群名称（官方走开放接口，OneBot 走 get_group_info）。"""
+        if not self._service_ready():
+            return error_response("插件尚未初始化完成，请稍后重试")
+        payload = await request.json(default={})
+        try:
+            limit = int((payload or {}).get("limit") or 50)
+        except (TypeError, ValueError):
+            limit = 50
+        limit = max(1, min(200, limit))
+        try:
+            result = await self.service.refresh_group_names(limit=limit)
+        except Exception as exc:
+            return error_response(f"刷新群名失败：{exc}")
+        return json_response({**result, "groups": self.service.groups_snapshot()})
 
     async def group_probe(self):
         """探测单群或全部群的能力。"""

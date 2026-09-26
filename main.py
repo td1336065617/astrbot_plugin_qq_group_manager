@@ -73,6 +73,7 @@ from .src.commands import (
     stats_text,
     suggestions_for,
 )
+from .src.group_names import refresh_group_names as refresh_group_names_impl
 from .src.join_review import JoinReviewer
 from .src.links import allowlisted_domains, extract_domains, qr_risk_text
 from .src.models import (
@@ -106,7 +107,7 @@ from .src.utils import (
 from .src.web_api import EventBus, WebApi
 
 PLUGIN_NAME = "astrbot_plugin_qq_group_manager"
-VERSION = "0.13.0"
+VERSION = "0.13.1"
 
 STATE_FLUSH_INTERVAL = 30.0
 MAINTENANCE_INTERVAL = 3600.0
@@ -525,6 +526,19 @@ class QQGroupManager(Star):
             )
             snapshot.append(data)
         return snapshot
+
+    async def refresh_group_names(self, *, limit: int = 50) -> dict[str, Any]:
+        """后台「刷新群名」：给还没有名字的群补一次。
+
+        官方通道靠开放接口 /v2/groups/{openid}/info，OneBot 走 get_group_info；
+        官方适配器不带群名，事件里拿不到，只能这样主动拉。
+        """
+        return await refresh_group_names_impl(
+            self.store,
+            self.api,
+            limit=limit,
+            on_warn=lambda gid, exc: self.logger.warning("刷新群名失败（%s）：%s", gid, exc),
+        )
 
     async def probe_group(
         self, group_id: str, *, caller: str = "probe"

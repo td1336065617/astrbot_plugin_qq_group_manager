@@ -7,6 +7,27 @@
 
 ---
 
+## [0.13.1] - 2026-09-26
+
+> 🐛 修复：官方通道的群名一直显示「（未获取群名）」——补上主动拉取与后台入口。
+
+### 🐛 修复
+- **官方群名从来没被获取过**：`ensure_group(name=…)` 的群名只可能来自 OneBot 事件的
+  `abm.group.group_name`（官方适配器不带群名），而唯一会调 `get_group_info` 的只有「群信息」命令，
+  拿到名字**用完即弃、从不回写**。于是后台群列表对官方群恒显示「（未获取群名）」，
+  只能靠人工添加群时手填一次。现在补上闭环。
+- 新增 `src/group_names.refresh_group_names()`：只挑 `name` 为空的群，逐个走
+  `channel_for(platform_id).get_group_info()`（官方 → 开放接口 `GET /v2/groups/{openid}/info`，
+  OneBot → `get_group_info`）并回写落盘；单群失败不影响其他群，返回值含 updated/failed/skipped/pending。
+- 新增接口 `POST /astrbot_plugin_qq_group_manager/groups/refresh-names` 与后台
+  「群管理 → 刷新群名」按钮。
+- 新增 5 条测试覆盖：只补缺名群、全有名时空转、失败不中断、limit 截断、路由注册。
+
+### ⚙️ 变更
+- 群列表卡片说明补充：官方通道的群名需要点「刷新群名」主动获取。
+
+---
+
 ## [0.13.0] - 2026-09-26
 
 > ✨ 入群审批新增「入群答案校验」与后台问答展示，支持口令/暗号类硬门槛。
