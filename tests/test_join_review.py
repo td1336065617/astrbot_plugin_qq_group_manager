@@ -502,3 +502,22 @@ def test_answer_expectation_goes_into_llm_prompt():
     assert "【入群答案要求】" in seen["prompt"]
     assert "ACM" in seen["prompt"] and "校赛" in seen["prompt"]
 
+
+def test_invited_request_skips_answer_gate():
+    """BUG-051：被邀请入群没有「答案」可校验，不能按「未包含期望答案」直接拒掉。"""
+    store, _, _, reviewer, _ = make_env(
+        response_text='{"decision":"approve","confidence":0.9,"reason":"正常"}'
+    )
+    run(store.update_settings({
+        "join_expected_answer": "江莉",
+        "join_answer_action": "decline",
+        "join_trust_inviter": False,
+    }))
+
+    # 主动申请且答案不符 → 规则闸门拒绝（原有行为不变）
+    declined = run(reviewer.judge("g1", request_payload(apply_source="self_apply"), mode="standard"))
+    assert declined.op == "decline" and declined.gate == "answer"
+
+    # 被邀请（不会携带答案）→ 不走答案闸门，交给后续流程
+    invited = run(reviewer.judge("g1", request_payload(apply_source="invited"), mode="standard"))
+    assert invited.gate != "answer"

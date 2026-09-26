@@ -475,7 +475,10 @@ class JoinReviewer:
         profile_gate = self._profile_gate(request.get("profile") or {}, settings)
         if profile_gate is not None:
             return profile_gate
-        answer_gate = self._answer_gate(verify, settings)
+        # 被邀请入群没有「答案」可校验：不能按"未包含期望答案"把受邀人拒掉（生产实测 BUG-051）
+        answer_gate = (
+            None if apply_source == "invited" else self._answer_gate(verify, settings)
+        )
         if answer_gate is not None:
             return answer_gate
         if apply_source == "invited" and settings.get("join_trust_inviter", False):
