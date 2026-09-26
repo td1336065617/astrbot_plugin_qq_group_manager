@@ -197,3 +197,29 @@ def test_answer_settings_survive_normalize():
     assert normalized["join_answer_action"] == "manual"
     assert normalized["join_answer_case_sensitive"] is True
 
+
+def test_log_actions_first_column_is_unix():
+    """BUG-017：actions 日志的时间列与后端字段一致（ts_unix），否则整列显示为空。"""
+    block = re.search(r"if \(kind === 'actions'\) return \[(.*?)\];", app_js(), re.S)
+    assert block
+    assert block.group(1).strip().startswith("'ts_unix'")
+
+
+def test_no_plan_phase_copy_and_local_time():
+    """BUG-015/025：日志时间统一本地化；不再出现 M1/M2/M3 与「后续版本提供」。"""
+    text = app_js()
+    assert "toISOString()" not in text
+    assert "toLocaleString('zh-CN', { hour12: false })" in text
+    assert not re.search(r"\bM[123]\b", text)
+    web = (PLUGIN_ROOT / "src" / "web_api.py").read_text(encoding="utf-8")
+    assert "后续版本提供" not in web
+    assert not re.search(r"\bM[123]\b", web)
+
+
+def test_log_filters_follow_tab_kind():
+    """BUG-029：关键字只对 events/api 生效，申诉只对 events 生效，且不残留旧条件。"""
+    text = app_js()
+    assert "const showKeyword = kind === 'events' || kind === 'api';" in text
+    assert "const showAppealed = kind === 'events';" in text
+    assert "delete state.logs.filters.keyword" in text
+    assert "delete state.logs.filters.appealed" in text

@@ -430,13 +430,7 @@ async function viewGroups(root) {
           toast(enable ? '审核已启用' : '审核已停用', 'ok');
           await render();
         } catch (error) {
-          let message = error.message;
-          try {
-            const parsed = JSON.parse(message);
-            if (parsed && parsed.data && parsed.data.reason_code === 'need_full_msg') {
-              message = parsed.message || parsed.data.message;
-            }
-          } catch (ignore) { /* 非 JSON 错误 */ }
+          const message = error.message;
           toast('操作失败：' + message, 'bad');
           await uiNotice('启用审核失败', message);
         } finally { toggleBtn.disabled = false; }
@@ -513,7 +507,7 @@ async function viewGroups(root) {
 
 function logColumns(kind) {
   if (kind === 'events') return ['ts', 'group_id', 'sender_name', 'verdict', 'category', 'severity', 'confidence', 'reason', 'appeal_state'];
-  if (kind === 'actions') return ['ts', 'group_id', 'action', 'target_openid', 'ok', 'err_code', 'dry_run'];
+  if (kind === 'actions') return ['ts_unix', 'group_id', 'action', 'target_openid', 'ok', 'err_code', 'dry_run'];
   if (kind === 'api') return ['ts_unix', 'group_id', 'method', 'path', 'ok', 'err_code', 'caller', 'duration_ms'];
   return ['ts_unix', 'group_id', 'capability', 'ok', 'err_code', 'note'];
 }
@@ -521,7 +515,10 @@ function logColumns(kind) {
 function cellValue(kind, key, row) {
   const value = row[key];
   if (key === 'ts' || key === 'ts_unix') {
-    const raw = row.ts || (row.ts_unix ? new Date(row.ts_unix * 1000).toISOString() : '');
+    // 统一本地时间显示：ts 后端已是本地串，ts_unix 交由浏览器按本地时区格式化（BUG-015）
+    const raw = row.ts || (row.ts_unix
+      ? new Date(row.ts_unix * 1000).toLocaleString('zh-CN', { hour12: false })
+      : '');
     return fmtTime(raw);
   }
   if (key === 'group_id' || key === 'target_openid') return shortId(value);
@@ -580,13 +577,16 @@ async function viewLogs(root) {
       selected: String(filters.appealed || '') === pair[0] ? 'selected' : null,
     }));
   });
+  // 只显示当前标签页真正支持的筛选条件（BUG-029）
+  const showKeyword = kind === 'events' || kind === 'api';
+  const showAppealed = kind === 'events';
+  if (!showKeyword) delete state.logs.filters.keyword;
+  if (!showAppealed) delete state.logs.filters.appealed;
   const applyBtn = el('button', { class: 'btn ghost', text: '筛选', onclick: () => {
-    state.logs.filters = {
-      group_id: groupInput.value.trim() || undefined,
-      keyword: keywordInput.value.trim() || undefined,
-      days: daysSelect.value,
-      appealed: appealedSelect.value || undefined,
-    };
+    const next = { group_id: groupInput.value.trim() || undefined, days: daysSelect.value };
+    if (showKeyword && keywordInput.value.trim()) next.keyword = keywordInput.value.trim();
+    if (showAppealed && appealedSelect.value) next.appealed = appealedSelect.value;
+    state.logs.filters = next;
     loadLogs(kind, 1);
   } });
   const clearBtn = el('button', { class: 'btn ghost', text: '清空筛选', onclick: () => {
@@ -602,9 +602,9 @@ async function viewLogs(root) {
   } });
 
   clear(root);
-  root.appendChild(card('日志中心', '审核事件与处置将在 M2 之后产生；API 调用与能力受限日志现在即可查看。', [
+  root.appendChild(card('日志中心', '汇总审核事件、处置动作、API 调用与能力受限记录；筛选与导出对应当前标签页。', [
     tabs,
-    el('div', { class: 'row' }, [groupInput, keywordInput, daysSelect, appealedSelect, el('div', { class: 'field-actions' }, [applyBtn, clearBtn, exportBtn])]),
+    el('div', { class: 'row' }, [groupInput, showKeyword ? keywordInput : null, daysSelect, showAppealed ? appealedSelect : null, el('div', { class: 'field-actions' }, [applyBtn, clearBtn, exportBtn])]),
   ]));
 
   if (!data) {
@@ -740,7 +740,7 @@ async function viewTools(root) {
     try {
       state.sse = await bridge.subscribeSSE('events/stream', {
         onMessage: (event) => {
-          state.sseLines.unshift(fmtTime(new Date().toISOString()) + ' ' + (event.raw || ''));
+          state.sseLines.unshift(fmtTime(new Date().toLocaleString('zh-CN', { hour12: false })) + ' ' + (event.raw || ''));
           state.sseLines = state.sseLines.slice(0, 60);
           sseBox.textContent = state.sseLines.join('\n');
         },
@@ -749,7 +749,7 @@ async function viewTools(root) {
     } catch (error) { toast('订阅失败：' + error.message, 'bad'); }
   } });
 
-  root.appendChild(card('实时事件（SSE）', '用于验证 WebUI ↔ 后端通道；审核事件在 M2 接入后会大量出现。', [
+  root.appendChild(card('实时事件（SSE）', '用于验证 WebUI ↔ 后端通道；订阅后会持续显示最近 60 条事件。', [
     el('div', { class: 'field-actions' }, [sseBtn]),
     sseBox,
   ]));
@@ -769,7 +769,7 @@ async function viewTools(root) {
     root.appendChild(card('指令速查', instructions.note || '', [list]));
   }
 
-  root.appendChild(card('当前配置摘要', '完整编辑在「策略 / 关键词」视图（M2 提供）。', [
+  root.appendChild(card('当前配置摘要', '完整编辑请到「策略 / 关键词」视图。', [
     el('pre', { class: 'guide', text: JSON.stringify(config.settings || {}, null, 2) }),
   ]));
 }
@@ -1335,7 +1335,7 @@ async function viewRulesX(root) {
           el('td', { text: (row.skeleton || '').slice(0, 40) }),
           el('td', { text: row.reason || '-' }),
           el('td', { text: row.added_by || '-' }),
-          el('td', { text: fmtTime(row.added_at ? new Date(row.added_at * 1000).toISOString() : '') }),
+          el('td', { text: fmtTime(row.added_at ? new Date(row.added_at * 1000).toLocaleString('zh-CN', { hour12: false }) : '') }),
           el('td', {}, [revoke]),
         ]));
       });
@@ -1785,7 +1785,7 @@ async function viewJoins(root) {
   const historyBody = el('tbody');
   history.slice(0, 30).forEach((row) => {
     historyBody.appendChild(el('tr', {}, [
-      el('td', { text: fmtTime(row.ts_unix ? new Date(row.ts_unix * 1000).toISOString() : '') }),
+      el('td', { text: fmtTime(row.ts_unix ? new Date(row.ts_unix * 1000).toLocaleString('zh-CN', { hour12: false }) : '') }),
       el('td', { text: row.username || '未知' }),
       el('td', { text: fmtProfileNumber(row.profile || {}, 'qq_level') }),
       el('td', { text: fmtProfileAge(row.profile || {}) }),
@@ -1931,7 +1931,7 @@ async function viewAppeals(root) {
         const rejectBtn = el('button', { class: 'btn small danger', text: '驳回', onclick: () => decide(row, 'reject') });
         const stateLabel = { pending: '待处理', accepted: '已通过', rejected: '已驳回' }[row.appeal_state] || (row.appeal_state || '-');
         tbody.appendChild(el('tr', {}, [
-          el('td', { text: fmtTime(row.ts || (row.ts_unix ? new Date(row.ts_unix * 1000).toISOString() : '')) }),
+          el('td', { text: fmtTime(row.ts || (row.ts_unix ? new Date(row.ts_unix * 1000).toLocaleString('zh-CN', { hour12: false }) : '')) }),
           el('td', { text: row.group_name || shortId(row.group_id) }),
           el('td', { text: row.sender_name || shortId(row.sender_openid) }),
           el('td', { text: (row.appeal_text || '').slice(0, 40) }),
@@ -1966,7 +1966,7 @@ async function viewAppeals(root) {
 function viewComingSoon(root, view) {
   clear(root);
   root.appendChild(card(view.label, null, [
-    notice('该视图将在 ' + view.soon + ' 版本提供：' + view.label + '。当前版本（M1）已交付能力探测、群列表、日志中心与工具页。'),
+    notice('该视图暂未实现：' + view.label + '。当前已交付：能力探测、群列表、日志中心与工具页。'),
   ]));
 }
 

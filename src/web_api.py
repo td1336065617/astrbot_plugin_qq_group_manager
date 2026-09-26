@@ -945,7 +945,6 @@ class WebApi:
                     {"command": SELFCHECK_COMMANDS[0], "desc": "平台能力探测"},
                     {"command": CONFIG_COMMANDS[0], "desc": "管理台入口指引"},
                 ],
-                "note": "指令为全匹配，可带 / 前缀；以下功能将在后续版本提供：审核模式/关键词/统计（M2）、"
-                "入群审批与成员管理（M3）。",
+                "note": "指令为全匹配，可带 / 前缀。",
             }
         )

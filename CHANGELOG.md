@@ -7,6 +7,24 @@
 
 ---
 
+## [0.13.3] - 2026-09-26
+
+> 🐛 修复：日志中心时间显示 UTC（比本地早 8 小时）、actions 时间列整列为空、清屏文案还写着 M1/M2、筛选控件对不适用的标签页也生效；顺带把 main.py 的 VERSION 与 metadata 对齐。
+
+### 🐛 修复
+- BUG-015：日志与列表时间统一按浏览器本地时区显示（不再 toISOString() 输出 UTC）。
+- BUG-017：actions 日志首列与后端字段对齐为 ts_unix（此前取 ts 导致该列空白）。
+- BUG-016：移除无法生效的 JSON.parse(error.message) 分支，直接显示桥透传的 message。
+- BUG-029：关键字筛选只在 events/api 标签页显示，申诉筛选只在 events 显示；切换标签页会清掉不适用的旧条件。
+- BUG-025：清掉日志中心 / SSE / 配置摘要里的 M1/M2/M3 与「后续版本提供」措辞，改为当前能力描述。
+- VERSION 与 metadata.yaml 对齐（此前 metadata 已升版而代码常量未同步，被契约测试拦下）。
+
+### ✅ 验证
+- 新增 3 条 UI 契约用例（actions 列名、无 M 编号且时间本地化、筛选按标签页）；qqgm 全量 338 条通过；
+- 页面脚本 node --check 通过。
+
+---
+
 ## [0.13.2] - 2026-09-26
 
 > 🐛 修复：OneBot 通道把 aiocqhttp 的「魔法属性」当成机器人 QQ 号，协议端刷 Uin2Uid Error。
