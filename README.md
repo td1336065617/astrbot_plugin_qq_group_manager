@@ -9,7 +9,7 @@ QQ 群消息 ──► 本地规则（形近字/黑话/模板，零成本）
                                                         └──► SQLite 审计 + 管理台可视化
 ```
 
-- **版本**：0.11.1 ｜ **平台**：`qq_official` / `qq_official_webhook`（QQ 官方）+ `aiocqhttp`（OneBot v11）｜ **许可**：MIT
+- **平台**：`qq_official` / `qq_official_webhook`（QQ 官方）+ `aiocqhttp`（OneBot v11）｜ **许可**：MIT；版本号与更新内容见 [CHANGELOG.md](CHANGELOG.md)
 - **零第三方依赖**：只用标准库 `sqlite3` + AstrBot 官方 SDK（`pypinyin` 为可选增强）
 
 ---
@@ -73,6 +73,13 @@ QQ 机器人（官方 OpenAPI，或 OneBot v11 协议端）提供了群管理与
 
 根目录附带 `intro.md`：安装「菜单导航」插件后，发送 `插件介绍` 可看到本插件的完整功能清单
 （含审核、变体识别、入群审批、申诉、跨群黑名单与各类**主动行为**），`插件介绍 群管理` 可只看本插件。
+
+## 支持平台（QQ 双通道）
+
+- **QQ 官方**：qq_official（WebSocket）/ qq_official_webhook（Webhook），复用 botpy 通道；群信息、禁言、撤回、入群审批等能力受白名单/内邀/群管理员限制。
+- **QQ 非官方**：aiocqhttp（OneBot v11，如 NapCat / Lagrange / go-cqhttp）；群管理通过 call_action 调用协议端接口。
+- 能力差异（如 OneBot 无原生黑名单、入群审批走 request 事件）会显式降级并留痕，不会崩溃或刷屏。
+- 平台判定与通道抽象位于 src/platforms/，官方族行为与改造前保持一致。
 
 ## 安装
 
@@ -185,9 +192,20 @@ QQ 官方群管理接口分三档（下表为 **QQ 官方通道**；OneBot 通�
 - 仓库只发布插件本体；测试套件与设计文档保留在开发环境，发版前会跑全量回归。
 - 扩充判定能力**无需改代码**：管理台「规则增强」维护广告模板与形近字表，「关键词」维护硬 / 软规则，保存即生效。
 
-## 更新日志
+## 相关文档
 
-见 [CHANGELOG.md](CHANGELOG.md)。
+- [更新日志](CHANGELOG.md)：每个版本的新增与修复
+- [配置参考](docs/CONFIG.md)：全部配置项与默认值
+
+开发者向（实现与方案）：
+
+- [入群申请人画像-实现文档](docs/入群申请人画像-实现文档.md)
+- [入群申请人画像-设计文档](docs/入群申请人画像-设计文档.md)
+- [入群申请人画像-需求分析](docs/入群申请人画像-需求分析.md)
+- [判定规则优化方案](docs/判定规则优化方案.md)
+- [平台能力调研](docs/平台能力调研.md)
+- [申诉闭环与白名单实现文档](docs/申诉闭环与白名单实现文档.md)
+- [设计方案](docs/设计方案.md)
 
 ## 免责声明
 
@@ -197,9 +215,3 @@ QQ 官方群管理接口分三档（下表为 **QQ 官方通道**；OneBot 通�
 
 [MIT](LICENSE)
 
-## 支持平台（QQ 双通道）
-
-- **QQ 官方**：qq_official（WebSocket）/ qq_official_webhook（Webhook），复用 botpy 通道；群信息、禁言、撤回、入群审批等能力受白名单/内邀/群管理员限制。
-- **QQ 非官方**：aiocqhttp（OneBot v11，如 NapCat / Lagrange / go-cqhttp）；群管理通过 call_action 调用协议端接口。
-- 能力差异（如 OneBot 无原生黑名单、入群审批走 request 事件）会显式降级并留痕，不会崩溃或刷屏。
-- 平台判定与通道抽象位于 src/platforms/，官方族行为与改造前保持一致。
