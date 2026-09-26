@@ -13,6 +13,9 @@ from typing import Any, Protocol, runtime_checkable
 
 from .models import (
     IMAGE_REVIEW_MODES,
+    JOIN_AVATAR_REVIEW_MODES,
+    JOIN_GATE_ACTIONS,
+    JOIN_PROFILE_MISSING_MODES,
     JOIN_REVIEW_MODES,
     MODERATION_MODES,
     NUMERIC_BOUNDS,
@@ -35,6 +38,8 @@ KEY_LOCAL_BLACKLIST = "local_blacklist"
 KEY_GLOBAL_BLACKLIST = "global_blacklist"
 KEY_UI_STATE = "ui_state"
 KEY_JOIN_CURSOR = "join_cursor"
+#: 申请人画像缓存：{“{platform_id}:{user_id}”: ApplicantProfile}
+KEY_PROFILE_CACHE = "profile_cache"
 KEY_TEMPLATES = "templates"
 KEY_HOMOGLYPH = "homoglyph"
 
@@ -92,6 +97,8 @@ def normalize_settings(raw: Any) -> dict[str, Any]:
         "auto_remove",
         "join_decline_blacklist",
         "join_trust_inviter",
+        "join_profile_enabled",
+        "join_require_qid",
         "store_text",
         "domain_allowlist_enabled",
         "appeal_enabled",
@@ -110,6 +117,12 @@ def normalize_settings(raw: Any) -> dict[str, Any]:
         settings["image_review"] = "off"
     if settings.get("join_review_mode") not in JOIN_REVIEW_MODES:
         settings["join_review_mode"] = "off"
+    if settings.get("join_profile_missing") not in JOIN_PROFILE_MISSING_MODES:
+        settings["join_profile_missing"] = "manual"
+    if settings.get("join_gate_action") not in JOIN_GATE_ACTIONS:
+        settings["join_gate_action"] = "decline"
+    if settings.get("join_avatar_review") not in JOIN_AVATAR_REVIEW_MODES:
+        settings["join_avatar_review"] = "off"
     conditions = settings.get("send_conditions")
     if not isinstance(conditions, list):
         conditions = ["rule_hit"]
@@ -160,6 +173,7 @@ class PluginStore:
         self._member_cache: dict[str, dict[str, dict[str, Any]]] = {}
         self._ui_state: dict[str, Any] = {}
         self._join_cursor: dict[str, dict[str, Any]] = {}
+        self._profile_cache: dict[str, dict[str, Any]] = {}
         self._dirty: set[str] = set()
         self._loaded = False
 
@@ -190,6 +204,7 @@ class PluginStore:
             (KEY_GLOBAL_BLACKLIST, self._global_blacklist),
             (KEY_ROLE_CACHE, self._role_cache),
             (KEY_MEMBER_CACHE, self._member_cache),
+            (KEY_PROFILE_CACHE, self._profile_cache),
         ):
             raw = await self._kv.get(key, {})
             if isinstance(raw, dict):
@@ -254,6 +269,8 @@ class PluginStore:
                     await self._kv.put(KEY_TEMPLATES, self._templates)
                 elif key == KEY_HOMOGLYPH:
                     await self._kv.put(KEY_HOMOGLYPH, self._homoglyph)
+                elif key == KEY_PROFILE_CACHE:
+                    await self._kv.put(KEY_PROFILE_CACHE, self._profile_cache)
             except Exception as exc:  # pragma: no cover - KV 失败不应中断业务
                 self._dirty.add(key)
                 if self.logger is not None:
@@ -480,6 +497,41 @@ class PluginStore:
         self._join_cursor[group_id] = {"cursor": str(cursor or ""), "at": now_ts()}
         self._dirty.add(KEY_JOIN_CURSOR)
         await self.flush()
+
+    # ------------------------------------------------------------------
+    # 申请人画像缓存
+    # ------------------------------------------------------------------
+    def profile_cache(self) -> dict[str, dict[str, Any]]:
+        """返回画像缓存副本。"""
+        return copy.deepcopy(self._profile_cache)
+
+    def get_profile(self, cache_key: str) -> dict[str, Any] | None:
+        entry = self._profile_cache.get(str(cache_key))
+        return dict(entry) if isinstance(entry, dict) else None
+
+    async def put_profile(self, cache_key: str, payload: dict[str, Any]) -> None:
+        """写入画像缓存（只应由「成功画像」调用）。"""
+        if not cache_key or not isinstance(payload, dict):
+            return
+        self._profile_cache[str(cache_key)] = dict(payload)
+        self._dirty.add(KEY_PROFILE_CACHE)
+
+    async def drop_expired_profiles(self, ttl_days: int) -> int:
+        """清理过期画像（ttl_days<=0 表示不清理），返回清理条数。"""
+        if ttl_days <= 0:
+            return 0
+        deadline = now_ts() - int(ttl_days) * 86400
+        stale = [
+            key
+            for key, value in self._profile_cache.items()
+            if not isinstance(value, dict) or int(value.get("fetched_at") or 0) < deadline
+        ]
+        for key in stale:
+            self._profile_cache.pop(key, None)
+        if stale:
+            self._dirty.add(KEY_PROFILE_CACHE)
+            await self.flush()
+        return len(stale)
 
     # ------------------------------------------------------------------
     # 成员与角色缓存
