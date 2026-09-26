@@ -10,13 +10,17 @@
 
 from __future__ import annotations
 
+import inspect
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
 from .moderator import extract_json_object
-from .utils import clamp_float, now_ts, truncate
+from .utils import clamp_float, now_ts, safe_json_dumps, truncate
+
+#: 只有这些通道可能提供账号维度画像；官方/未知平台「没有数据源」不等于「资料缺失」
+PROFILE_CAPABLE_KINDS = ("onebot",)
 
 JOIN_SYSTEM_PROMPT = """你是 QQ 群入群申请审核引擎。根据群规与申请信息，判断是否放行该申请人。
 只输出一个 JSON 对象，不要输出解释性文字，不要使用 Markdown 代码块。
@@ -32,11 +36,32 @@ JOIN_SYSTEM_PROMPT = """你是 QQ 群入群申请审核引擎。根据群规与�
 - 昵称/验证消息含广告、引流、联系方式、诈骗话术 → decline
 - 验证问题答案与问题明显无关或答非所问 → decline
 - 信息不足、无法判断 → decline 并把 confidence 给低值（交由人工处理）
-- 不臆测：不要因为昵称特殊字符、地区等无关特征拒绝正常用户"""
+- 不臆测：不要因为昵称特殊字符、地区等无关特征拒绝正常用户
+- 账号年龄过短、QQ 等级过低、资料空白只作为风险加分，不得单独定罪
+- 「画像缺失」是协议端能力问题，不等于申请人可疑"""
+
+AVATAR_SYSTEM_PROMPT = """你是 QQ 群入群申请的头像审核器。只根据头像图片判断该账号是否属于广告/引流/色情。
+只输出一个 JSON 对象，不要输出解释性文字，不要使用 Markdown 代码块。
+
+字段：
+- risk: true | false
+- confidence: 0-1 的小数
+- reason: 不超过 30 字的中文理由
+
+准则：
+- 正常人物、风景、动漫、表情包、纯色或默认头像 → risk=false
+- 明显色情/性暗示/裸露画面、二维码、加群或联系方式水印、广告版式 → risk=true
+- 拿不准 → risk=false 且 confidence 给低值（不要臆测）"""
+
+AVATAR_USER_TEMPLATE = """【申请人昵称】{username}
+【QQ等级】{qq_level}
+请判断该申请人的头像是否属于需要拒绝入群的风险头像。"""
 
 JOIN_USER_TEMPLATE = """【群规摘要】{rules_brief}
 【申请来源】{apply_source}
 【申请人昵称】{username}
+【申请人画像】QQ等级={qq_level}｜账号年龄={account_age_days}天｜注册时间={reg_time}｜QID={qid}｜性别={sex}
+【画像完整度】{profile_state}
 【验证方式】{verify_method}
 【验证消息】
 <<<MESSAGE
@@ -60,6 +85,8 @@ class JoinDecision:
     risk: str = "无"
     blacklist: bool = False
     source: str = "rule"
+    #: 命中的门槛名（account_age / qq_level / qid / profile_missing / avatar）
+    gate: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -70,6 +97,7 @@ class JoinDecision:
             "risk": self.risk,
             "blacklist": self.blacklist,
             "source": self.source,
+            "gate": self.gate,
         }
 
 
@@ -108,7 +136,8 @@ class JoinReviewer:
         api: Any,
         store: Any,
         audit: Any = None,
-        judge_call: Callable[[str, str], Awaitable[str]] | None = None,
+        profile_getter: Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]] | None = None,
+        judge_call: Callable[..., Awaitable[str]] | None = None,
         notifier: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
         logger: Any = None,
         clock: Callable[[], float] = time.monotonic,
@@ -116,7 +145,10 @@ class JoinReviewer:
         self.api = api
         self.store = store
         self.audit = audit
+        self.profile_getter = profile_getter
         self.judge_call = judge_call
+        self._judge_signature_for: Any = None
+        self._judge_kwargs: set[str] | None = set()
         self.notifier = notifier
         self.logger = logger
         self._clock = clock
@@ -156,6 +188,7 @@ class JoinReviewer:
             request_id = str(request.get("join_request_id") or "")
             if not request_id or await self._already_handled(request_id):
                 continue
+            await self._enrich_profile(group_id, request)
             mode = self._mode_for(group_id)
             decision = await self.judge(group_id, request, mode=mode)
             if decision.auto and mode != "human":
@@ -179,6 +212,102 @@ class JoinReviewer:
         mode = str((config.join_review_mode if config else "") or "")
         return mode or str(self.store.get_setting("join_review_mode") or "off")
 
+    async def _enrich_profile(self, group_id: str, request: dict[str, Any]) -> None:
+        """采集申请人画像并挂到 request 上（失败一律降级，不阻塞审批）。"""
+        if self.profile_getter is None or request.get("profile"):
+            return
+        try:
+            request["profile"] = await self.profile_getter(group_id, request)
+        except Exception as exc:  # pragma: no cover - 双保险
+            if self.logger is not None:
+                self.logger.debug("画像采集失败：%s", exc)
+            request["profile"] = {
+                "degraded": True,
+                "failed": True,
+                "note": f"画像采集异常：{type(exc).__name__}",
+            }
+
+    @staticmethod
+    def _profile_state(profile: dict[str, Any]) -> str:
+        if not profile:
+            return "未采集"
+        if str(profile.get("kind") or "") not in PROFILE_CAPABLE_KINDS:
+            return "本通道不提供（官方/未知平台）"
+        if profile.get("failed"):
+            return "采集失败：" + str(profile.get("note") or "")
+        if profile.get("degraded"):
+            return "部分缺失：" + str(profile.get("note") or "")
+        return "完整"
+
+    def _profile_gate(self, profile: dict[str, Any], settings: dict[str, Any]) -> JoinDecision | None:
+        """资料缺失策略 + 画像硬规则；不适用时返回 None（继续原链路）。"""
+        if not isinstance(profile, dict) or not profile:
+            return None
+        # 官方/未知平台没有数据源，「缺失」无从谈起 —— 保持旧行为
+        if str(profile.get("kind") or "") not in PROFILE_CAPABLE_KINDS:
+            return None
+
+        if profile.get("degraded") or profile.get("failed"):
+            mode = str(settings.get("join_profile_missing") or "manual")
+            if mode == "pass":
+                return None
+            if mode == "decline":
+                return JoinDecision(
+                    op="decline",
+                    auto=True,
+                    confidence=1.0,
+                    reason="无法获取申请人资料（按策略拒绝）",
+                    risk="其他",
+                    source="rule",
+                    gate="profile_missing",
+                )
+            return JoinDecision(
+                op="approve",
+                auto=False,
+                reason="资料缺失，转人工复核",
+                source="manual",
+                gate="profile_missing",
+            )
+
+        action = str(settings.get("join_gate_action") or "decline")
+        blacklist = bool(settings.get("join_decline_blacklist", True))
+        limit_days = int(settings.get("join_min_account_days", 0) or 0)
+        age = profile.get("account_age_days")
+        if limit_days > 0 and isinstance(age, int) and age < limit_days:
+            return self._gate_decision(
+                action, f"账号注册仅 {age} 天（< {limit_days} 天）", "account_age", blacklist
+            )
+        limit_level = int(settings.get("join_min_qq_level", 0) or 0)
+        level = profile.get("qq_level")
+        if limit_level > 0 and isinstance(level, int) and level < limit_level:
+            return self._gate_decision(
+                action, f"QQ 等级 {level}（< {limit_level}）", "qq_level", blacklist
+            )
+        if settings.get("join_require_qid") and not str(profile.get("qid") or "").strip():
+            return self._gate_decision(action, "缺少 QID", "qid", blacklist)
+        return None
+
+    @staticmethod
+    def _gate_decision(
+        action: str, reason: str, gate: str, blacklist: bool = False
+    ) -> JoinDecision | None:
+        if action == "pass":
+            return None
+        if action == "manual":
+            return JoinDecision(
+                op="approve", auto=False, reason=f"{reason}，转人工复核", source="manual", gate=gate
+            )
+        return JoinDecision(
+            op="decline",
+            auto=True,
+            confidence=1.0,
+            reason=reason,
+            risk="其他",
+            source="rule",
+            blacklist=blacklist,
+            gate=gate,
+        )
+
     async def _already_handled(self, request_id: str) -> bool:
         if request_id in self._seen:
             return True
@@ -197,6 +326,7 @@ class JoinReviewer:
         verify = request.get("verify_info") or {}
         verify_message = str(verify.get("verify_message") or "")
         apply_source = str(request.get("apply_source") or "self_apply")
+        profile = request.get("profile") or {}
 
         # 1) 硬规则
         if member_openid and member_openid in self.store.local_blacklist(group_id):
@@ -243,6 +373,9 @@ class JoinReviewer:
                 source="rule",
             )
         settings = self.store.settings()
+        profile_gate = self._profile_gate(request.get("profile") or {}, settings)
+        if profile_gate is not None:
+            return profile_gate
         if apply_source == "invited" and settings.get("join_trust_inviter", False):
             return JoinDecision(
                 op="approve",
@@ -266,6 +399,16 @@ class JoinReviewer:
                 apply_source, apply_source
             ),
             "username": truncate(username, 40) or "未知",
+            "qq_level": profile.get("qq_level") if profile.get("qq_level") is not None else "未知",
+            "account_age_days": (
+                profile.get("account_age_days")
+                if profile.get("account_age_days") is not None
+                else "未知"
+            ),
+            "reg_time": profile.get("reg_time") or "未知",
+            "qid": str(profile.get("qid") or "无") or "无",
+            "sex": str(profile.get("sex") or "未知") or "未知",
+            "profile_state": self._profile_state(profile),
             "verify_method": str(verify.get("method") or "未知"),
             "verify_message": truncate(verify_message, 300) or "（无）",
             "review_qa": self._render_qa(verify.get("review_qa_list")),
@@ -276,15 +419,114 @@ class JoinReviewer:
         user_prompt = JOIN_USER_TEMPLATE
         for key, value in prompt_request.items():
             user_prompt = user_prompt.replace("{" + key + "}", str(value))
+        avatar = str(profile.get("avatar_url") or "")
+        avatar_mode = str(settings.get("join_avatar_review") or "off")
+        first_images = [avatar] if (avatar and avatar_mode == "always") else []
         try:
-            raw = await self.judge_call(JOIN_SYSTEM_PROMPT, user_prompt)
+            raw = await self._call_judge(
+                JOIN_SYSTEM_PROMPT, user_prompt, first_images, group_id
+            )
         except Exception as exc:
             self.stats.failed += 1
             self.stats.last_error = f"{type(exc).__name__}: {exc}"
             return JoinDecision(
                 op="approve", auto=False, reason="模型调用失败，转人工", source="manual"
             )
-        return self.parse_decision(raw, request, settings=settings, mode=mode)
+        decision = self.parse_decision(raw, request, settings=settings, mode=mode)
+        if avatar and avatar_mode == "approve_only":
+            decision = await self._avatar_review(decision, avatar, profile, settings, group_id)
+        return decision
+
+    def _judge_accepts(self) -> set[str] | None:
+        """judge_call 额外支持的关键字；None 表示「任意关键字都接受」。"""
+        func = self.judge_call
+        if self._judge_signature_for is not func:
+            self._judge_signature_for = func
+            names: set[str] | None = set()
+            try:
+                params = inspect.signature(func).parameters  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                names = None
+            else:
+                if any(item.kind is item.VAR_KEYWORD for item in params.values()):
+                    names = None
+                else:
+                    names = {
+                        name
+                        for name, item in params.items()
+                        if item.kind in (item.POSITIONAL_OR_KEYWORD, item.KEYWORD_ONLY)
+                    }
+            self._judge_kwargs = names
+        return self._judge_kwargs
+
+    async def _call_judge(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        image_urls: list[str] | None = None,
+        group_id: str = "",
+    ) -> str:
+        """调用判定模型；按签名兼容只接受部分参数的旧替身/自定义实现。"""
+        if self.judge_call is None:
+            raise RuntimeError("未配置可用的对话模型")
+        wanted: dict[str, Any] = {}
+        if image_urls:
+            wanted["image_urls"] = list(image_urls)
+        if group_id:
+            wanted["group_id"] = group_id
+        accepts = self._judge_accepts()
+        if accepts is not None:
+            wanted = {key: value for key, value in wanted.items() if key in accepts}
+        return await self.judge_call(system_prompt, user_prompt, **wanted)
+
+    async def _avatar_review(
+        self,
+        decision: JoinDecision,
+        avatar: str,
+        profile: dict[str, Any],
+        settings: dict[str, Any],
+        group_id: str = "",
+    ) -> JoinDecision:
+        """头像多模态复核：只允许把「拟放行」收紧为拒绝，绝不反向放行。"""
+        if not (decision.op == "approve" and decision.auto):
+            return decision
+        below = float(settings.get("join_avatar_only_below", 0.95) or 0.95)
+        if decision.confidence >= below:
+            return decision
+        prompt = (
+            AVATAR_USER_TEMPLATE.replace("{username}", str(profile.get("nickname") or "未知"))
+            .replace(
+                "{qq_level}",
+                str(profile.get("qq_level") if profile.get("qq_level") is not None else "未知"),
+            )
+        )
+        try:
+            raw = await self._call_judge(AVATAR_SYSTEM_PROMPT, prompt, [avatar], group_id)
+        except Exception as exc:
+            if self.logger is not None:
+                self.logger.debug("头像复核失败（保留原判定）：%s", exc)
+            return decision
+        payload = extract_json_object(raw or "")
+        if not payload:
+            return decision
+        risk = payload.get("risk")
+        risky = risk is True or str(risk or "").strip().lower() in ("true", "1", "yes")
+        if not risky:
+            return decision
+        confidence = clamp_float(payload.get("confidence"), 0.0, 0.0, 1.0)
+        threshold = float(settings.get("join_min_confidence", 0.8) or 0.8)
+        if confidence < threshold:
+            return decision
+        return JoinDecision(
+            op="decline",
+            auto=True,
+            confidence=confidence,
+            reason=truncate(payload.get("reason") or "头像疑似违规", 60),
+            risk="违规内容",
+            blacklist=bool(settings.get("join_decline_blacklist", True)),
+            source="llm",
+            gate="avatar",
+        )
 
     def parse_decision(
         self,
@@ -446,6 +688,7 @@ class JoinReviewer:
         if self.audit is None:
             return
         verify = request.get("verify_info") or {}
+        profile = request.get("profile") or {}
         await self.audit.record_join(
             join_request_id=str(request.get("join_request_id") or ""),
             group_id=group_id,
@@ -464,6 +707,14 @@ class JoinReviewer:
             confidence=decision.confidence,
             reason=(decision.reason + (f" | 失败：{error}" if error else ""))[:200],
             blacklisted=1 if decision.blacklist else 0,
+            profile_source=str(profile.get("source") or ""),
+            avatar_url=str(profile.get("avatar_url") or ""),
+            qq_level=profile.get("qq_level"),
+            account_age_days=profile.get("account_age_days"),
+            reg_time=profile.get("reg_time"),
+            qid=str(profile.get("qid") or ""),
+            profile_json=safe_json_dumps(profile) if profile else "",
+            gate=decision.gate,
         )
 
     async def _notify_pending(
@@ -481,6 +732,8 @@ class JoinReviewer:
                     ),
                     "member_openid": str(request.get("member_openid") or ""),
                     "username": str(request.get("username") or ""),
+                    "qq_level": (request.get("profile") or {}).get("qq_level"),
+                    "account_age_days": (request.get("profile") or {}).get("account_age_days"),
                     "join_request_id": str(request.get("join_request_id") or ""),
                     "risk_tips": str(request.get("risk_tips") or ""),
                     "verify_message": truncate(
