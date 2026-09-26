@@ -723,7 +723,7 @@ async function viewTools(root) {
       mkDbBtn('按保留策略裁剪', 'prune', null),
       mkDbBtn('VACUUM 整理', 'vacuum', '整理期间数据库会短暂锁定，确认执行？'),
       el('button', { class: 'btn ghost', text: '备份并下载', onclick: async () => {
-        try { await bridge.download('db/maintain', { op: 'backup' }, 'moderation-backup.db'); }
+        try { await bridge.download('db/backup', {}, 'moderation-backup.db'); }
         catch (error) { toast('备份失败：' + error.message, 'bad'); }
       } }),
     ]),

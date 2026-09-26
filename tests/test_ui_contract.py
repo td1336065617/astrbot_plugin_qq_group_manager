@@ -223,3 +223,21 @@ def test_log_filters_follow_tab_kind():
     assert "const showAppealed = kind === 'events';" in text
     assert "delete state.logs.filters.keyword" in text
     assert "delete state.logs.filters.appealed" in text
+
+
+def test_config_templates_accepts_list_and_others_still_reject():
+    """BUG-010：templates 分区接受数组；其它分区仍要求对象。"""
+    text = (PLUGIN_ROOT / "src" / "web_api.py").read_text(encoding="utf-8")
+    assert 'section == "templates"' in text
+    assert "templates 的 data 必须是数组" in text
+    assert 'error_response("data 必须是对象")' in text
+
+
+def test_db_backup_route_is_get():
+    """BUG-011：新增只读 GET db/backup，前端下载走它（bridge.download 恒为 GET）。"""
+    web = (PLUGIN_ROOT / "src" / "web_api.py").read_text(encoding="utf-8")
+    assert 'f"/{PLUGIN_NAME}/db/backup"' in web
+    assert "async def db_backup" in web
+    app = app_js()
+    assert "bridge.download('db/backup'" in app
+    assert "bridge.download('db/maintain'" not in app

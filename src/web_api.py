@@ -115,6 +115,7 @@ class WebApi:
             (f"/{PLUGIN_NAME}/ui_state", self.ui_state_set, ["POST"], "保存界面状态"),
             (f"/{PLUGIN_NAME}/db/info", self.db_info, ["GET"], "审计库信息"),
             (f"/{PLUGIN_NAME}/db/maintain", self.db_maintain, ["POST"], "审计库维护"),
+            (f"/{PLUGIN_NAME}/db/backup", self.db_backup, ["GET"], "下载审计库备份"),
             (f"/{PLUGIN_NAME}/logs/clear", self.logs_clear, ["POST"], "清空日志"),
             (f"/{PLUGIN_NAME}/logs/export", self.logs_export, ["GET"], "导出日志"),
             (f"/{PLUGIN_NAME}/events/stream", self.events_stream, ["GET"], "实时日志流(SSE)"),
@@ -266,7 +267,11 @@ class WebApi:
             return error_response("请求体必须是 JSON 对象")
         section = str(payload.get("section") or "settings")
         data = payload.get("data")
-        if not isinstance(data, dict):
+        if section == "templates":
+            # 模板列表是数组（store.update_templates 会过滤非 dict 元素），其余分区仍要求对象
+            if not isinstance(data, list):
+                return error_response("templates 的 data 必须是数组")
+        elif not isinstance(data, dict):
             return error_response("data 必须是对象")
         store = self.service.store
         try:
@@ -562,6 +567,16 @@ class WebApi:
                 "queue": dict(self.service.audit.stats),
             }
         )
+
+    async def db_backup(self):
+        """下载一份审计库一致性副本（只读，GET 可直接下载；BUG-011）。"""
+        if not self._service_ready():
+            return error_response("插件尚未初始化完成，请稍后重试")
+        audit = self.service.audit
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        target = self.service.data_dir / f"backup-{stamp}.db"
+        await audit.backup(target)
+        return file_response(target, filename=target.name)
 
     async def db_maintain(self):
         """审计库维护：prune / vacuum / backup。"""

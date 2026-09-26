@@ -7,7 +7,7 @@ desc: |
   基于 AstrBot 已配置 LLM 的群消息合法性识别与处置（警告/撤回/禁言/上报）、
   入群申请智能审批、群成员禁言与黑名单管理；SQLite 审计日志 + WebUI 管理台，
   全部能力带平台权限探测、受限留痕与优雅降级。
-version: 0.13.3
+version: 0.13.4
 author: td1336065617
 repo: https://github.com/td1336065617/astrbot_plugin_qq_group_manager
 astrbot_version: ">=4.16,<5"
