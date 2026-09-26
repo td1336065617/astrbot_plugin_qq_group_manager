@@ -52,3 +52,7 @@
 ## 支持平台
 - QQ 官方：qq_official / qq_official_webhook
 - QQ 非官方：aiocqhttp（OneBot v11）
+
+## 测试范围
+- QQ 官方通道：生产环境长期实测（群内功能与后台页面都已验证）
+- OneBot 通道：开发者账号被腾讯风控频繁踢下线，**仅完成小范围真机验证**，其余以代码审查与自动化测试覆盖
