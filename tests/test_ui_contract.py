@@ -280,3 +280,10 @@ def test_no_undefined_names_in_main():
         text=True,
     )
     assert "F821" not in (result.stdout or ""), result.stdout
+
+
+def test_daily_budget_day_uses_beijing_date():
+    """BUG-055：当日 LLM 预算的"今天"必须用 CN_TZ（否则 UTC 服务器 08:00 重置）。"""
+    src = (PLUGIN_ROOT / "src/moderator.py").read_text(encoding="utf-8")
+    assert 'datetime.now(CN_TZ).strftime("%Y-%m-%d")' in src
+    assert 'time.strftime("%Y-%m-%d", time.localtime())' not in src
