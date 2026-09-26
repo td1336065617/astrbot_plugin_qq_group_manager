@@ -178,3 +178,22 @@ def test_join_profile_settings_roundtrip():
     assert normalized["join_profile_qpm"] == 20
     assert normalized["join_profile_concurrency"] == 3
 
+
+def test_answer_settings_survive_normalize():
+    from src.store import normalize_settings
+
+    normalized = normalize_settings(
+        {
+            "join_expected_answer": "  ACM  ",
+            "join_answer_keywords": [" 校赛 ", "", "ACM"],
+            "join_answer_regex": " ^AC\\d+$ ",
+            "join_answer_action": "没这个动作",
+            "join_answer_case_sensitive": 1,
+        }
+    )
+    assert normalized["join_expected_answer"] == "ACM"
+    assert normalized["join_answer_keywords"] == ["校赛", "ACM"]
+    assert normalized["join_answer_regex"] == "^AC\\d+$"
+    assert normalized["join_answer_action"] == "manual"
+    assert normalized["join_answer_case_sensitive"] is True
+

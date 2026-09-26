@@ -1632,6 +1632,21 @@ async function viewJoins(root) {
   const cacheDays = numField('画像缓存（天）', settings.join_profile_cache_days || 7, 0, 90, 1);
   const profileQpm = numField('画像调用限频（次/分钟）', settings.join_profile_qpm || 30, 1, 300, 1);
   const profileConcurrency = numField('画像调用并发', settings.join_profile_concurrency || 2, 1, 8, 1);
+  /* 入群答案校验：三项规则全空 = 不校验，保持旧版行为 */
+  const textField = (label, value, placeholder) => {
+    const input = el('input', { type: 'text', value: value || '', placeholder: placeholder || '' });
+    return { node: el('label', { class: 'field' }, [el('span', { text: label }), input]), input };
+  };
+  const areaField = (label, text, placeholder) => {
+    const input = el('textarea', { rows: '3', class: 'mono', placeholder: placeholder || '' });
+    input.value = text || '';
+    return { node: el('label', { class: 'field' }, [el('span', { text: label }), input]), input };
+  };
+  const expectedAnswer = textField('期望答案（留空=不校验，子串匹配）', settings.join_expected_answer, '例：ACM');
+  const answerKeywords = areaField('答案关键词（一行一个，命中任一即可）', (settings.join_answer_keywords || []).join('\n'), '例：ACM\n校赛');
+  const answerRegex = textField('答案正则（留空=不校验）', settings.join_answer_regex, '例：^AC[0-9]{4}$');
+  const answerAction = selectField('答案校验未通过时', [['manual', '转人工（推荐）'], ['decline', '自动拒绝'], ['pass', '放行']], settings.join_answer_action || 'manual');
+  const answerCase = checkField('答案校验区分大小写', settings.join_answer_case_sensitive);
   const saveJoinSettings = el('button', { class: 'btn', text: '保存入群审批配置', onclick: async () => {
     saveJoinSettings.disabled = true;
     try {
@@ -1651,6 +1666,11 @@ async function viewJoins(root) {
         join_profile_cache_days: Number(cacheDays.input.value),
         join_profile_qpm: Number(profileQpm.input.value),
         join_profile_concurrency: Number(profileConcurrency.input.value),
+        join_expected_answer: expectedAnswer.input.value.trim(),
+        join_answer_keywords: answerKeywords.input.value.split('\n').map((line) => line.trim()).filter(Boolean),
+        join_answer_regex: answerRegex.input.value.trim(),
+        join_answer_action: answerAction.input.value,
+        join_answer_case_sensitive: answerCase.input.checked,
       });
       state.config = null;
       toast('入群审批配置已保存', 'ok');
@@ -1659,12 +1679,14 @@ async function viewJoins(root) {
     finally { saveJoinSettings.disabled = false; }
   } });
   root.appendChild(card('入群审批配置',
-    '画像与门槛默认全关；官方通道不提供头像/账号等级，「资料缺失策略」对其不生效。',
+    '画像与门槛默认全关；官方通道不提供头像/账号等级，「资料缺失策略」对其不生效。入群答案校验三项留空即关闭。',
     [
       el('div', { class: 'row' }, [profileEnabled.node, requireQid.node, declineBlacklist.node, trustInviter.node]),
       el('div', { class: 'row' }, [minDays.node, minLevel.node, gateAction.node, missingPolicy.node]),
       el('div', { class: 'row' }, [avatarReview.node, avatarBelow.node, minConfidence.node, pollInterval.node]),
       el('div', { class: 'row' }, [cacheDays.node, profileQpm.node, profileConcurrency.node]),
+      el('div', { class: 'row' }, [expectedAnswer.node, answerKeywords.node]),
+      el('div', { class: 'row' }, [answerRegex.node, answerAction.node, answerCase.node]),
       el('div', { class: 'field-actions' }, [saveJoinSettings]),
     ]));
 
@@ -1722,7 +1744,13 @@ async function viewJoins(root) {
       el('td', { text: fmtProfileNumber(profile, 'qq_level') }),
       el('td', { text: fmtProfileAge(profile) }),
       el('td', { text: request.apply_source === 'invited' ? '被邀请' : '主动申请' }),
-      el('td', { text: (verify.verify_message || '（无）').slice(0, 40) }),
+      el('td', {}, [
+        el('div', { text: (verify.verify_message || '（无）').slice(0, 60) }),
+        el('div', {
+          class: 'muted mono',
+          text: (verify.review_qa_list || []).map((qa) => '问：' + ((qa || {}).question || '（无）') + ' → 答：' + ((qa || {}).answer || '（无）')).join(' ; '),
+        }),
+      ]),
       el('td', { text: request.risk_tips || '无' }),
       el('td', { text: ((item.decision || {}).reason || '-').slice(0, 30) }),
       el('td', {}, [el('div', { class: 'field-actions' }, [
@@ -1734,7 +1762,7 @@ async function viewJoins(root) {
   root.appendChild(card('待人工审批（' + pending.length + '）', '轮询 ' + (progress.polls || 0) + ' 次，累计获取 ' + (progress.fetched || 0) + ' 条申请', pending.length ? [
     el('div', { class: 'table-wrap' }, [
       el('table', {}, [
-        el('thead', {}, [el('tr', {}, ['申请人', 'QQ等级', '账号年龄', '来源', '验证消息', '风险提示', '机器建议', '操作'].map((text) => el('th', { text })))]),
+        el('thead', {}, [el('tr', {}, ['申请人', 'QQ等级', '账号年龄', '来源', '验证消息 / 问答', '风险提示', '机器建议', '操作'].map((text) => el('th', { text })))]),
         pendingBody,
       ]),
     ]),

@@ -189,6 +189,11 @@
 | `join_profile_cache_days` | 7 | 画像缓存天数（0=不缓存） |
 | `join_profile_qpm` | 30 | 画像调用限频（次/分钟） |
 | `join_profile_concurrency` | 2 | 画像调用并发上限 |
+| `join_expected_answer` | 空 | 入群答案须包含的子串（留空=不校验） |
+| `join_answer_keywords` | [] | 入群答案须包含任一关键词（留空=不校验） |
+| `join_answer_regex` | 空 | 入群答案须匹配的正则（留空=不校验；正则写错不误拦） |
+| `join_answer_action` | manual | 答案校验未通过时的动作：`manual` 转人工 / `decline` 自动拒绝 / `pass` 放行 |
+| `join_answer_case_sensitive` | false | 答案校验是否区分大小写 |
 
 **能力差异（重要）**：
 

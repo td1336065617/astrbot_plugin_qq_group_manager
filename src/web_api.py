@@ -796,6 +796,11 @@ class WebApi:
             "join_profile_cache_days",
             "join_profile_qpm",
             "join_profile_concurrency",
+            "join_expected_answer",
+            "join_answer_keywords",
+            "join_answer_regex",
+            "join_answer_action",
+            "join_answer_case_sensitive",
         )
         patch_data = {key: payload[key] for key in allowed if key in payload}
         settings = await self.service.store.update_settings(patch_data)

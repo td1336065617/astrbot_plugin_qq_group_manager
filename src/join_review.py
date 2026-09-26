@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import inspect
+import re
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -35,6 +36,7 @@ JOIN_SYSTEM_PROMPT = """你是 QQ 群入群申请审核引擎。根据群规与�
 - 信息正常、无风险信号 → approve
 - 昵称/验证消息含广告、引流、联系方式、诈骗话术 → decline
 - 验证问题答案与问题明显无关或答非所问 → decline
+- 若给出【入群答案要求】，答案明显不符合要求 → decline（这是群主设定的硬性门槛）
 - 信息不足、无法判断 → decline 并把 confidence 给低值（交由人工处理）
 - 不臆测：不要因为昵称特殊字符、地区等无关特征拒绝正常用户
 - 账号年龄过短、QQ 等级过低、资料空白只作为风险加分，不得单独定罪
@@ -69,6 +71,7 @@ JOIN_USER_TEMPLATE = """【群规摘要】{rules_brief}
 MESSAGE>>>
 【问答】
 {review_qa}
+【入群答案要求】{answer_expectation}
 【平台风险提示】{risk_tips}
 【是否机器人账号】{is_bot}
 【邀请人 OpenID】{invited_by}"""
@@ -228,6 +231,102 @@ class JoinReviewer:
             }
 
     @staticmethod
+    def _answer_expectation(settings: dict[str, Any]) -> str:
+        """把入群答案要求渲染成给 LLM 看的一句话（未配置时返回“（无特殊要求）”）。"""
+        parts: list[str] = []
+        expected = str(settings.get("join_expected_answer") or "").strip()
+        if expected:
+            parts.append(f"答案须包含「{expected}」")
+        keywords = [
+            str(item).strip()
+            for item in (settings.get("join_answer_keywords") or [])
+            if str(item).strip()
+        ]
+        if keywords:
+            parts.append("答案须包含其中之一：" + "、".join(keywords))
+        pattern = str(settings.get("join_answer_regex") or "").strip()
+        if pattern:
+            parts.append(f"答案须匹配正则 /{pattern}/")
+        return "；".join(parts) or "（无特殊要求）"
+
+    @staticmethod
+    def _answer_gate(
+        verify: dict[str, Any], settings: dict[str, Any]
+    ) -> JoinDecision | None:
+        """入群答案校验：三项规则全空则不校验（默认与旧版行为一致）。
+
+        申请人答案的来源：verify_info.review_qa_list[].answer（QQ 群设置的验证问题）
+        与 verify_info.verify_message（自定义验证消息）。
+        """
+        expected = str(settings.get("join_expected_answer") or "").strip()
+        keywords = [
+            str(item).strip()
+            for item in (settings.get("join_answer_keywords") or [])
+            if str(item).strip()
+        ]
+        pattern = str(settings.get("join_answer_regex") or "").strip()
+        if not (expected or keywords or pattern):
+            return None
+
+        answers = [
+            str(item.get("answer") or "")
+            for item in (verify.get("review_qa_list") or [])
+            if isinstance(item, dict)
+        ]
+        answers.append(str(verify.get("verify_message") or ""))
+        joined = "\n".join(answer for answer in answers if answer).strip()
+        case_sensitive = bool(settings.get("join_answer_case_sensitive", False))
+        haystack = joined if case_sensitive else joined.casefold()
+
+        failures: list[str] = []
+        if expected:
+            needle = expected if case_sensitive else expected.casefold()
+            if needle not in haystack:
+                failures.append("未包含期望答案")
+        if keywords:
+            pool = keywords if case_sensitive else [item.casefold() for item in keywords]
+            if not any(item in haystack for item in pool):
+                failures.append("未包含任一关键词")
+        if pattern:
+            try:
+                if not re.search(pattern, joined, 0 if case_sensitive else re.I):
+                    failures.append("正则未匹配")
+            except re.error:
+                # 正则写错不拦人：按未配置处理，避免误拒
+                pass
+        if not failures:
+            return None
+
+        detail = "、".join(failures)
+        action = str(settings.get("join_answer_action") or "manual")
+        if action == "pass":
+            return JoinDecision(
+                op="approve",
+                auto=True,
+                confidence=0.6,
+                reason=f"入群答案校验未通过（{detail}），配置为放行",
+                source="rule",
+                gate="answer",
+            )
+        if action == "decline":
+            return JoinDecision(
+                op="decline",
+                auto=True,
+                confidence=0.75,
+                reason=f"入群答案不符合要求：{detail}",
+                risk="其他",
+                source="rule",
+                gate="answer",
+            )
+        return JoinDecision(
+            op="approve",
+            auto=False,
+            reason=f"入群答案校验未通过（{detail}），转人工复核",
+            source="manual",
+            gate="answer",
+        )
+
+    @staticmethod
     def _profile_state(profile: dict[str, Any]) -> str:
         if not profile:
             return "未采集"
@@ -376,6 +475,9 @@ class JoinReviewer:
         profile_gate = self._profile_gate(request.get("profile") or {}, settings)
         if profile_gate is not None:
             return profile_gate
+        answer_gate = self._answer_gate(verify, settings)
+        if answer_gate is not None:
+            return answer_gate
         if apply_source == "invited" and settings.get("join_trust_inviter", False):
             return JoinDecision(
                 op="approve",
@@ -395,6 +497,7 @@ class JoinReviewer:
             )
         prompt_request = {
             "rules_brief": self._rules_brief(group_id, settings),
+            "answer_expectation": self._answer_expectation(settings),
             "apply_source": {"self_apply": "主动申请", "invited": "被邀请"}.get(
                 apply_source, apply_source
             ),

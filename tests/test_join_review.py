@@ -399,3 +399,106 @@ def test_judge_call_var_keyword_accepts_extra_args():
     reviewer.judge_call = judge_call
     run(reviewer.judge('g1', request_payload(), mode='standard'))
     assert seen.get('group_id') == 'g1'
+
+
+# ---------------------------------------------------------------------------
+# 入群答案校验（join_expected_answer / join_answer_keywords / join_answer_regex）
+# ---------------------------------------------------------------------------
+def answer_payload(answer: str, question: str = "入群口令？"):
+    return request_payload(
+        verify_info={
+            "method": "review_qa",
+            "verify_message": "",
+            "review_qa_list": [{"question": question, "answer": answer}],
+        }
+    )
+
+
+def test_answer_gate_disabled_by_default():
+    """三项规则全空时不校验：直接交给 LLM（行为与旧版一致）。"""
+    _, _, _, reviewer, _ = make_env()
+    decision = run(reviewer.judge("g1", answer_payload("随便答的"), mode="standard"))
+    assert decision.source == "llm"
+    assert decision.gate == ""
+
+
+def test_answer_gate_expected_answer_defaults_to_manual():
+    store, _, _, reviewer, _ = make_env()
+    run(store.update_settings({"join_expected_answer": "ACM"}))
+
+    bad = run(reviewer.judge("g1", answer_payload("不知道"), mode="standard"))
+    assert bad.auto is False and bad.source == "manual"
+    assert bad.gate == "answer" and "未包含期望答案" in bad.reason
+
+    good = run(reviewer.judge("g1", answer_payload("我是 ACM 校队的"), mode="standard"))
+    assert good.source == "llm"
+
+
+def test_answer_gate_keywords_any_match():
+    store, _, _, reviewer, _ = make_env()
+    run(store.update_settings({"join_answer_keywords": ["ACM", "校赛"], "join_answer_action": "decline"}))
+
+    bad = run(reviewer.judge("g1", answer_payload("普通玩家"), mode="standard"))
+    assert bad.op == "decline" and bad.auto and bad.gate == "answer"
+
+    good = run(reviewer.judge("g1", answer_payload("参加过校赛"), mode="standard"))
+    assert good.source == "llm"
+
+
+def test_answer_gate_regex_and_action_pass():
+    store, _, _, reviewer, _ = make_env()
+    run(store.update_settings({"join_answer_regex": "^AC[0-9]{4}$", "join_answer_action": "pass"}))
+
+    bad = run(reviewer.judge("g1", answer_payload("AC99"), mode="standard"))
+    assert bad.op == "approve" and bad.auto and bad.gate == "answer"
+
+    good = run(reviewer.judge("g1", answer_payload("AC2024"), mode="standard"))
+    assert good.source == "llm"
+
+
+def test_answer_gate_case_sensitivity():
+    store, _, _, reviewer, _ = make_env()
+    run(store.update_settings({"join_expected_answer": "acm"}))
+
+    # 默认不区分大小写
+    relaxed = run(reviewer.judge("g1", answer_payload("ACM"), mode="standard"))
+    assert relaxed.source == "llm"
+
+    run(store.update_settings({"join_answer_case_sensitive": True}))
+    strict = run(reviewer.judge("g1", answer_payload("ACM"), mode="standard"))
+    assert strict.gate == "answer" and strict.source == "manual"
+
+
+def test_answer_gate_invalid_regex_does_not_block():
+    """正则写错不该误拦人：按未配置处理。"""
+    store, _, _, reviewer, _ = make_env()
+    run(store.update_settings({"join_answer_regex": "("}))
+    decision = run(reviewer.judge("g1", answer_payload("任何答案"), mode="standard"))
+    assert decision.source == "llm"
+
+
+def test_answer_gate_checks_verify_message_too():
+    """自定义验证消息（verify_message）也参与答案校验。"""
+    store, _, _, reviewer, _ = make_env()
+    run(store.update_settings({"join_expected_answer": "ACM"}))
+    payload = request_payload(
+        verify_info={"method": "verify_message", "verify_message": "我要加入 ACM 集训队"}
+    )
+    decision = run(reviewer.judge("g1", payload, mode="standard"))
+    assert decision.source == "llm"
+
+
+def test_answer_expectation_goes_into_llm_prompt():
+    store, _, _, reviewer, _ = make_env()
+    run(store.update_settings({"join_expected_answer": "ACM", "join_answer_keywords": ["校赛"]}))
+    seen = {}
+
+    async def judge_call(system_prompt, user_prompt):
+        seen["prompt"] = user_prompt
+        return '{"decision":"approve","confidence":0.9,"reason":"ok"}'
+
+    reviewer.judge_call = judge_call
+    run(reviewer.judge("g1", answer_payload("我是 ACM 校赛选手"), mode="standard"))
+    assert "【入群答案要求】" in seen["prompt"]
+    assert "ACM" in seen["prompt"] and "校赛" in seen["prompt"]
+

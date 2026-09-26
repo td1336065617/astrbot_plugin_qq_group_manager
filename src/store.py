@@ -13,6 +13,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from .models import (
     IMAGE_REVIEW_MODES,
+    JOIN_ANSWER_ACTIONS,
     JOIN_AVATAR_REVIEW_MODES,
     JOIN_GATE_ACTIONS,
     JOIN_PROFILE_MISSING_MODES,
@@ -99,6 +100,7 @@ def normalize_settings(raw: Any) -> dict[str, Any]:
         "join_trust_inviter",
         "join_profile_enabled",
         "join_require_qid",
+        "join_answer_case_sensitive",
         "store_text",
         "domain_allowlist_enabled",
         "appeal_enabled",
@@ -123,6 +125,18 @@ def normalize_settings(raw: Any) -> dict[str, Any]:
         settings["join_gate_action"] = "decline"
     if settings.get("join_avatar_review") not in JOIN_AVATAR_REVIEW_MODES:
         settings["join_avatar_review"] = "off"
+    if settings.get("join_answer_action") not in JOIN_ANSWER_ACTIONS:
+        settings["join_answer_action"] = "manual"
+    settings["join_expected_answer"] = str(
+        settings.get("join_expected_answer") or ""
+    ).strip()
+    settings["join_answer_regex"] = str(settings.get("join_answer_regex") or "").strip()
+    answers = settings.get("join_answer_keywords")
+    if not isinstance(answers, list):
+        answers = defaults.get("join_answer_keywords") or []
+    settings["join_answer_keywords"] = [
+        str(item).strip() for item in answers if str(item).strip()
+    ]
     conditions = settings.get("send_conditions")
     if not isinstance(conditions, list):
         conditions = ["rule_hit"]

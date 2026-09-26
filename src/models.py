@@ -87,6 +87,8 @@ JOIN_PROFILE_MISSING_MODES: tuple[str, ...] = ("pass", "manual", "decline")
 JOIN_GATE_ACTIONS: tuple[str, ...] = ("decline", "manual", "pass")
 #: 头像多模态复核：off 关闭 / approve_only 仅复核拟放行的 / always 每次
 JOIN_AVATAR_REVIEW_MODES: tuple[str, ...] = ("off", "approve_only", "always")
+#: 入群答案校验未通过时的动作
+JOIN_ANSWER_ACTIONS: tuple[str, ...] = ("manual", "decline", "pass")
 
 IMAGE_REVIEW_MODES: tuple[str, ...] = ("off", "with_text", "always")
 
@@ -452,6 +454,12 @@ def default_settings() -> dict[str, Any]:
         "join_profile_cache_days": 7,
         "join_profile_qpm": 30,
         "join_profile_concurrency": 2,
+        # 入群答案校验（三项全空 = 不校验，行为与旧版一致）
+        "join_expected_answer": "",
+        "join_answer_keywords": [],
+        "join_answer_regex": "",
+        "join_answer_action": "manual",
+        "join_answer_case_sensitive": False,
         "notify_session": "",
         # 申诉闭环：默认接受申诉；误判自学习白名单默认关（避免被社工利用）
         "appeal_enabled": True,
