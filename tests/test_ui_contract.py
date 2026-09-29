@@ -177,6 +177,19 @@ def test_joins_settings_payload_keys_are_known_settings():
     assert "payload.reset = resets.slice()" in text, "分群保存缺少 reset（恢复跟随）"
 
 
+def test_render_serialized_against_reentry():
+    """渲染互斥契约（生产问题根修）：视图在 clear 后仍有网络 await，并发渲染会
+    ①把配置卡片追加两遍 ②把旧 scope 的开关盖到最新结果上（表现为开关回弹/状态错乱）。
+    渲染必须单飞（renderBusy）+ 请求合并（renderQueued → renderOnce 补跑）。"""
+    text = app_js()
+    assert "async function renderOnce()" in text, "渲染体必须拆到 renderOnce"
+    assert "let renderBusy = false" in text and "let renderQueued = false" in text
+    head = text[text.index("async function render()"):text.index("async function render()") + 420]
+    assert "renderBusy" in head, "render() 缺少重入检查"
+    assert "renderOnce()" in head and "while (renderQueued)" in head, "render() 缺少补渲染循环"
+    assert "finally" in head, "render() 必须用 finally 释放渲染锁"
+
+
 def test_joins_view_renders_profile_columns():
     text = app_js()
     start = text.index("async function viewJoins")

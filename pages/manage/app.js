@@ -2238,7 +2238,33 @@ function viewComingSoon(root, view) {
 
 /* ------------------------------------------------------------------ 路由 */
 
+/* ------------------------------------------------------ 渲染入口（互斥 + 合并）
+
+   生产复现的两个问题同根：视图在 clear(root) 之后仍有网络 await（入群审批页的
+   joins GET 夹在清屏与卡片追加之间），期间发生的第二次 render 会先清屏并重建；
+   第一次渲染从 await 恢复后**继续追加** → 配置卡片重复显示；交叠的旧渲染还可能把
+   基于旧 scope 构建的开关盖到最新结果上（表现为「取消勾选后又自动勾上」，
+   进而误点发出反向请求——生产 journal 证实后端写入本身一直成功）。
+   这里把渲染串行化：同一时刻只执行一个渲染；渲染期间到来的渲染请求合并为
+   「结束后补跑一轮」。每个 mutation（handler 中 await API 成功后）都跟着一次
+   render，串行化后最终态必然来自最新服务端数据。 */
+let renderBusy = false;
+let renderQueued = false;
+
 async function render() {
+  if (renderBusy) { renderQueued = true; return; }
+  renderBusy = true;
+  try {
+    do {
+      renderQueued = false;
+      await renderOnce();
+    } while (renderQueued);
+  } finally {
+    renderBusy = false;
+  }
+}
+
+async function renderOnce() {
   const viewId = location.hash.replace('#/', '') || 'dashboard';
   const view = VIEWS.find((item) => item.id === viewId) || VIEWS[0];
   const root = document.getElementById('content');
