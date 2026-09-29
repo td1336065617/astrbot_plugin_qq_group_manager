@@ -19,6 +19,9 @@ const state = {
   sse: null,
   sseLines: [],
   busy: false,
+  /* 入群审批「本群规则」未保存的编辑（按群暂存）：{ [gid]: { dirty: {键:值}, reset: [键] } }
+     跨重渲染保留，避免任何操作（应用模式/拉取/审批/切群）静默丢弃用户输入 */
+  joinEdits: {},
 };
 
 const VIEWS = [
@@ -1556,6 +1559,111 @@ async function viewMembers(root) {
   await Promise.all([loadMutes(), loadBlacklist(), loadGlobalBlacklist()]);
 }
 
+/* ------------------------------------------------- 入群审批字段规格
+
+   全局卡与「本群规则」卡的**唯一字段来源**：键 → 控件类型 / 标签 / 取值范围 / 分行。
+   键集合必须与后端白名单一致（契约用例守护）：本表 = default_settings() 的**全部** join_* 键
+   （0.14 起含全局入群审批模式——仅在全局卡编辑其全局值；按群模式仍走顶部下拉，
+   两者都不受「跟随全局」总开关管辖）。带 globalOnly 标记的键 = 后端 JOIN_GLOBAL_ONLY_KEYS。
+   row 决定表单分行，保持历史布局。 */
+const JOIN_FIELD_SPECS = {
+  /* 全局入群审批模式（0.14 补上编辑入口）：新群与「跟随全局」的群使用；
+     按群模式走顶部下拉（可选「跟随全局」空值），不受总开关管辖（设计 §5）。
+     globalOnly：只在全局卡渲染，不参与影响面计数与本群固化。 */
+  join_review_mode: { kind: 'select', row: 0, globalOnly: true, label: '全局入群审批模式（新群与「跟随全局」的群使用）', options: [['off', '关闭'], ['strict', '严格（仅高置信通过）'], ['standard', '标准（高置信自动，其余转人工）'], ['human', '全部人工']] },
+  join_profile_enabled: { kind: 'check', row: 0, label: '启用申请人画像采集（OneBot 可取 QQ 等级/账号年龄/头像）' },
+  join_require_qid: { kind: 'check', row: 0, label: '要求有 QID' },
+  join_decline_blacklist: { kind: 'check', row: 0, label: '自动拒绝时加入群黑名单（内邀能力，可能失败）' },
+  join_trust_inviter: { kind: 'check', row: 0, label: '信任邀请人：被邀请入群直接通过' },
+  join_min_account_days: { kind: 'number', row: 1, label: '账号年龄门槛（天，0=关闭）', min: 0, max: 3650, step: 1 },
+  join_min_qq_level: { kind: 'number', row: 1, label: 'QQ 等级门槛（0=关闭）', min: 0, max: 144, step: 1 },
+  join_gate_action: { kind: 'select', row: 1, label: '门槛命中动作', options: [['decline', '自动拒绝'], ['manual', '转人工'], ['pass', '放行']] },
+  join_profile_missing: { kind: 'select', row: 1, label: '资料缺失策略（仅对可提供画像的通道生效）', options: [['manual', '转人工'], ['pass', '放行'], ['decline', '拒绝']] },
+  join_avatar_review: { kind: 'select', row: 2, label: '头像多模态复核', options: [['off', '关闭'], ['approve_only', '仅复核拟放行的'], ['always', '每次都复核']] },
+  join_avatar_only_below: { kind: 'number', row: 2, label: '头像复核触发阈值（置信度低于此值才复核）', min: 0, max: 1, step: 0.05 },
+  join_min_confidence: { kind: 'number', row: 2, label: '自动审批置信度门槛', min: 0, max: 1, step: 0.05 },
+  join_expected_answer: { kind: 'text', row: 4, label: '期望答案（留空=不校验，子串匹配）', placeholder: '例：ACM', parse: (v) => String(v || '').trim() },
+  join_answer_keywords: { kind: 'textarea', row: 4, label: '答案关键词（一行一个，命中任一即可）', placeholder: '例：ACM\n校赛', parse: (v) => String(v || '').split('\n').map((line) => line.trim()).filter(Boolean) },
+  join_answer_regex: { kind: 'text', row: 6, label: '答案正则（留空=不校验）', placeholder: '例：^AC[0-9]{4}$', parse: (v) => String(v || '').trim() },
+  join_answer_action: { kind: 'select', row: 6, label: '答案校验未通过时', options: [['manual', '转人工（推荐）'], ['decline', '自动拒绝'], ['pass', '放行']] },
+  join_answer_case_sensitive: { kind: 'check', row: 6, label: '答案校验区分大小写' },
+  join_llm_provider_id: { kind: 'provider', row: 5, label: '审核模型' },
+  /* —— 全局独有（不分群），只在全局卡出现 —— */
+  join_poll_interval: { kind: 'number', row: 2, label: '轮询间隔（秒，仅官方通道）', min: 30, max: 600, step: 5, globalOnly: true },
+  join_profile_cache_days: { kind: 'number', row: 3, label: '画像缓存（天）', min: 0, max: 90, step: 1, globalOnly: true },
+  join_profile_qpm: { kind: 'number', row: 3, label: '画像调用限频（次/分钟）', min: 1, max: 300, step: 1, globalOnly: true },
+  join_profile_concurrency: { kind: 'number', row: 3, label: '画像调用并发', min: 1, max: 8, step: 1, globalOnly: true },
+};
+
+/* 历史表「规则来源」：settings_scope 三态 → 简短文案（NULL = 升级前旧记录 → 全局） */
+function fmtJoinScope(scope) {
+  if (!scope || scope === 'global') return '全局';
+  if (scope === 'off') return '本群配置';
+  const keys = String(scope).split('|')[1] || '';
+  const count = keys.split(',').filter(Boolean).length;
+  return '本群配置·跟随 ' + count + ' 项';
+}
+
+/* 按规格构建一个字段控件；返回 { node, input, read }（read 返回**解析后**的提交值） */
+function buildJoinField(key, spec, value, providerInfo) {
+  const display = Array.isArray(value) ? value.join('\n') : (value === undefined || value === null ? '' : value);
+  let node = null;
+  let input = null;
+  let read = () => '';
+  if (spec.kind === 'check') {
+    const built = checkField(spec.label, value);
+    node = built.node;
+    input = built.input;
+    read = () => !!input.checked;
+  } else if (spec.kind === 'number') {
+    const built = numField(spec.label, display === '' ? 0 : value, spec.min, spec.max, spec.step);
+    node = built.node;
+    input = built.input;
+    read = () => {
+      const raw = String(input.value === undefined ? '' : input.value).trim();
+      const num = Number(raw);
+      return raw !== '' && Number.isFinite(num) ? num : 0;   // 空/脏输入 → 0（各阈值 0 = 关闭）
+    };
+  } else if (spec.kind === 'text') {
+    input = el('input', { type: 'text', value: display, placeholder: spec.placeholder || '' });
+    node = el('label', { class: 'field' }, [el('span', { text: spec.label }), input]);
+    read = () => input.value;
+  } else if (spec.kind === 'textarea') {
+    input = el('textarea', { rows: '3', class: 'mono', placeholder: spec.placeholder || '' });
+    input.value = display;
+    node = el('label', { class: 'field' }, [el('span', { text: spec.label }), input]);
+    read = () => input.value;
+  } else if (spec.kind === 'select') {
+    input = el('select');
+    (spec.options || []).forEach((pair) => input.appendChild(el('option', {
+      value: pair[0],
+      text: pair[1],
+      selected: pair[0] === display ? 'selected' : null,
+    })));
+    node = el('label', { class: 'field' }, [el('span', { text: spec.label }), input]);
+    read = () => input.value;
+  } else if (spec.kind === 'provider') {
+    input = el('select');
+    input.appendChild(el('option', { value: '', text: '跟随发言审核模型' }));
+    ((providerInfo && providerInfo.items) || []).forEach((item) => {
+      input.appendChild(el('option', {
+        value: item.id,
+        text: (item.model || item.id) + (item.type ? '（' + item.type + '）' : ''),
+        selected: item.id === display ? 'selected' : null,
+      }));
+    });
+    node = el('label', { class: 'field' }, [el('span', { text: spec.label }), input]);
+    read = () => input.value;
+  } else {
+    throw new Error('未知入群字段类型：' + spec.kind + '（' + key + '）');
+  }
+  if (spec.parse) {
+    const baseRead = read;
+    read = () => spec.parse(baseRead());
+  }
+  return { node, input, read };
+}
+
 /* ------------------------------------------------------- 入群审批视图 */
 
 async function viewJoins(root) {
@@ -1582,20 +1690,25 @@ async function viewJoins(root) {
     await render();
   });
 
+  const currentGroup = groups.find((item) => item.group_id === selected) || {};
+  const globalMode = settings.join_review_mode || 'off';
+
+  /* 模式下拉：空串 = 跟随全局（模式是独立通道，不受下方总开关管辖） */
   const modeSelect = el('select');
+  modeSelect.appendChild(el('option', {
+    value: '',
+    text: '跟随全局（当前：' + globalMode + '）',
+    selected: !currentGroup.join_review_mode ? 'selected' : null,
+  }));
   (config.options && config.options.join_modes ? config.options.join_modes : ['off']).forEach((mode) => {
     modeSelect.appendChild(el('option', {
       value: mode,
       text: mode,
-      selected: mode === (groups.find((item) => item.group_id === selected) || {}).effective_join_mode ? 'selected' : null,
+      selected: currentGroup.join_review_mode === mode ? 'selected' : null,
     }));
   });
   const modeSave = el('button', { class: 'btn small', text: '应用模式', onclick: async () => {
     try {
-      const snapshot = config.groups || [];
-      const next = snapshot.map((group) => (group.group_id === groupSelect.value
-        ? Object.assign({}, group, { join_review_mode: modeSelect.value })
-        : group));
       await bridge.apiPost('groups/join_mode', { group_id: groupSelect.value, mode: modeSelect.value });
       state.config = null;
       toast('入群审批模式已更新', 'ok');
@@ -1613,119 +1726,255 @@ async function viewJoins(root) {
     finally { fetchBtn.disabled = false; }
   } });
 
-  root.appendChild(card('入群审批', '插件通过轮询获取入群申请（平台不推送该事件）；官方策略命中的申请不会出现在这里。', [
+  /* 顶部基础卡先渲染：即使入群快照拉取失败，群选择器/模式/拉取仍可用（失败路径不降级整卡） */
+  const topCard = card('入群审批', '插件通过轮询获取入群申请（平台不推送该事件）；官方策略命中的申请不会出现在这里。', [
     el('div', { class: 'row' }, [
       groupSelect, modeSelect,
       el('div', { class: 'field-actions' }, [modeSave, fetchBtn]),
     ]),
-  ]));
+  ]);
+  root.appendChild(topCard);
 
-  /* 申请人画像与门槛配置 */
-  const selectField = (label, pairs, value) => {
-    const select = el('select');
-    pairs.forEach((pair) => select.appendChild(el('option', {
-      value: pair[0],
-      text: pair[1],
-      selected: pair[0] === value ? 'selected' : null,
-    })));
-    return { node: el('label', { class: 'field' }, [el('span', { text: label }), select]), input: select };
-  };
-  const profileEnabled = checkField('启用申请人画像采集（OneBot 可取 QQ 等级/账号年龄/头像）', settings.join_profile_enabled !== false);
-  const requireQid = checkField('要求有 QID', settings.join_require_qid);
-  const declineBlacklist = checkField('自动拒绝时加入群黑名单（内邀能力，可能失败）', settings.join_decline_blacklist !== false);
-  const trustInviter = checkField('信任邀请人：被邀请入群直接通过', settings.join_trust_inviter);
-  const minDays = numField('账号年龄门槛（天，0=关闭）', settings.join_min_account_days || 0, 0, 3650, 1);
-  const minLevel = numField('QQ 等级门槛（0=关闭）', settings.join_min_qq_level || 0, 0, 144, 1);
-  const gateAction = selectField('门槛命中动作', [['decline', '自动拒绝'], ['manual', '转人工'], ['pass', '放行']], settings.join_gate_action || 'decline');
-  const missingPolicy = selectField('资料缺失策略（仅对可提供画像的通道生效）', [['manual', '转人工'], ['pass', '放行'], ['decline', '拒绝']], settings.join_profile_missing || 'manual');
-  const avatarReview = selectField('头像多模态复核', [['off', '关闭'], ['approve_only', '仅复核拟放行的'], ['always', '每次都复核']], settings.join_avatar_review || 'off');
-  const avatarBelow = numField('头像复核触发阈值（置信度低于此值才复核）', settings.join_avatar_only_below === undefined ? 0.95 : settings.join_avatar_only_below, 0, 1, 0.05);
-  const minConfidence = numField('自动审批置信度门槛', settings.join_min_confidence === undefined ? 0.8 : settings.join_min_confidence, 0, 1, 0.05);
-  const pollInterval = numField('轮询间隔（秒，仅官方通道）', settings.join_poll_interval || 60, 30, 600, 5);
-  const cacheDays = numField('画像缓存（天）', settings.join_profile_cache_days || 7, 0, 90, 1);
-  const profileQpm = numField('画像调用限频（次/分钟）', settings.join_profile_qpm || 30, 1, 300, 1);
-  const profileConcurrency = numField('画像调用并发', settings.join_profile_concurrency || 2, 1, 8, 1);
-  /* 入群答案校验：三项规则全空 = 不校验，保持旧版行为 */
-  const textField = (label, value, placeholder) => {
-    const input = el('input', { type: 'text', value: value || '', placeholder: placeholder || '' });
-    return { node: el('label', { class: 'field' }, [el('span', { text: label }), input]), input };
-  };
-  const areaField = (label, text, placeholder) => {
-    const input = el('textarea', { rows: '3', class: 'mono', placeholder: placeholder || '' });
-    input.value = text || '';
-    return { node: el('label', { class: 'field' }, [el('span', { text: label }), input]), input };
-  };
-  const expectedAnswer = textField('期望答案（留空=不校验，子串匹配）', settings.join_expected_answer, '例：ACM');
-  const joinProviderInfo = config.providers || {};
-  const joinProviderSelect = el('select');
-  joinProviderSelect.appendChild(el('option', { value: '', text: '跟随发言审核模型' }));
-  (joinProviderInfo.items || []).forEach((item) => {
-    joinProviderSelect.appendChild(el('option', {
-      value: item.id,
-      text: (item.model || item.id) + (item.type ? '（' + item.type + '）' : ''),
-      selected: item.id === (settings.join_llm_provider_id || '') ? 'selected' : null,
-    }));
-  });
-  const joinProviderHint = el('p', { class: 'card-desc', text: settings.join_llm_provider_id
-    ? '入群审批当前使用：' + settings.join_llm_provider_id
-    : '入群审批当前跟随发言审核模型（' + (joinProviderInfo.last_used || joinProviderInfo.configured || '会话默认模型') + '）' });
-  const answerKeywords = areaField('答案关键词（一行一个，命中任一即可）', (settings.join_answer_keywords || []).join('\n'), '例：ACM\n校赛');
-  const answerRegex = textField('答案正则（留空=不校验）', settings.join_answer_regex, '例：^AC[0-9]{4}$');
-  const answerAction = selectField('答案校验未通过时', [['manual', '转人工（推荐）'], ['decline', '自动拒绝'], ['pass', '放行']], settings.join_answer_action || 'manual');
-  const answerCase = checkField('答案校验区分大小写', settings.join_answer_case_sensitive);
-  const saveJoinSettings = el('button', { class: 'btn', text: '保存入群审批配置', onclick: async () => {
-    saveJoinSettings.disabled = true;
-    try {
-      await bridge.apiPost('joins/settings', {
-        join_profile_enabled: profileEnabled.input.checked,
-        join_require_qid: requireQid.input.checked,
-        join_decline_blacklist: declineBlacklist.input.checked,
-        join_trust_inviter: trustInviter.input.checked,
-        join_llm_provider_id: joinProviderSelect.value,
-        join_min_account_days: Number(minDays.input.value),
-        join_min_qq_level: Number(minLevel.input.value),
-        join_gate_action: gateAction.input.value,
-        join_profile_missing: missingPolicy.input.value,
-        join_avatar_review: avatarReview.input.value,
-        join_avatar_only_below: Number(avatarBelow.input.value),
-        join_min_confidence: Number(minConfidence.input.value),
-        join_poll_interval: Number(pollInterval.input.value),
-        join_profile_cache_days: Number(cacheDays.input.value),
-        join_profile_qpm: Number(profileQpm.input.value),
-        join_profile_concurrency: Number(profileConcurrency.input.value),
-        join_expected_answer: expectedAnswer.input.value.trim(),
-        join_answer_keywords: answerKeywords.input.value.split('\n').map((line) => line.trim()).filter(Boolean),
-        join_answer_regex: answerRegex.input.value.trim(),
-        join_answer_action: answerAction.input.value,
-        join_answer_case_sensitive: answerCase.input.checked,
-      });
-      state.config = null;
-      toast('入群审批配置已保存', 'ok');
-      await render();
-    } catch (error) { toast('保存失败：' + error.message, 'bad'); }
-    finally { saveJoinSettings.disabled = false; }
-  } });
-  root.appendChild(card('入群审批配置',
-    '画像与门槛默认全关；官方通道不提供头像/账号等级，「资料缺失策略」对其不生效。入群答案校验三项留空即关闭。',
-    [
-      el('div', { class: 'row' }, [profileEnabled.node, requireQid.node, declineBlacklist.node, trustInviter.node]),
-      el('div', { class: 'row' }, [minDays.node, minLevel.node, gateAction.node, missingPolicy.node]),
-      el('div', { class: 'row' }, [avatarReview.node, avatarBelow.node, minConfidence.node, pollInterval.node]),
-      el('div', { class: 'row' }, [cacheDays.node, profileQpm.node, profileConcurrency.node]),
-      el('div', { class: 'row' }, [expectedAnswer.node, answerKeywords.node]),
-      el('div', { class: 'row' }, [el('label', { class: 'field' }, [el('span', { text: '审核模型' }), joinProviderSelect])]),
-      joinProviderHint,
-      el('div', { class: 'row' }, [answerRegex.node, answerAction.node, answerCase.node]),
-      el('div', { class: 'field-actions' }, [saveJoinSettings]),
-    ]));
-
+  /* 入群快照：scope 供本群规则卡，pending/history 供下方列表（取不到仅报错，基础卡保留） */
   let snapshot = null;
   try {
     snapshot = await bridge.apiGet('joins', { group_id: groupSelect.value });
   } catch (error) {
-    root.appendChild(notice('加载入群申请失败：' + error.message, 'bad'));
+    root.appendChild(notice('加载入群申请失败：' + error.message + '（可重试；上方操作仍可用）', 'bad'));
     return;
   }
+  const scope = snapshot.scope || {
+    follow_global: true,
+    own_keys: [],
+    restored_keys: [],
+    overrides: {},
+    overridable_keys: (config.options && config.options.join_overridable_keys) || [],
+    global_only_keys: (config.options && config.options.join_global_only_keys) || [],
+  };
+  const gid = groupSelect.value;
+
+  /* —— 跟随全局总开关（群级门控；文案注明不含审批模式） —— */
+  const gateField = checkField('跟随全局配置（不含审批模式）', scope.follow_global);
+  gateField.node.classList.add('gate-box');
+  const gateHint = el('p', { class: 'card-desc' });
+  const renderGateHint = () => {
+    gateHint.textContent = scope.follow_global
+      ? ((scope.own_keys || []).length
+        ? '全部规则取全局；本群配置已保留 ' + scope.own_keys.length + ' 项（未生效）'
+        : '全部规则取全局（本群尚无配置，新群默认如此）')
+      : '使用本群配置；仍跟随全局的字段：' + (scope.restored_keys || []).length + ' 项';
+  };
+  renderGateHint();
+  gateField.input.addEventListener('change', async () => {
+    const follow = gateField.input.checked;
+    const firstClose = scope.follow_global && !(scope.own_keys || []).length;  // 用切换前快照判定「生成 / 复活」
+    const pending = state.joinEdits[gid];
+    const hadEdits = !!(pending && (Object.keys(pending.dirty || {}).length || (pending.reset || []).length));
+    try {
+      const result = await bridge.apiPost('joins/settings', { group_id: gid, follow_global: follow });
+      delete state.joinEdits[gid];   // 开关切换重置上下文（放弃未保存的字段编辑，toast 中明示）
+      state.config = null;
+      const nextScope = result.scope || {};
+      const count = (nextScope.own_keys || []).length;
+      const base = follow
+        ? '已切换为跟随全局；本群配置（' + count + ' 项）已保留，可随时切回'
+        : (firstClose
+          ? '已以当前全局值生成本群配置（' + count + ' 项）；此后全局变更不再影响本群'
+          : '已启用本群配置（' + count + ' 项）；内容为上次固化的值');
+      toast(base + (hadEdits ? '（未保存的字段修改已放弃）' : ''), 'ok');
+      await render();
+    } catch (error) {
+      // 响应不确定（如超时但服务端已生效）：不盲目回拨，直接按服务端状态重同步
+      toast('切换结果不确定：' + error.message + '（正在按服务端状态刷新）', 'bad');
+      state.config = null;
+      await render();
+    }
+  });
+
+  topCard.appendChild(el('div', { class: 'row' }, [gateField.node]));
+  topCard.appendChild(gateHint);
+
+  /* —— 本群规则卡：关态可编辑（编辑即固化、「恢复跟随」删键回落）；开态只读 —— */
+  const joinProviderInfo = config.providers || {};
+  const overridableKeys = scope.overridable_keys || [];
+  const followStats = (config.options && config.options.join_follow_stats) || {};
+  const joinEdit = state.joinEdits[gid] || null;
+  const ownSet = new Set(scope.own_keys || []);
+  const resetSet = new Set((joinEdit && joinEdit.reset) || []);
+  const groupRows = {};
+  const ensureEdit = () => state.joinEdits[gid] || (state.joinEdits[gid] = { dirty: {}, reset: [] });
+  let discardBtnNode = null;   // 首次编辑时就地显示（不必等下一次渲染）
+  overridableKeys.forEach((key) => {
+    const spec = JOIN_FIELD_SPECS[key];
+    if (!spec) return;
+    const pendingRestore = resetSet.has(key);
+    const isOwn = ownSet.has(key) && !pendingRestore;
+    const serverValue = isOwn ? (scope.overrides || {})[key] : settings[key];
+    const initialValue = (!scope.follow_global && joinEdit && key in joinEdit.dirty) ? joinEdit.dirty[key] : serverValue;
+    const built = buildJoinField(key, spec, initialValue, joinProviderInfo);
+    built.input.disabled = !!scope.follow_global;   // 开态：只读取全局值
+    let badgeClass = 'follow';
+    let badgeText = '跟随';
+    if (scope.follow_global) {
+      if (isOwn) { badgeClass = 'own dormant'; badgeText = '本群·停用'; }
+      else { badgeClass = 'follow'; badgeText = '全局'; }
+    } else if (isOwn) {
+      badgeClass = 'own'; badgeText = '本群';
+    } else if (pendingRestore) {
+      badgeClass = 'follow pending'; badgeText = '跟随·待保存';
+    }
+    const badgeEl = el('span', { class: 'scope-badge ' + badgeClass, text: badgeText });
+    const meta = [badgeEl];
+    if (!scope.follow_global && !isOwn && !pendingRestore) {
+      meta[meta.length - 1].title = '修改此框即固化为本群配置';
+    }
+    if (!scope.follow_global && isOwn) {
+      meta.push(el('button', { class: 'btn small ghost', text: '恢复跟随', onclick: async () => {
+        const entry = ensureEdit();
+        delete entry.dirty[key];
+        if (!entry.reset.includes(key)) entry.reset.push(key);
+        await render();
+      } }));
+    } else if (pendingRestore) {
+      meta.push(el('button', { class: 'btn small ghost', text: '撤销恢复', onclick: async () => {
+        const entry = ensureEdit();
+        entry.reset = entry.reset.filter((item) => item !== key);
+        await render();
+      } }));
+    }
+    built.node.appendChild(el('div', { class: 'field-meta' }, meta));
+    if (!scope.follow_global) {
+      const onInput = () => {
+        const entry = ensureEdit();
+        // 编辑即覆盖「恢复跟随」意图：同键不能既在 reset 又在 patch（否则后端 400）
+        entry.reset = entry.reset.filter((item) => item !== key);
+        entry.dirty[key] = built.read();
+        badgeEl.className = 'scope-badge own pending';
+        badgeEl.textContent = '本群·待保存';
+        if (discardBtnNode) discardBtnNode.style.display = '';
+      };
+      built.input.addEventListener('input', onInput);
+      built.input.addEventListener('change', onInput);
+    }
+    (groupRows[spec.row] = groupRows[spec.row] || []).push(built.node);
+  });
+
+  const groupChildren = [];
+  if (!scope.follow_global && !(scope.own_keys || []).length) {
+    groupChildren.push(notice('本群配置为空，所有字段当前跟随全局；编辑任一字段即开始固化'));
+  }
+  Object.keys(groupRows).sort((a, b) => Number(a) - Number(b)).forEach((rowKey) => {
+    groupChildren.push(el('div', { class: 'row' }, groupRows[rowKey]));
+  });
+  const groupActions = [];
+  const hasLocalEdit = !!(joinEdit && (Object.keys(joinEdit.dirty || {}).length || (joinEdit.reset || []).length));
+  if (!scope.follow_global) {
+    const saveGroupBtn = el('button', { class: 'btn', text: '保存本群配置', onclick: async () => {
+      const entry = state.joinEdits[gid] || {};
+      const dirty = entry.dirty || {};
+      const resets = entry.reset || [];
+      if (!Object.keys(dirty).length && !resets.length) { toast('没有需要保存的修改', 'bad'); return; }
+      saveGroupBtn.disabled = true;
+      try {
+        const payload = Object.assign({ group_id: gid }, dirty);   // 只提交编辑过的键（绝不全量提交）
+        if (resets.length) payload.reset = resets.slice();
+        await bridge.apiPost('joins/settings', payload);
+        delete state.joinEdits[gid];
+        state.config = null;
+        toast('本群配置已保存', 'ok');
+        await render();
+      } catch (error) { toast('保存失败：' + error.message, 'bad'); }
+      finally { saveGroupBtn.disabled = false; }
+    } });
+    groupActions.push(saveGroupBtn);
+    discardBtnNode = el('button', { class: 'btn ghost', text: '放弃修改', onclick: async () => {
+      if (!(await uiConfirm('放弃本群未保存的字段修改？'))) return;
+      delete state.joinEdits[gid];
+      await render();
+    } });
+    discardBtnNode.style.display = hasLocalEdit ? '' : 'none';
+    groupActions.push(discardBtnNode);
+    groupActions.push(el('button', { class: 'btn ghost', text: '以当前全局值重建', onclick: async () => {
+      if (!(await uiConfirm('以当前全局值重建本群配置？将覆盖现有 ' + overridableKeys.length + ' 项。'))) return;
+      try {
+        const payload = { group_id: gid };
+        overridableKeys.forEach((key) => { payload[key] = settings[key]; });   // 逐键取当前全局值
+        await bridge.apiPost('joins/settings', payload);
+        delete state.joinEdits[gid];
+        state.config = null;
+        toast('已以当前全局值重建本群配置（' + overridableKeys.length + ' 项）', 'ok');
+        await render();
+      } catch (error) { toast('重建失败：' + error.message, 'bad'); }
+    } }));
+    if ((scope.own_keys || []).length) groupActions.push(el('button', { class: 'btn danger', text: '清空本群配置', onclick: async () => {
+      if (!(await uiConfirm('将永久删除本群配置（' + (scope.own_keys || []).length + ' 项），所有字段回到跟随全局。确认？'))) return;
+      try {
+        await bridge.apiPost('joins/settings', { group_id: gid, reset: '*' });
+        delete state.joinEdits[gid];
+        state.config = null;
+        toast('本群配置已清空，全部字段回到跟随全局', 'ok');
+        await render();
+      } catch (error) { toast('清空失败：' + error.message, 'bad'); }
+    } }));
+  }
+  groupChildren.push(el('div', { class: 'field-actions' }, groupActions));
+  root.appendChild(card(
+    '本群规则（当前群：' + (currentGroup.name || shortId(gid)) + '）',
+    scope.follow_global
+      ? '本群配置只在关闭上方「跟随全局」后生效；开态下此处仅展示生效的全局值与已保留项。'
+      : '改动即固化为本群配置，全局变更不再影响；不想独立的字段点「恢复跟随」；审批模式走顶部下拉、不受影响。',
+    groupChildren,
+  ));
+
+  /* —— 全局设置（新群快照来源 + 跟随字段的取值来源） —— */
+  const joinProviderHint = el('p', { class: 'card-desc', text: settings.join_llm_provider_id
+    ? '入群审批当前使用：' + settings.join_llm_provider_id
+    : '入群审批当前跟随发言审核模型（' + (joinProviderInfo.last_used || joinProviderInfo.configured || '会话默认模型') + '）' });
+  const globalRows = {};
+  const globalFields = {};
+  const stats = followStats;
+  Object.keys(JOIN_FIELD_SPECS).forEach((key) => {
+    const spec = JOIN_FIELD_SPECS[key];
+    const built = buildJoinField(key, spec, settings[key], joinProviderInfo);
+    const metaChildren = [];
+    if (!spec.globalOnly && stats[key]) {
+      metaChildren.push(el('span', {
+        class: 'impact',
+        text: '本项：' + stats[key].follow + ' 群跟随 · ' + stats[key].own + ' 群用本群值',
+      }));
+    }
+    if (spec.globalOnly) {
+      metaChildren.push(el('span', { class: 'scope-badge follow', text: '全局·不分群' }));
+    }
+    if (metaChildren.length) {
+      built.node.appendChild(el('div', { class: 'field-meta' }, metaChildren));
+    }
+    (globalRows[spec.row] = globalRows[spec.row] || []).push(built.node);
+    globalFields[key] = built;
+  });
+  const saveGlobalBtn = el('button', { class: 'btn', text: '保存全局配置', onclick: async () => {
+    saveGlobalBtn.disabled = true;
+    try {
+      const payload = {};
+      Object.keys(JOIN_FIELD_SPECS).forEach((key) => { payload[key] = globalFields[key].read(); });
+      await bridge.apiPost('joins/settings', payload);
+      state.config = null;
+      toast('全局配置已保存（仅影响跟随本项的群）', 'ok');
+      await render();
+    } catch (error) { toast('保存失败：' + error.message, 'bad'); }
+    finally { saveGlobalBtn.disabled = false; }
+  } });
+  const globalChildren = [];
+  Object.keys(globalRows).sort((a, b) => Number(a) - Number(b)).forEach((rowKey) => {
+    const rowChildren = globalRows[rowKey];
+    if (Number(rowKey) === 5) rowChildren.push(joinProviderHint);
+    globalChildren.push(el('div', { class: 'row' }, rowChildren));
+  });
+  globalChildren.push(el('div', { class: 'field-actions' }, [saveGlobalBtn]));
+  root.appendChild(card('全局设置（新群与跟随群生效）',
+    '全局是唯一权威来源：新群登记即取这里；改它只影响「跟随本项」的群，已独立的群不受影响（每项下方标注影响面）。'
+    + '画像与门槛默认全关；官方通道不提供头像/账号等级，「资料缺失策略」对其不生效；答案校验三项留空即关闭。',
+    globalChildren));
 
   const conflicts = (snapshot.conflicts || {}).conflicts || [];
   if (conflicts.length) {
@@ -1807,6 +2056,7 @@ async function viewJoins(root) {
       el('td', { text: fmtProfileAge(row.profile || {}) }),
       el('td', { text: row.decision || '-' }),
       el('td', { text: row.decided_by || '-' }),
+      el('td', { text: fmtJoinScope(row.settings_scope) }),
       el('td', { text: typeof row.confidence === 'number' ? row.confidence.toFixed(2) : '-' }),
       el('td', { text: (row.reason || '').slice(0, 40) }),
     ]));
@@ -1814,7 +2064,7 @@ async function viewJoins(root) {
   root.appendChild(card('历史记录（' + history.length + '）', null, history.length ? [
     el('div', { class: 'table-wrap' }, [
       el('table', {}, [
-        el('thead', {}, [el('tr', {}, ['时间', '申请人', 'QQ等级', '账号年龄', '决策', '决策方', '置信度', '原因'].map((text) => el('th', { text })))]),
+        el('thead', {}, [el('tr', {}, ['时间', '申请人', 'QQ等级', '账号年龄', '决策', '决策方', '规则来源', '置信度', '原因'].map((text) => el('th', { text })))]),
         historyBody,
       ]),
     ]),

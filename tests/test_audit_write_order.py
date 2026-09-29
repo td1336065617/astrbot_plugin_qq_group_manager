@@ -62,7 +62,7 @@ def _check(kind: str, table: str) -> None:
         mismatched = [
             col
             for i, col in enumerate(columns)
-            if col in row.keys() and str(row[col]) != str(_sentinel(col, i))
+            if col in row and str(row[col]) != str(_sentinel(col, i))
         ]
         assert not mismatched, f"{kind}: 列值不符（列序/映射错位）→ {mismatched}"
 

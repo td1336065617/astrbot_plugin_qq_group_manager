@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+from collections.abc import Mapping
 from typing import Any, Protocol, runtime_checkable
 
 from .models import (
@@ -16,7 +17,10 @@ from .models import (
     JOIN_ANSWER_ACTIONS,
     JOIN_AVATAR_REVIEW_MODES,
     JOIN_GATE_ACTIONS,
+    JOIN_GLOBAL_ONLY_KEYS,
+    JOIN_GROUP_OVERRIDABLE_KEYS,
     JOIN_PROFILE_MISSING_MODES,
+    JOIN_PROTECTED_GROUP_KEYS,
     JOIN_REVIEW_MODES,
     MODERATION_MODES,
     NUMERIC_BOUNDS,
@@ -26,7 +30,7 @@ from .models import (
     GroupConfig,
     default_settings,
 )
-from .utils import clamp_float, clamp_int, now_ts
+from .utils import clamp_float, clamp_int, mask_openid, now_ts
 
 KEY_SETTINGS = "settings"
 KEY_GROUPS = "groups"
@@ -169,6 +173,35 @@ def normalize_settings(raw: Any) -> dict[str, Any]:
     return settings
 
 
+def snapshot_join_overrides(global_settings: Mapping[str, Any]) -> dict[str, Any]:
+    """以「关闭跟随开关那一刻」的全局配置生成本群固化配置（仅在配置为空时调用）。
+
+    只取 JOIN_GROUP_OVERRIDABLE_KEYS，且经与全局完全相同的归一化管线
+    （normalize_settings 定义在本模块，故本函数放 store.py 而非 models.py，避免循环导入）。
+    """
+    base = default_settings()
+    base.update(dict(global_settings))
+    normalized = normalize_settings(base)
+    return {key: normalized[key] for key in JOIN_GROUP_OVERRIDABLE_KEYS}
+
+
+def _normalize_overrides_patch(
+    raw: Mapping[str, Any], global_settings: Mapping[str, Any]
+) -> dict[str, Any]:
+    """校验 + 归一化一次分群写入的固化键；非法键 → ValueError（调用方转 400）。
+
+    归一化基线 = 默认值 ⊕ 当前全局 ⊕ 本批 patch，保证与全局路径同一套类型规则。
+    """
+    unknown = sorted(key for key in raw if key not in JOIN_GROUP_OVERRIDABLE_KEYS)
+    if unknown:
+        raise ValueError("不可分群配置的键：" + ", ".join(unknown))
+    base = default_settings()
+    base.update(dict(global_settings))
+    base.update(dict(raw))
+    normalized = normalize_settings(base)
+    return {key: normalized[key] for key in raw}
+
+
 class PluginStore:
     """插件配置与状态的内存缓存 + KV 持久化。"""
 
@@ -206,7 +239,41 @@ class PluginStore:
             for key, value in raw_groups.items():
                 if isinstance(value, dict):
                     value.setdefault("group_id", str(key))
-                    self._groups[str(key)] = GroupConfig.from_dict(value)
+                    # 入群分群配置的防御性留痕：from_dict 只归一不告警（无 logger），
+                    # 真正的「失败必须可见」在这一层做（设计 §2.4）。
+                    if (
+                        "join_follow_global" in value
+                        and not isinstance(value["join_follow_global"], bool)
+                        and self.logger is not None
+                    ):
+                        self.logger.warning(
+                            "群 %s 的 join_follow_global 非布尔，已按「跟随全局」处理",
+                            mask_openid(key),
+                        )
+                    if (
+                        "join_overrides" in value
+                        and not isinstance(value.get("join_overrides"), dict)
+                        and self.logger is not None
+                    ):
+                        self.logger.warning(
+                            "群 %s 的 join_overrides 结构非法，已置空", mask_openid(key)
+                        )
+                    # 必须对**原始载荷**查非法键：from_dict 会先过滤，查过滤后的结果永不触发
+                    raw_overrides = value.get("join_overrides")
+                    if isinstance(raw_overrides, dict):
+                        bad_keys = sorted(
+                            str(bad)
+                            for bad in raw_overrides
+                            if str(bad) not in JOIN_GROUP_OVERRIDABLE_KEYS
+                        )
+                        if bad_keys and self.logger is not None:
+                            self.logger.warning(
+                                "群 %s 的 join_overrides 含非法键并已过滤：%s",
+                                mask_openid(key),
+                                ", ".join(bad_keys),
+                            )
+                    config = GroupConfig.from_dict(value)
+                    self._groups[str(key)] = config
         raw_keywords = await self._kv.get(KEY_KEYWORDS, {})
         if isinstance(raw_keywords, dict):
             for bucket in ("hard", "soft"):
@@ -314,6 +381,141 @@ class PluginStore:
         return self.settings()
 
     # ------------------------------------------------------------------
+    # 入群分群配置：群级「跟随全局」开关 + 本群固化配置
+    # 生效值公式（docs/入群审批分群规则-设计文档.md §3.1）：
+    #   开态：全部取全局，join_overrides 休眠保留；
+    #   关态：固化键生效，缺失键（显式「恢复跟随」）回落全局。
+    # 全程只看「开关状态 + 键存在性」，不做任何值比较（NFR-9）。
+    # ------------------------------------------------------------------
+    def effective_join_settings(self, group_id: str) -> dict[str, Any]:
+        """全局配置 + 本群覆盖，返回完整可用配置（调用方不应修改）。"""
+        base = self.settings()
+        config = self._groups.get(group_id)
+        if config is None or config.join_follow_global:
+            return base  # 开态：全局压倒一切，本群配置休眠
+        for key, value in config.join_overrides.items():
+            if key in JOIN_GROUP_OVERRIDABLE_KEYS:
+                base[key] = value
+            elif self.logger is not None:
+                # 防御路径必须留痕（正常写入路径已在 update_join_overrides 拦截）
+                self.logger.warning(
+                    "群 %s 的本群配置含非法键 %s，已忽略", mask_openid(group_id), key
+                )
+        return base
+
+    def join_settings_scope(self, group_id: str) -> dict[str, Any]:
+        """供 WebUI：开关状态、生效值、固化键与仍跟随的键。"""
+        config = self._groups.get(group_id)
+        follow = bool(config.join_follow_global) if config is not None else True
+        overrides = dict(config.join_overrides) if config is not None else {}
+        own = sorted(key for key in overrides if key in JOIN_GROUP_OVERRIDABLE_KEYS)
+        restored = [key for key in JOIN_GROUP_OVERRIDABLE_KEYS if key not in overrides]
+        return {
+            "group_id": group_id,
+            "follow_global": follow,
+            "effective": self.effective_join_settings(group_id),
+            "overrides": {key: overrides[key] for key in own},
+            "own_keys": own,       # 已固化的键（开态 = 休眠项）
+            "restored_keys": restored,  # 配置中不存在的键（关态 = 仍跟随全局的字段）
+            "overridable_keys": list(JOIN_GROUP_OVERRIDABLE_KEYS),
+            "global_only_keys": list(JOIN_GLOBAL_ONLY_KEYS),
+        }
+
+    def join_follow_stats(self) -> dict[str, dict[str, int]]:
+        """影响面计数：{key: {"follow": 实际取全局的群数, "own": 实际取本群值的群数}}。"""
+        stats = {key: {"follow": 0, "own": 0} for key in JOIN_GROUP_OVERRIDABLE_KEYS}
+        for config in self._groups.values():
+            overrides = config.join_overrides
+            for key in JOIN_GROUP_OVERRIDABLE_KEYS:
+                takes_own = (not config.join_follow_global) and key in overrides
+                stats[key]["own" if takes_own else "follow"] += 1
+        return stats
+
+    def join_scope_label(self, group_id: str) -> str:
+        """判定留痕用的作用域标签（FR-10）。
+
+        "global" = 跟随全局（含群缺失的防御回退）；
+        "off" = 自治且全部固化；"off|k1,k2" = 自治但这些键仍恢复跟随。
+        """
+        config = self._groups.get(group_id)
+        if config is None or config.join_follow_global:
+            return "global"
+        restored = [
+            key for key in JOIN_GROUP_OVERRIDABLE_KEYS if key not in config.join_overrides
+        ]
+        if not restored:
+            return "off"
+        return "off|" + ",".join(sorted(restored))
+
+    async def set_group_follow_global(self, group_id: str, follow: bool) -> GroupConfig:
+        """切换群级「跟随全局」开关；任何方向都不删除 join_overrides（NFR-10）。
+
+        群必须已登记：不隐式创建记录（与 API「group_id 未登记 → 400」保持一致）。
+        """
+        config = self._groups.get(group_id)
+        if config is None:
+            raise ValueError(f"群未登记：{group_id}")
+        if follow:
+            config.join_follow_global = True  # 开：配置原样保留、休眠
+        else:
+            if not config.join_overrides:
+                # 首次关闭且无配置 → 以关闭时刻的当前全局固化（D3）
+                config.join_overrides = snapshot_join_overrides(self._settings)
+            # 已有配置 → 直接复活，不重新生成
+            config.join_follow_global = False
+        self._dirty.add(KEY_GROUPS)
+        await self.flush()
+        if self.logger is not None:
+            self.logger.info(
+                "群 %s 跟随全局开关 → %s（本群固化 %d 项）",
+                mask_openid(group_id),
+                "开" if follow else "关",
+                len(config.join_overrides),
+            )
+        return config
+
+    async def update_join_overrides(
+        self,
+        group_id: str,
+        patch: dict[str, Any] | None = None,
+        *,
+        clear: list[str] | None = None,
+    ) -> GroupConfig:
+        """写入固化键（编辑即固化）/ 删除固化键（恢复跟随）。
+
+        非法键、非法值、同键既写又删 → ValueError（调用方转 400，message 含键名）。
+        """
+        config = self._groups.get(group_id)
+        if config is None:
+            raise ValueError(f"群未登记：{group_id}")
+        raw_patch = dict(patch or {})
+        clear_keys = list(clear or [])
+        normalized = (
+            _normalize_overrides_patch(raw_patch, self._settings) if raw_patch else {}
+        )
+        bad_clear = sorted(key for key in clear_keys if key not in JOIN_GROUP_OVERRIDABLE_KEYS)
+        if bad_clear:
+            raise ValueError("不可重置非分群键：" + ", ".join(bad_clear))
+        conflict = sorted(key for key in normalized if key in clear_keys)
+        if conflict:
+            raise ValueError("同一请求不能既写入又重置这些键：" + ", ".join(conflict))
+        merged = dict(config.join_overrides)
+        merged.update(normalized)
+        for key in clear_keys:
+            merged.pop(key, None)
+        config.join_overrides = merged
+        self._dirty.add(KEY_GROUPS)
+        await self.flush()
+        if self.logger is not None:
+            self.logger.info(
+                "群 %s 本群配置变更：固化=%s 恢复跟随=%s",
+                mask_openid(group_id),
+                ",".join(sorted(normalized)) or "-",
+                ",".join(clear_keys) or "-",
+            )
+        return config
+
+    # ------------------------------------------------------------------
     # 群
     # ------------------------------------------------------------------
     def groups(self) -> dict[str, GroupConfig]:
@@ -370,6 +572,10 @@ class PluginStore:
 
     async def update_group(self, group_id: str, patch: dict[str, Any]) -> GroupConfig:
         """更新单个群的配置。"""
+        # 两个开关状态键必须走专用方法：通用 patch 会绕过状态机（如关态但不生成配置）
+        conflict = sorted(key for key in (patch or {}) if key in JOIN_PROTECTED_GROUP_KEYS)
+        if conflict:
+            raise ValueError(f"这些键必须通过专用方法修改：{', '.join(conflict)}")
         config = await self.ensure_group(group_id)
         data = config.to_dict()
         for key, value in (patch or {}).items():

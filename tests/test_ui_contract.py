@@ -116,14 +116,47 @@ def test_appeals_view_contract():
 
 
 def test_joins_settings_payload_keys_are_known_settings():
+    """入群字段的唯一来源是 JOIN_FIELD_SPECS：键必须都已声明，且两条保存路径按规格提交。
+
+    （S4 起保存改为按规格循环构造，字面量 payload 不复存在，故从「解析 payload」
+    改为「解析规格表 + 守卫保存接线」——防「点了保存却被后端过滤掉」的意图不变。）
+    """
     text = app_js()
-    block = re.search(r"bridge\.apiPost\('joins/settings', \{(.*?)\n      \}\);", text, re.S)
-    assert block, "未找到入群审批配置 payload"
-    keys = re.findall(r"^\s{8}([a-z_]+):", block.group(1), re.M)
-    assert keys, "入群审批配置 payload 解析为空"
+    block = re.search(r"const JOIN_FIELD_SPECS = \{(.*?)\n\};", text, re.S)
+    assert block, "未找到 JOIN_FIELD_SPECS 定义"
+    keys = re.findall(r"^\s{2}([a-z_]+): \{", block.group(1), re.M)
+    assert keys, "JOIN_FIELD_SPECS 解析为空"
     known = default_settings()
     missing = [key for key in keys if key not in known]
-    assert not missing, f"入群审批配置提交了未声明的配置键（保存后会被丢弃）：{missing}"
+    assert not missing, f"入群字段规格提交了未声明的配置键（保存后会被丢弃）：{missing}"
+    # 规格表必须覆盖**全部** join_* 键（0.14 起含全局入群审批模式：全局值的编辑入口，
+    # 此前契约把「规格表 = join_* 减 mode」固化下来，反而锁死了这个历史缺口，见实现文档坑 #17）
+    join_keys = {key for key in known if key.startswith("join_")}
+    assert set(keys) == join_keys, (
+        f"字段规格与后端 join_* 键不一致：缺少 {sorted(join_keys - set(keys))} "
+        f"、多余 {sorted(set(keys) - join_keys)}"
+    )
+    # globalOnly 标记集合必须与后端 JOIN_GLOBAL_ONLY_KEYS 完全一致（此前该映射无断言看守）
+    from src.models import JOIN_GLOBAL_ONLY_KEYS
+
+    js_global_only = re.findall(r"^\s{2}([a-z_]+): \{[^\n]*globalOnly: true", block.group(1), re.M)
+    assert set(js_global_only) == set(JOIN_GLOBAL_ONLY_KEYS), (
+        f"globalOnly 标记与后端 JOIN_GLOBAL_ONLY_KEYS 不一致："
+        f"多 {sorted(set(js_global_only) - set(JOIN_GLOBAL_ONLY_KEYS))} "
+        f"、少 {sorted(set(JOIN_GLOBAL_ONLY_KEYS) - set(js_global_only))}"
+    )
+    # 全局模式字段必须是 select 且标记 globalOnly（只在全局卡出现，不进本群固化）
+    assert "join_review_mode: { kind: 'select'" in text, "缺少全局入群审批模式字段"
+    assert "globalOnly: true, label: '全局入群审批模式" in text, "全局模式字段未标记 globalOnly"
+    # 按群下拉仍有「跟随全局」入口（FR-12），两者不冲突
+    assert "跟随全局（当前：" in text
+    # 跨语言契约：全局模式的选项文案必须与指令侧 JOIN_MODE_LABELS 逐字一致（防两处文案漂移）
+    from src.commands import JOIN_MODE_LABELS
+
+    mode_block = re.search(r"join_review_mode: \{.*?options: \[(.*?)\]\]", text, re.S)
+    assert mode_block, "未找到全局模式选项定义"
+    for label in JOIN_MODE_LABELS.values():
+        assert f"'{label}'" in mode_block.group(1), f"全局模式缺少选项文案：{label}"
     for key in (
         "join_profile_enabled",
         "join_min_account_days",
@@ -137,7 +170,11 @@ def test_joins_settings_payload_keys_are_known_settings():
         "join_profile_qpm",
         "join_profile_concurrency",
     ):
-        assert key in keys, f"入群审批配置缺少 payload 键：{key}"
+        assert key in keys, f"入群字段规格缺少键：{key}"
+    # 保存接线：全局保存按规格提交全部键；分群保存只提交 dirty（绝不全量提交）
+    assert "payload[key] = globalFields[key].read()" in text, "全局保存未按规格提交全部键"
+    assert "Object.assign({ group_id: gid }, dirty)" in text, "分群保存未按 dirty 提交"
+    assert "payload.reset = resets.slice()" in text, "分群保存缺少 reset（恢复跟随）"
 
 
 def test_joins_view_renders_profile_columns():
@@ -251,14 +288,27 @@ def test_maintenance_gate_uses_beijing_date():
 
 
 def test_join_review_model_selector_is_wired():
-    """入群审批必须能选模型（BUG-052）：前端选择器 + 保存字段 + 后端白名单与回退。"""
+    """入群审批必须能选模型（BUG-052）：前端选择器 + 保存字段 + 后端白名单与回退。
+
+    S4 起字段由 JOIN_FIELD_SPECS 统一构建，字面量 `joinProviderSelect` 不复存在，
+    前端断言改为「规格表声明 provider 控件 + 保存按规格提交」（同一意图，更强）。
+    """
     js = (PLUGIN_ROOT / "pages/manage/app.js").read_text(encoding="utf-8")
-    assert "joinProviderSelect" in js
+    assert "JOIN_FIELD_SPECS" in js
+    assert "join_llm_provider_id: { kind: 'provider'" in js
     assert "跟随发言审核模型" in js
-    assert "join_llm_provider_id: joinProviderSelect.value" in js
+    assert "payload[key] = globalFields[key].read()" in js
 
     api = (PLUGIN_ROOT / "src/web_api.py").read_text(encoding="utf-8")
-    assert '"join_llm_provider_id"' in api
+    # 白名单已改为从 default_settings() 派生（不再硬编码键副本），故改为**行为断言**：
+    # joins/settings 必须接受该键（否则「保存后被静默丢弃」，正是本文件要防的历史 bug）
+    from src.web_api import GLOBAL_JOIN_SETTINGS_KEYS, parse_joins_settings_payload
+
+    assert "join_llm_provider_id" in GLOBAL_JOIN_SETTINGS_KEYS
+    assert parse_joins_settings_payload({"join_llm_provider_id": "m1"}).patch == {
+        "join_llm_provider_id": "m1"
+    }
+    assert 'key.startswith("join_")' in api  # 派生规则仍在（防有人改回硬编码副本）
 
     main_py = (PLUGIN_ROOT / "main.py").read_text(encoding="utf-8")
     assert 'provider_setting="join_llm_provider_id"' in main_py

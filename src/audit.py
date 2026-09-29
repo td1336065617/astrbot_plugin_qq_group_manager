@@ -298,6 +298,10 @@ JOIN_EXTRA_COLUMNS: dict[str, str] = {
     "qid": "TEXT",
     "profile_json": "TEXT",
     "gate": "TEXT",
+    #: 判定时的规则作用域（入群分群规则）："global" / "off" / "off|k1,k2"；
+    #: NULL = 本功能上线前的旧记录（语义等价 "global"）。刻意不加 COLUMN_DEFAULTS
+    #: 条目、不加 NOT NULL：NULL 是旧记录的合法业务语义。
+    "settings_scope": "TEXT",
 }
 
 #: NOT NULL 列的兜底默认值（未提供时避免 IntegrityError）
@@ -951,6 +955,7 @@ class AuditStore:
             "qid",
             "profile_json",
             "gate",
+            "settings_scope",
         )
         values = tuple(self._coerce(payload.get(column), column=column) for column in columns)
         async with self._lock:

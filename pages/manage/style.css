@@ -166,3 +166,22 @@ pre.guide {
 .modal-body { white-space: pre-wrap; font-size: 13px; line-height: 1.7; margin-bottom: 12px; }
 .modal-box input { margin-bottom: 12px; }
 .modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+
+/* —— 入群审批：跟随全局开关 / 作用域徽标 / 影响面（分群规则） —— */
+.gate-box {
+  border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 8px 12px; background: rgba(59, 130, 246, .06);
+}
+.field-meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 4px; }
+.scope-badge {
+  font-size: 11px; line-height: 1.6; padding: 0 7px; border-radius: 8px;
+  background: #f3f4f6; color: #6b7280; white-space: nowrap;
+}
+.scope-badge.own { background: rgba(37, 99, 235, .12); color: #2563eb; }
+.scope-badge.follow { background: #f3f4f6; color: #6b7280; }
+.scope-badge.pending { background: rgba(217, 119, 6, .14); color: #b45309; }
+.scope-badge.dormant { background: #f3f4f6; color: #9ca3af; }
+.impact { font-size: 11px; color: var(--muted); white-space: nowrap; }
+input:disabled, select:disabled, textarea:disabled {
+  opacity: .6; cursor: not-allowed; background: rgba(148, 163, 184, .12);
+}

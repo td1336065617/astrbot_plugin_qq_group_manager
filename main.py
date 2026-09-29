@@ -108,7 +108,7 @@ from .src.utils import (
 from .src.web_api import EventBus, WebApi
 
 PLUGIN_NAME = "astrbot_plugin_qq_group_manager"
-VERSION = "0.13.11"
+VERSION = "0.14.0"
 
 STATE_FLUSH_INTERVAL = 30.0
 MAINTENANCE_INTERVAL = 3600.0
@@ -633,9 +633,16 @@ class QQGroupManager(Star):
         user_prompt: str,
         *,
         provider_setting: str = "llm_provider_id",
+        provider_override: str | None = None,
     ) -> str:
-        """provider_setting 可指定用哪个设置项挑模型（入群审批用 join_llm_provider_id）。"""
-        """调用 AstrBot 已配置的 LLM（复用官方 SDK）。"""
+        """调用 AstrBot 已配置的 LLM（复用官方 SDK）。
+
+        - provider_setting：按设置项名挑模型（入群审批传 join_llm_provider_id）；
+        - provider_override：调用方已按群解析好的模型 id（入群审批经
+          effective_join_settings 取，受「跟随全局」开关门控）。**kw-only 且默认 None**：
+          本函数还被内容审核以回调注入共享（moderator.provider_call），该路径不传此参数，
+          行为必须保持不变；None 时走 provider_setting → llm_provider_id 既有回落链。
+        """
         umo = request.umo or str(self.store.get_setting("notify_session") or "")
         session_default = ""
         try:
@@ -643,8 +650,11 @@ class QQGroupManager(Star):
         except Exception:
             session_default = ""
         available = self.available_provider_ids()
-        configured = str(self.store.get_setting(provider_setting) or "")
-        if not configured and provider_setting != "llm_provider_id":
+        if provider_override is not None:
+            configured = str(provider_override or "")
+        else:
+            configured = str(self.store.get_setting(provider_setting) or "")
+        if not configured and provider_override is None and provider_setting != "llm_provider_id":
             # 入群审批没单独配模型时，跟随发言审核模型（WebUI 的默认选项）
             configured = str(self.store.get_setting("llm_provider_id") or "")
         provider_id = choose_provider_id(configured, session_default, available)
@@ -696,9 +706,13 @@ class QQGroupManager(Star):
                 umo=str(self.store.get_setting("notify_session") or ""),
                 image_urls=list(image_urls or []),
             )
+            # 按群取生效模型：开态/恢复跟随 → 全局值；关态固化 → 本群值；空 = 跟随回落链
+            effective = self.store.effective_join_settings(group_id)
+            provider_override = str(effective.get("join_llm_provider_id") or "") or None
             text = await self._llm_call(
                 request, system_prompt, user_prompt,
                 provider_setting="join_llm_provider_id",
+                provider_override=provider_override,
             )
             ok = True
             return text
@@ -1538,6 +1552,7 @@ class QQGroupManager(Star):
             dry_run=self.store.dry_run(),
             join_mode=config.join_review_mode
             or str(self.store.get_setting("join_review_mode") or "off"),
+            join_scope=self.store.join_scope_label(group_id),
             stats=summary,
         )
 
@@ -2383,12 +2398,16 @@ class QQGroupManager(Star):
                 row["profile"] = self._parse_profile_json(row.get("profile_json"))
         group_ids = [group_id] if group_id else list(self.store.groups())
         conflicts = await self.policy.conflicts([gid for gid in group_ids if gid])
-        return {
+        payload = {
             "pending": pending,
             "history": history,
             "conflicts": conflicts,
             "status": self.joins.status(),
         }
+        if group_id:
+            # 分群规则作用域（WebUI 配置卡读取）；无 group_id 的全局视图省略
+            payload["scope"] = self.store.join_settings_scope(group_id)
+        return payload
 
     async def joins_fetch(self, group_id: str) -> dict[str, Any]:
         """立即拉取一次入群申请。"""

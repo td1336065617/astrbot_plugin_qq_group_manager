@@ -471,7 +471,8 @@ class JoinReviewer:
                 blacklist=True,
                 source="rule",
             )
-        settings = self.store.settings()
+        # 门控后的生效配置：开态=全局，关态=全局+本群固化（join_follow_global 开关）
+        settings = self.store.effective_join_settings(group_id)
         profile_gate = self._profile_gate(request.get("profile") or {}, settings)
         if profile_gate is not None:
             return profile_gate
@@ -821,7 +822,22 @@ class JoinReviewer:
             qid=str(profile.get("qid") or ""),
             profile_json=safe_json_dumps(profile) if profile else "",
             gate=decision.gate,
+            # 判定时的规则作用域（FR-10）：群缺失/开态 → "global"；关态 → "off" / "off|仍跟随的键"
+            settings_scope=self._scope_label(group_id),
         )
+
+    def _scope_label(self, group_id: str) -> str:
+        """取作用域标签；store 不支持时回退 "global"，绝不影响落库（防御路径）。"""
+        getter = getattr(self.store, "join_scope_label", None)
+        if not callable(getter):
+            return "global"
+        try:
+            return str(getter(group_id) or "global")
+        except Exception as exc:  # pragma: no cover - 留痕不能反噬主流程
+            if self.logger is not None:
+                # 回退必须留痕：静默回退会让「作用域记录失真」无人察觉
+                self.logger.warning("取规则作用域失败（按 global 留痕）：%s", exc)
+            return "global"
 
     async def _notify_pending(
         self, group_id: str, request: dict[str, Any], decision: JoinDecision

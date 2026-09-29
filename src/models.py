@@ -90,6 +90,57 @@ JOIN_AVATAR_REVIEW_MODES: tuple[str, ...] = ("off", "approve_only", "always")
 #: 入群答案校验未通过时的动作
 JOIN_ANSWER_ACTIONS: tuple[str, ...] = ("manual", "decline", "pass")
 
+#: 可按群固化/跟随的入群审批配置键（决策类，17 个）。
+#: 「键存在 = 本群固化值，键缺失 = 跟随全局」，与群级 join_follow_global 开关配合；
+#: 分类依据与语义见 docs/入群审批分群规则-设计文档.md §2.2。
+JOIN_GROUP_OVERRIDABLE_KEYS: tuple[str, ...] = (
+    "join_min_confidence",
+    "join_decline_blacklist",
+    "join_trust_inviter",
+    "join_profile_enabled",
+    "join_min_account_days",
+    "join_min_qq_level",
+    "join_require_qid",
+    "join_gate_action",
+    "join_profile_missing",
+    "join_avatar_review",
+    "join_avatar_only_below",
+    "join_expected_answer",
+    "join_answer_keywords",
+    "join_answer_regex",
+    "join_answer_action",
+    "join_answer_case_sensitive",
+    "join_llm_provider_id",
+)
+
+#: 全局唯一、不分群的入群相关配置（5 个）：
+#: - join_review_mode 走 GroupConfig.join_review_mode 独立通道，不归总开关管辖；
+#: - 其余四项是调度/资源闸门或跨群共享缓存，分群会破坏其语义。
+JOIN_GLOBAL_ONLY_KEYS: tuple[str, ...] = (
+    "join_review_mode",
+    "join_poll_interval",
+    "join_profile_cache_days",
+    "join_profile_qpm",
+    "join_profile_concurrency",
+)
+
+#: 禁止经通用 update_group() 修改的键：必须走 set_group_follow_global /
+#: update_join_overrides 专用方法，否则会绕过开关状态机产生未定义路径。
+JOIN_PROTECTED_GROUP_KEYS: tuple[str, ...] = ("join_follow_global", "join_overrides")
+
+
+def validate_join_mode_value(mode: Any) -> str:
+    """校验按群入群审批模式取值；空串 = 跟随全局（合法）。
+
+    返回归一化后的取值；非法值 → ValueError，message 含取值范围与「留空表示跟随全局」。
+    """
+    value = str(mode if mode is not None else "")
+    if value == "" or value in JOIN_REVIEW_MODES:
+        return value
+    raise ValueError(
+        f"mode 必须是 {', '.join(JOIN_REVIEW_MODES)} 之一，或留空表示跟随全局"
+    )
+
 IMAGE_REVIEW_MODES: tuple[str, ...] = ("off", "with_text", "always")
 
 RISK_CONDITION_PREFIX = "risk>="
@@ -206,6 +257,12 @@ class GroupConfig:
     last_seen: int = 0
     added_at: int = 0
     source: str = "auto"  # auto=消息自动登记，manual=WebUI 添加
+    #: 群级「跟随全局」总开关：True（默认）= 全部规则取全局值，本群配置休眠。
+    #: 旧数据缺此字段时 from_dict 归一为 True（= 现状行为，零迁移）。
+    join_follow_global: bool = True
+    #: 本群固化配置（稀疏）：键存在 = 本群自己的值；键缺失 = 该键跟随全局（仅关态参与生效）。
+    #: 只接受 JOIN_GROUP_OVERRIDABLE_KEYS 内的键，其余在 from_dict 过滤。
+    join_overrides: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -215,6 +272,18 @@ class GroupConfig:
         group_id = str(payload.get("group_id") or "")
         trusted = payload.get("trusted") or []
         capabilities = payload.get("capabilities") or {}
+        # 两个新键只归一、不告警：本函数没有 logger，留痕在 store.load()（设计 §2.4）
+        follow_raw = payload.get("join_follow_global", True)
+        join_follow_global = (
+            follow_raw if isinstance(follow_raw, bool) else True  # 非布尔 → 跟随全局（安全方向）
+        )
+        overrides_raw = payload.get("join_overrides")
+        join_overrides = dict(overrides_raw) if isinstance(overrides_raw, dict) else {}
+        join_overrides = {
+            str(key): value
+            for key, value in join_overrides.items()
+            if str(key) in JOIN_GROUP_OVERRIDABLE_KEYS  # 防御非字符串键（KV 外来源）
+        }
         return cls(
             group_id=group_id,
             platform_id=str(payload.get("platform_id") or ""),
@@ -234,6 +303,8 @@ class GroupConfig:
             last_seen=clamp_int(payload.get("last_seen"), 0, 0, 2**31),
             added_at=clamp_int(payload.get("added_at"), 0, 0, 2**31),
             source=str(payload.get("source") or "auto"),
+            join_follow_global=join_follow_global,
+            join_overrides=join_overrides,
         )
 
     def capability_ok(self, capability: str) -> bool:

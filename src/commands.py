@@ -14,6 +14,7 @@ from .models import (
     CAP_FULL_MSG,
     CAP_IS_ADMIN,
     CAPABILITY_LABELS,
+    JOIN_GROUP_OVERRIDABLE_KEYS,
     BotState,
     GroupProfile,
 )
@@ -213,6 +214,22 @@ def group_info_text(
     return "\n".join(lines)
 
 
+def join_scope_text(scope: str) -> str:
+    """入群规则作用域 → 人话（settings_scope 三态，见入群审批留痕设计）。
+
+    ""/"global" = 跟随全局；"off" = 本群配置全部固化；
+    "off|k1,k2" = 本群配置但这些键已「恢复跟随」。只报数量，避免与前端键名标签重复维护。
+    """
+    total = len(JOIN_GROUP_OVERRIDABLE_KEYS)
+    if not scope or scope == "global":
+        return "跟随全局（改全局立即生效）"
+    if scope == "off":
+        return f"本群配置（{total} 项全部固化，改全局不影响本群）"
+    keys = [key for key in scope.split("|", 1)[1].split(",") if key]
+    # 语义：关态下固化 total-len(keys) 项、仍跟随 len(keys) 项——两个数必须互补，不能写成矛盾文案
+    return f"本群配置（{total - len(keys)} 项固化，{len(keys)} 项仍跟随全局）"
+
+
 def moderation_status_text(
     *,
     group_id: str,
@@ -224,6 +241,7 @@ def moderation_status_text(
     is_exempt: bool,
     dry_run: bool,
     join_mode: str = "off",
+    join_scope: str = "global",
     stats: dict[str, Any] | None = None,
 ) -> str:
     """本群审核状态。"""
@@ -236,6 +254,7 @@ def moderation_status_text(
         lines.append("• 审核：未开启")
     lines.append(f"• 模式：{mode}")
     lines.append(f"• 入群审批：{JOIN_MODE_LABELS.get(join_mode, join_mode or '关闭')}")
+    lines.append(f"• 规则来源：{join_scope_text(join_scope)}")
     if dry_run:
         lines.append("• 运行模式：dry-run（只记录、不实际处置）")
     if full_msg is False:

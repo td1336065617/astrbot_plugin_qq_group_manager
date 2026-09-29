@@ -11,9 +11,9 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from datetime import datetime
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 from .models import MODERATION_MODES, RISK_CONDITION_PREFIX, Verdict

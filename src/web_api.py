@@ -11,7 +11,7 @@ import csv
 import io
 import json
 import time
-from typing import Any
+from typing import Any, NamedTuple
 
 from astrbot.api import logger
 from astrbot.api.web import error_response, file_response, json_response, request, stream_response
@@ -20,16 +20,107 @@ from .audit import LOG_TABLES
 from .models import (
     CAPABILITIES,
     CAPABILITY_LABELS,
+    JOIN_GLOBAL_ONLY_KEYS,
+    JOIN_GROUP_OVERRIDABLE_KEYS,
     JOIN_REVIEW_MODES,
     MODERATION_MODES,
     SEND_CONDITIONS,
     default_settings,
+    validate_join_mode_value,
 )
-from .utils import now_ts
+from .utils import now_ts, to_iso
 
 PLUGIN_NAME = "astrbot_plugin_qq_group_manager"
 SSE_HEARTBEAT = 15.0
 MAX_SSE_QUEUE = 200
+
+#: joins/settings 的全局形态键集合：从 default_settings() 派生（不硬编码字符串副本）
+GLOBAL_JOIN_SETTINGS_KEYS: tuple[str, ...] = tuple(
+    key for key in default_settings() if key.startswith("join_")
+)
+#: 分群形态的控制键（不属于任何配置项）
+JOIN_SETTINGS_CONTROL_KEYS: tuple[str, ...] = ("group_id", "follow_global", "reset")
+
+
+class JoinsSettingsCommand(NamedTuple):
+    """joins/settings 三种提交形态的解析结果（纯函数产物，便于单测）。"""
+
+    scope: str  # "global" | "group"
+    group_id: str  # 分群形态必填；全局形态为 ""
+    follow_global: bool | None  # 分群·开关形态；其余为 None
+    patch: dict[str, Any]  # 全局 22 键 或 分群固化键（平铺）
+    clear: list[str]  # 分群·恢复跟随（"*" 已展开为全部可固化键）
+
+
+def parse_joins_settings_payload(payload: Any) -> JoinsSettingsCommand:
+    """三形态解析 + 校验；任何非法输入 → ValueError（message 含具体键名）。
+
+    校验覆盖设计文档 §7.1 错误表的解析层各行；值归一化非法由 store 层、
+    群未登记由 handler 层兜底（第二、三道防线）。
+
+    - 全局形态：22 个 join_* 键，无 group_id；
+    - 分群·开关：group_id + follow_global（布尔，与其余动作互斥）；
+    - 分群·固化/恢复：group_id + 平铺可覆盖键 / reset（列表或 "*"）。
+    """
+    if not isinstance(payload, dict):
+        raise ValueError("请求体必须是 JSON 对象")
+    group_id = str(payload.get("group_id") or "").strip()
+    has_follow = "follow_global" in payload
+    has_reset = "reset" in payload
+    unknown = sorted(
+        key
+        for key in payload
+        if key not in GLOBAL_JOIN_SETTINGS_KEYS
+        and key not in JOIN_GROUP_OVERRIDABLE_KEYS
+        and key not in JOIN_SETTINGS_CONTROL_KEYS
+    )
+    if unknown:
+        raise ValueError("未知配置键：" + ", ".join(unknown))
+    if not group_id:
+        # —— 全局形态 ——
+        if has_follow or has_reset:
+            raise ValueError("follow_global / reset 必须与 group_id 一起提交")
+        patch = {key: payload[key] for key in GLOBAL_JOIN_SETTINGS_KEYS if key in payload}
+        if not patch:
+            raise ValueError("没有可保存的配置键")
+        return JoinsSettingsCommand("global", "", None, patch, [])
+    # —— 分群形态 ——
+    # 全局独有键不得走分群路径（join_review_mode 等；模式另有「应用模式」入口）
+    not_groupable = sorted(
+        key
+        for key in payload
+        if key in GLOBAL_JOIN_SETTINGS_KEYS and key not in JOIN_GROUP_OVERRIDABLE_KEYS
+    )
+    if not_groupable:
+        hint = "（审批模式请用「应用模式」入口）" if "join_review_mode" in not_groupable else ""
+        raise ValueError(
+            "该键不支持分群配置：" + ", ".join(not_groupable) + hint
+        )
+    if has_follow and (has_reset or any(key in JOIN_GROUP_OVERRIDABLE_KEYS for key in payload)):
+        raise ValueError("follow_global 不能与 reset / 覆盖键同时提交")
+    if has_follow:
+        value = payload["follow_global"]
+        if not isinstance(value, bool):
+            raise ValueError("follow_global 必须是布尔值")  # 拒绝 "false" 字符串
+        return JoinsSettingsCommand("group", group_id, value, {}, [])
+    clear: list[str] = []
+    if has_reset:
+        raw_reset = payload["reset"]
+        if isinstance(raw_reset, str):
+            if raw_reset != "*":
+                raise ValueError('reset 字符串只支持 "*"')
+            clear = list(JOIN_GROUP_OVERRIDABLE_KEYS)
+        elif isinstance(raw_reset, list):
+            clear = [str(item) for item in raw_reset]
+            bad = sorted(key for key in clear if key not in JOIN_GROUP_OVERRIDABLE_KEYS)
+            if bad:
+                raise ValueError("不可重置非分群键：" + ", ".join(bad))
+        else:
+            raise ValueError('reset 必须是键列表或 "*"')
+    patch = {key: payload[key] for key in JOIN_GROUP_OVERRIDABLE_KEYS if key in payload}
+    if not patch and not clear:
+        raise ValueError("没有可保存的配置键")
+    return JoinsSettingsCommand("group", group_id, None, patch, clear)
 
 
 class EventBus:
@@ -107,7 +198,7 @@ class WebApi:
                 f"/{PLUGIN_NAME}/groups/join_mode",
                 self.group_join_mode,
                 ["POST"],
-                "设置某群入群审批模式",
+                "设置某群入群审批模式（空=跟随全局）",
             ),
             (f"/{PLUGIN_NAME}/groups/remove", self.group_remove, ["POST"], "移除群记录"),
             (f"/{PLUGIN_NAME}/selfcheck", self.selfcheck, ["POST"], "全量能力自检"),
@@ -144,7 +235,12 @@ class WebApi:
             (f"/{PLUGIN_NAME}/joins", self.joins_get, ["GET"], "入群申请列表"),
             (f"/{PLUGIN_NAME}/joins/fetch", self.joins_fetch, ["POST"], "立即拉取入群申请"),
             (f"/{PLUGIN_NAME}/joins/decide", self.joins_decide, ["POST"], "人工审批入群申请"),
-            (f"/{PLUGIN_NAME}/joins/settings", self.joins_settings, ["POST"], "保存入群审批配置"),
+            (
+                f"/{PLUGIN_NAME}/joins/settings",
+                self.joins_settings,
+                ["POST"],
+                "保存入群审批配置（全局/分群）",
+            ),
             (f"/{PLUGIN_NAME}/appeals", self.appeals_get, ["GET"], "申诉列表"),
             (f"/{PLUGIN_NAME}/appeals/decide", self.appeals_decide, ["POST"], "处理申诉"),
             (
@@ -254,6 +350,10 @@ class WebApi:
                         for key in CAPABILITIES
                     ],
                     "default_settings": default_settings(),
+                    # 入群分群规则：键分类（前端字段集唯一来源）+ 影响面计数
+                    "join_overridable_keys": list(JOIN_GROUP_OVERRIDABLE_KEYS),
+                    "join_global_only_keys": list(JOIN_GLOBAL_ONLY_KEYS),
+                    "join_follow_stats": store.join_follow_stats(),
                 },
             }
         )
@@ -399,7 +499,7 @@ class WebApi:
         return json_response({"group": config.to_dict(), "groups": self.service.groups_snapshot()})
 
     async def group_join_mode(self):
-        """设置某群的入群审批模式（off/strict/standard/human）。"""
+        """设置某群的入群审批模式（off/strict/standard/human；空串 = 跟随全局）。"""
         if not self._service_ready():
             return error_response("插件尚未初始化完成，请稍后重试")
         payload = await request.json(default={})
@@ -407,8 +507,10 @@ class WebApi:
         mode = str((payload or {}).get("mode") or "").strip()
         if not group_id:
             return error_response("缺少 group_id")
-        if mode not in JOIN_REVIEW_MODES:
-            return error_response(f"mode 必须是 {', '.join(JOIN_REVIEW_MODES)} 之一")
+        try:
+            mode = validate_join_mode_value(mode)
+        except ValueError as exc:
+            return error_response(str(exc))
         config = await self.service.store.update_group(group_id, {"join_review_mode": mode})
         return json_response({"group": config.to_dict(), "groups": self.service.groups_snapshot()})
 
@@ -810,39 +912,57 @@ class WebApi:
         return json_response(result)
 
     async def joins_settings(self):
-        """保存入群审批相关配置（画像 / 门槛 / 全局模式）。"""
+        """保存入群审批配置：全局 22 键 / 分群开关 / 分群固化 / 分群恢复跟随。
+
+        解析与校验在纯函数 parse_joins_settings_payload（可单测）；本方法只做薄壳：
+        调 store → 发变更事件 → 返回作用域对账信息。任何非法输入 → 400 且带键名。
+        """
         if not self._service_ready():
             return error_response("插件尚未初始化完成，请稍后重试")
-        payload = await request.json(default={})
-        if not isinstance(payload, dict):
-            return error_response("请求体必须是 JSON 对象")
-        allowed = (
-            "join_review_mode",
-            "join_poll_interval",
-            "join_min_confidence",
-            "join_decline_blacklist",
-            "join_trust_inviter",
-            "join_llm_provider_id",
-            "join_profile_enabled",
-            "join_min_account_days",
-            "join_min_qq_level",
-            "join_require_qid",
-            "join_gate_action",
-            "join_profile_missing",
-            "join_avatar_review",
-            "join_avatar_only_below",
-            "join_profile_cache_days",
-            "join_profile_qpm",
-            "join_profile_concurrency",
-            "join_expected_answer",
-            "join_answer_keywords",
-            "join_answer_regex",
-            "join_answer_action",
-            "join_answer_case_sensitive",
+        try:
+            cmd = parse_joins_settings_payload(await request.json(default={}))
+        except ValueError as exc:
+            logger.warning("joins/settings 被拒：%s", exc)
+            return error_response(str(exc))
+        store = self.service.store
+        if cmd.scope == "global":
+            settings = await store.update_settings(cmd.patch)
+            return json_response(
+                {"settings": {key: settings.get(key) for key in cmd.patch}, "group_id": None}
+            )
+        if store.group(cmd.group_id) is None:
+            return error_response("群未登记：" + cmd.group_id)
+        try:
+            if cmd.follow_global is not None:
+                await store.set_group_follow_global(cmd.group_id, cmd.follow_global)
+            else:
+                await store.update_join_overrides(
+                    cmd.group_id, cmd.patch, clear=cmd.clear
+                )
+        except ValueError as exc:
+            logger.warning("joins/settings 分群写入被拒：%s", exc)
+            return error_response(str(exc))
+        # 变更事件：仅分群形态发布，供 WebUI 日志中心可见（设计 §8.2）
+        if cmd.follow_global is not None:
+            action = "follow_on" if cmd.follow_global else "follow_off"
+        elif cmd.clear and not cmd.patch:
+            action = "clear"
+        elif cmd.clear:
+            action = "patch_reset"
+        else:
+            action = "patch"
+        self.service.bus.publish(
+            "audit",
+            {
+                "kind": "join_settings_override",
+                "group_id": cmd.group_id,
+                "action": action,
+                "ts": to_iso(),
+            },
         )
-        patch_data = {key: payload[key] for key in allowed if key in payload}
-        settings = await self.service.store.update_settings(patch_data)
-        return json_response({"settings": {key: settings.get(key) for key in allowed}})
+        return json_response(
+            {"group_id": cmd.group_id, "scope": store.join_settings_scope(cmd.group_id)}
+        )
 
     async def appeals_get(self):
         """申诉列表（state/group_id/days 筛选）。"""

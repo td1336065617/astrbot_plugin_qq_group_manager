@@ -49,7 +49,8 @@ class ApplicantProfileService:
     # ------------------------------------------------------------------
     async def get(self, group_id: str, request: dict[str, Any]) -> dict[str, Any]:
         """返回画像 dict；本方法永不抛异常。"""
-        settings = self.store.settings()
+        # 画像开关按群门控；缓存/限频键不分群，取到的仍是全局值（键不在覆盖白名单内）
+        settings = self.store.effective_join_settings(group_id)
         if not settings.get("join_profile_enabled", True):
             return ApplicantProfile(degraded=True, note="画像采集已关闭").to_dict()
 
