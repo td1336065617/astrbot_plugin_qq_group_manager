@@ -713,3 +713,130 @@ def test_persist_to_real_audit_roundtrip_settings_scope(tmp_path):
         await audit.close()
 
     asyncio.run(scenario())
+
+# --------------------------------------------------------------------------
+# FR-11 / BUG-01·02·03：模型按群生效值与展示口径
+# --------------------------------------------------------------------------
+def _plugin_main():
+    """按包名导入插件 main（main.py 使用相对导入，不能作为顶层模块导入）。"""
+    import importlib
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    parent = str(root.parent)
+    if parent not in sys.path:
+        sys.path.insert(0, parent)
+    return importlib.import_module(f"{root.name}.main")
+
+class _PvMeta:
+    def __init__(self, pid):
+        self.id = pid
+        self.model = pid
+        self.type = "openai"
+
+
+class _PvInst:
+    def __init__(self, pid):
+        self._meta = _PvMeta(pid)
+
+    def meta(self):
+        return self._meta
+
+
+class _Resp:
+    completion_text = "ok"
+
+
+class _ProviderCtx:
+    """最小 context 替身：只实现 _llm_call / list_providers 真正用到的接口。"""
+
+    def __init__(self, ids):
+        self.ids = list(ids)
+        self.used = []
+
+    def get_all_providers(self):
+        return [_PvInst(pid) for pid in self.ids]
+
+    async def get_current_chat_provider_id(self, umo=None):
+        return "SESSION"
+
+    async def llm_generate(self, *, chat_provider_id, **kwargs):
+        self.used.append(chat_provider_id)
+        return _Resp()
+
+    async def get_using_provider_async(self, umo=None):
+        return None
+
+
+def _bind_service(plugin_main, LLMModerator, store, ids):
+    ctx = _ProviderCtx(ids)
+    service = object.__new__(plugin_main.QQGroupManager)
+    service.store = store
+    service.context = ctx
+    service.logger = RecLogger()
+    service._last_provider_id = ""
+    service._last_join_provider_id = ""
+    service.moderator = LLMModerator(
+        service._llm_call, settings_getter=store.settings, logger=service.logger
+    )
+    return service, ctx
+
+
+def test_join_provider_empty_override_follows_moderation_model():
+    """BUG-01：关态 + 本群值为空（UI「跟随发言审核模型」）→ 用 llm_provider_id，而非 join_llm_provider_id。"""
+    plugin_main = _plugin_main()
+    from src.moderator import LLMModerator
+
+    store = make_store(groups=("g1",))
+
+    async def scenario():
+        await store.update_settings(
+            {"llm_provider_id": "A-发言审核", "join_llm_provider_id": "B-入群全局"}
+        )
+        await store.set_group_follow_global("g1", False)
+        await store.update_join_overrides("g1", {"join_llm_provider_id": ""})
+        service, ctx = _bind_service(
+            plugin_main, LLMModerator, store, ["A-发言审核", "B-入群全局", "SESSION"]
+        )
+        await plugin_main.QQGroupManager._join_judge_call(
+            service, "系统", "用户", group_id="g1"
+        )
+        assert ctx.used[-1] == "A-发言审核", "关态空值必须跟随发言审核模型"
+        assert service._last_join_provider_id == "A-发言审核"
+
+    run(scenario())
+
+
+def test_llm_call_records_actual_provider_and_isolates_last_used():
+    """BUG-02/03：request.provider_id 记录本次实际模型；入群链路不覆写发言审核的 last_used。"""
+    plugin_main = _plugin_main()
+    from src.moderator import LLMModerator
+
+    store = make_store(groups=("g1",))
+
+    async def scenario():
+        await store.update_settings(
+            {"llm_provider_id": "A-发言审核", "join_llm_provider_id": "B-入群全局"}
+        )
+        service, _ctx = _bind_service(
+            plugin_main, LLMModerator, store, ["A-发言审核", "B-入群全局", "SESSION"]
+        )
+        request = plugin_main.ModerationRequest(group_id="g1", text="x", umo="")
+        await plugin_main.QQGroupManager._llm_call(service, request, "系统", "用户")
+        assert request.provider_id == "A-发言审核"
+        assert service._last_provider_id == "A-发言审核"
+
+        await plugin_main.QQGroupManager._join_judge_call(
+            service, "系统", "用户", group_id="g1"
+        )
+        assert service._last_provider_id == "A-发言审核", "入群链路不得覆写发言审核的最近使用"
+        assert service._last_join_provider_id == "B-入群全局"
+
+        providers = plugin_main.QQGroupManager.list_providers(service)
+        assert providers["configured"] == "A-发言审核"
+        assert providers["last_used"] == "A-发言审核"
+        assert providers["last_join_used"] == "B-入群全局"
+
+    run(scenario())
+

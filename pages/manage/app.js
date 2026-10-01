@@ -267,8 +267,11 @@ async function viewDashboard(root) {
       statCard('群数量', runtime.groups_total || 0, '审核中 ' + (runtime.groups_moderating || 0)),
       statCard(
         '审核模型',
-        (config.providers && (config.providers.last_used || config.providers.configured)) || '跟随会话默认',
-        '可在「策略」页切换'
+        (config.providers && (config.providers.configured || config.providers.last_used)) || '跟随会话默认',
+        (config.providers && config.providers.configured && config.providers.last_used
+          && config.providers.last_used !== config.providers.configured)
+          ? '上次实际：' + config.providers.last_used
+          : '可在「策略」页切换'
       ),
       statCard('今日审核', stats.events_total || 0, '违规 ' + (verdicts.violation || 0) + ' / 可疑 ' + (verdicts.review || 0)),
       statCard('今日处置', actionTotal, '失败 ' + Object.keys(actions).reduce((acc, k) => acc + (actions[k].fail || 0), 0)),
@@ -862,6 +865,12 @@ async function viewPolicy(root) {
   const providerInfo = config.providers || {};
   const providerSelect = el('select');
   providerSelect.appendChild(el('option', { value: '', text: '跟随会话默认模型' }));
+  // BUG-06：当前配置的模型不在候选里时补占位项，避免保存时被静默清空
+  const configuredId = settings.llm_provider_id || '';
+  const knownIds = new Set((providerInfo.items || []).map((item) => item.id));
+  if (configuredId && !knownIds.has(configuredId)) {
+    providerSelect.appendChild(el('option', { value: configuredId, text: configuredId + '（当前不可用）', selected: 'selected' }));
+  }
   (providerInfo.items || []).forEach((item) => {
     const label = (item.model || item.id) + (item.type ? '（' + item.type + '）' : '');
     providerSelect.appendChild(el('option', {
@@ -872,7 +881,9 @@ async function viewPolicy(root) {
   });
   const providerHint = el('p', {
     class: 'card-desc',
-    text: '当前生效的审核模型：' + (providerInfo.last_used || providerInfo.configured || '跟随会话默认模型')
+    text: '当前生效的审核模型：' + (providerInfo.configured || providerInfo.last_used || '跟随会话默认模型')
+      + ((providerInfo.configured && providerInfo.last_used && providerInfo.last_used !== providerInfo.configured)
+        ? '（上次实际：' + providerInfo.last_used + '）' : '')
       + '；选择「跟随会话默认模型」时，审核会使用 AstrBot 中该会话选定的对话模型。',
   });
   const minConf = numField('LLM 置信度门槛', settings.llm_min_confidence, 0, 1, 0.05);
@@ -1645,6 +1656,11 @@ function buildJoinField(key, spec, value, providerInfo) {
   } else if (spec.kind === 'provider') {
     input = el('select');
     input.appendChild(el('option', { value: '', text: '跟随发言审核模型' }));
+    // BUG-06：当前值不在候选里时补占位项，避免保存时被静默清空
+    const knownJoinIds = new Set(((providerInfo && providerInfo.items) || []).map((item) => item.id));
+    if (display && !knownJoinIds.has(display)) {
+      input.appendChild(el('option', { value: display, text: display + '（当前不可用）', selected: 'selected' }));
+    }
     ((providerInfo && providerInfo.items) || []).forEach((item) => {
       input.appendChild(el('option', {
         value: item.id,
@@ -1809,7 +1825,10 @@ async function viewJoins(root) {
     if (!spec) return;
     const pendingRestore = resetSet.has(key);
     const isOwn = ownSet.has(key) && !pendingRestore;
-    const serverValue = isOwn ? (scope.overrides || {})[key] : settings[key];
+    // BUG-05：开态（跟随全局）只显示生效的全局值；休眠的本群值由徽标/说明体现
+    const serverValue = scope.follow_global
+      ? settings[key]
+      : (isOwn ? (scope.overrides || {})[key] : settings[key]);
     const initialValue = (!scope.follow_global && joinEdit && key in joinEdit.dirty) ? joinEdit.dirty[key] : serverValue;
     const built = buildJoinField(key, spec, initialValue, joinProviderInfo);
     built.input.disabled = !!scope.follow_global;   // 开态：只读取全局值
@@ -1829,7 +1848,9 @@ async function viewJoins(root) {
       meta[meta.length - 1].title = '修改此框即固化为本群配置';
     }
     if (!scope.follow_global && isOwn) {
-      meta.push(el('button', { class: 'btn small ghost', text: '恢复跟随', onclick: async () => {
+      meta.push(el('button', {
+        class: 'btn small ghost', text: '跟随全局（移除本群值）',
+        title: '删除本群已固化的值，改为跟随全局入群模型', onclick: async () => {
         const entry = ensureEdit();
         delete entry.dirty[key];
         if (!entry.reset.includes(key)) entry.reset.push(key);
@@ -1921,15 +1942,15 @@ async function viewJoins(root) {
   root.appendChild(card(
     '本群规则（当前群：' + (currentGroup.name || shortId(gid)) + '）',
     scope.follow_global
-      ? '本群配置只在关闭上方「跟随全局」后生效；开态下此处仅展示生效的全局值与已保留项。'
-      : '改动即固化为本群配置，全局变更不再影响；不想独立的字段点「恢复跟随」；审批模式走顶部下拉、不受影响。',
+      ? '本群配置只在关闭上方「跟随全局」后生效；开态下此处展示生效的全局值，已保留的本群值以“本群·停用”徽标标注。'
+      : '模型三级：选具体模型=本群独立；下拉选「跟随发言审核模型」=本群用它；「跟随全局（移除本群值）」=删本群值、跟随全局入群模型。审批模式走顶部下拉、不受影响。',
     groupChildren,
   ));
 
   /* —— 全局设置（新群快照来源 + 跟随字段的取值来源） —— */
   const joinProviderHint = el('p', { class: 'card-desc', text: settings.join_llm_provider_id
     ? '入群审批当前使用：' + settings.join_llm_provider_id
-    : '入群审批当前跟随发言审核模型（' + (joinProviderInfo.last_used || joinProviderInfo.configured || '会话默认模型') + '）' });
+    : '入群审批当前跟随发言审核模型（' + (joinProviderInfo.configured || joinProviderInfo.last_used || '会话默认模型') + '）' });
   const globalRows = {};
   const globalFields = {};
   const stats = followStats;

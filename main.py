@@ -108,7 +108,7 @@ from .src.utils import (
 from .src.web_api import EventBus, WebApi
 
 PLUGIN_NAME = "astrbot_plugin_qq_group_manager"
-VERSION = "0.14.0"
+VERSION = "0.14.1"
 
 STATE_FLUSH_INTERVAL = 30.0
 MAINTENANCE_INTERVAL = 3600.0
@@ -163,7 +163,8 @@ class QQGroupManager(Star):
         self._last_prune_day: str = ""
         self._seen_messages: dict[str, float] = {}
         self._context_buffer: dict[str, list[dict[str, Any]]] = {}
-        self._last_provider_id: str = ""
+        self._last_provider_id: str = ""       # 发言审核最近使用（展示）
+        self._last_join_provider_id: str = ""  # 入群审批最近使用（展示；分链路避免串号）
         WebApi(self).register()
 
     # ------------------------------------------------------------------
@@ -451,8 +452,10 @@ class QQGroupManager(Star):
             "groups_moderating": len(enabled),
             "join_review_mode": settings.get("join_review_mode"),
             "moderation_provider": {
+                # 兼容别名：展示口径以 config.providers 为准（BUG-09）
                 "configured": str(settings.get("llm_provider_id") or ""),
                 "last_used": self._last_provider_id,
+                "last_join_used": self._last_join_provider_id,
             },
             "db_queue": dict(self.audit.stats) if self.audit else {},
             "sse_subscribers": self.bus.subscriber_count(),
@@ -480,7 +483,7 @@ class QQGroupManager(Star):
         return ids
 
     def list_providers(self) -> dict[str, Any]:
-        """列出可用于内容审核的对话模型（WebUI 选择用）。"""
+        """列出内容审核与入群审批共用的对话模型（WebUI 选择用）。"""
         items: list[dict[str, str]] = []
         try:
             providers = self.context.get_all_providers() or []
@@ -502,7 +505,8 @@ class QQGroupManager(Star):
         return {
             "items": items,
             "configured": configured,
-            "last_used": self._last_provider_id,
+            "last_used": self._last_provider_id,            # 发言审核最近使用
+            "last_join_used": self._last_join_provider_id,  # 入群审批最近使用（分链路）
         }
 
     def groups_snapshot(self) -> list[dict[str, Any]]:
@@ -626,6 +630,13 @@ class QQGroupManager(Star):
     # ------------------------------------------------------------------
     # LLM 绑定与通知
     # ------------------------------------------------------------------
+    def _note_used_provider(self, provider_setting: str, used_id: str) -> None:
+        """按链路记录「最近实际使用」的模型，避免展示串号（BUG-03）。"""
+        if provider_setting == "join_llm_provider_id":
+            self._last_join_provider_id = used_id
+        else:
+            self._last_provider_id = used_id
+
     async def _llm_call(
         self,
         request: ModerationRequest,
@@ -641,7 +652,8 @@ class QQGroupManager(Star):
         - provider_override：调用方已按群解析好的模型 id（入群审批经
           effective_join_settings 取，受「跟随全局」开关门控）。**kw-only 且默认 None**：
           本函数还被内容审核以回调注入共享（moderator.provider_call），该路径不传此参数，
-          行为必须保持不变；None 时走 provider_setting → llm_provider_id 既有回落链。
+          行为必须保持不变。空串是合法值（= 跟随发言审核模型），不是「未解析」；
+          回落链：生效值(非空) → llm_provider_id → 会话默认。
         """
         umo = request.umo or str(self.store.get_setting("notify_session") or "")
         session_default = ""
@@ -654,8 +666,8 @@ class QQGroupManager(Star):
             configured = str(provider_override or "")
         else:
             configured = str(self.store.get_setting(provider_setting) or "")
-        if not configured and provider_override is None and provider_setting != "llm_provider_id":
-            # 入群审批没单独配模型时，跟随发言审核模型（WebUI 的默认选项）
+        if not configured and provider_setting != "llm_provider_id":
+            # 入群审批没单独配模型（含显式空值）时，跟随发言审核模型（WebUI 的默认选项）
             configured = str(self.store.get_setting("llm_provider_id") or "")
         provider_id = choose_provider_id(configured, session_default, available)
         if configured and provider_id != configured:
@@ -664,8 +676,9 @@ class QQGroupManager(Star):
                 configured,
                 provider_id or "会话默认模型",
             )
-        self._last_provider_id = provider_id
         if provider_id:
+            self._note_used_provider(provider_setting, provider_id)
+            request.provider_id = provider_id
             response = await self.context.llm_generate(
                 chat_provider_id=provider_id,
                 prompt=user_prompt,
@@ -677,6 +690,12 @@ class QQGroupManager(Star):
         provider = await self.context.get_using_provider_async(umo=umo or None)
         if provider is None:
             raise RuntimeError("未配置可用的对话模型")
+        try:
+            used_id = str(getattr(provider.meta(), "id", "") or "")
+        except Exception:  # pragma: no cover - meta() 异常不应阻断审核
+            used_id = ""
+        self._note_used_provider(provider_setting, used_id)
+        request.provider_id = used_id
         response = await provider.text_chat(
             system_prompt=system_prompt,
             prompt=user_prompt,
@@ -708,7 +727,8 @@ class QQGroupManager(Star):
             )
             # 按群取生效模型：开态/恢复跟随 → 全局值；关态固化 → 本群值；空 = 跟随回落链
             effective = self.store.effective_join_settings(group_id)
-            provider_override = str(effective.get("join_llm_provider_id") or "") or None
+            # 空串 = 显式「跟随发言审核模型」，不得折叠成 None（否则会回读全局 join，BUG-01）
+            provider_override = str(effective.get("join_llm_provider_id") or "")
             text = await self._llm_call(
                 request, system_prompt, user_prompt,
                 provider_setting="join_llm_provider_id",
@@ -1188,6 +1208,7 @@ class QQGroupManager(Star):
         verdict = None
         latency_ms = 0
         sampled = False
+        used_provider_id = ""  # 本次实际使用的审核模型（仅 LLM 送审时回填；BUG-02）
 
         if hard_actions:
             hit = evaluation.hard_hits[0]
@@ -1296,6 +1317,7 @@ class QQGroupManager(Star):
             verdict = await self.moderator.judge(request, templates=templates)
             latency_ms = int((time.monotonic() - started) * 1000)
             sampled = verdict.source == "llm"
+            used_provider_id = request.provider_id
 
         if verdict is None:
             return
@@ -1334,7 +1356,7 @@ class QQGroupManager(Star):
             hard_actions=hard_actions,
             source=verdict.source,
             umo=event.unified_msg_origin,
-            provider_id=self._last_provider_id,
+            provider_id=used_provider_id,
             latency_ms=latency_ms,
             sampled=sampled,
             send=_send,
@@ -1553,6 +1575,7 @@ class QQGroupManager(Star):
             join_mode=config.join_review_mode
             or str(self.store.get_setting("join_review_mode") or "off"),
             join_scope=self.store.join_scope_label(group_id),
+            model=str(self.store.get_setting("llm_provider_id") or "") or self._last_provider_id,
             stats=summary,
         )
 

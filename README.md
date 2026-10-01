@@ -160,6 +160,7 @@ QQ 官方群管理接口分三档（下表为 **QQ 官方通道**；OneBot 通�
 | `send_conditions` | rule_hit + risk>=60 | 送审条件，风险分阈值可调 |
 | `image_review` | off | 图片是否送审（off / with_text / always） |
 | `llm_provider_id` | 空 | 审核使用的模型；留空跟随会话默认模型 |
+| `join_llm_provider_id` | 空 | 入群审批使用的模型；留空跟随发言审核模型（可按群单独配置） |
 | `auto_enforce_normalized` | 关 | 变体命中是否直接处置（默认只送审，由 LLM 判定） |
 | `domain_allowlist_enabled` | 开 | 竞赛域名白名单降权（白名单内链接不计 link 分，仍送审） |
 | `domain_allowlist` | 内置竞赛域名 | 白名单域名列表（按点边界后缀匹配） |

@@ -242,6 +242,7 @@ def moderation_status_text(
     dry_run: bool,
     join_mode: str = "off",
     join_scope: str = "global",
+    model: str = "",
     stats: dict[str, Any] | None = None,
 ) -> str:
     """本群审核状态。"""
@@ -253,6 +254,7 @@ def moderation_status_text(
     else:
         lines.append("• 审核：未开启")
     lines.append(f"• 模式：{mode}")
+    lines.append(f"• 审核模型：{model or '跟随会话默认模型'}")
     lines.append(f"• 入群审批：{JOIN_MODE_LABELS.get(join_mode, join_mode or '关闭')}")
     lines.append(f"• 规则来源：{join_scope_text(join_scope)}")
     if dry_run:

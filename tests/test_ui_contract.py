@@ -350,3 +350,26 @@ def test_daily_budget_day_uses_beijing_date():
     src = (PLUGIN_ROOT / "src/moderator.py").read_text(encoding="utf-8")
     assert 'datetime.now(CN_TZ).strftime("%Y-%m-%d")' in src
     assert 'time.strftime("%Y-%m-%d", time.localtime())' not in src
+
+def test_moderation_model_hint_prefers_configured():
+    """BUG-03：策略页/总览「审核模型」与入群提示都以 configured 优先（否则切换后不刷新）。"""
+    text = app_js()
+    assert "(config.providers.configured || config.providers.last_used)" in text
+    assert "(providerInfo.configured || providerInfo.last_used || '跟随会话默认模型')" in text
+    assert "(joinProviderInfo.configured || joinProviderInfo.last_used || '会话默认模型')" in text
+
+
+def test_provider_select_adds_placeholder_when_configured_missing():
+    """BUG-06：候选缺失时补「当前不可用」占位项，避免保存时静默清空配置。"""
+    text = app_js()
+    assert "const knownIds = new Set((providerInfo.items || []).map((item) => item.id));" in text
+    assert "const knownJoinIds = new Set(((providerInfo && providerInfo.items) || []).map((item) => item.id));" in text
+    assert "（当前不可用）" in text
+
+
+def test_join_card_follow_semantics_disambiguated():
+    """BUG-04/05：恢复跟随按钮改名为「跟随全局（移除本群值）」；开态只显示生效全局值。"""
+    text = app_js()
+    assert "跟随全局（移除本群值）" in text
+    assert "const serverValue = scope.follow_global" in text
+

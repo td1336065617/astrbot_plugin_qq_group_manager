@@ -121,6 +121,7 @@ class ModerationRequest:
     matched: list[str] = field(default_factory=list)
     normalized_text: str = ""
     context_messages: list[dict[str, str]] = field(default_factory=list)
+    provider_id: str = ""   # 本次实际使用的模型 id（由 main._llm_call 回填，供审计归因）
 
     def render_context(self) -> str:
         """把最近群消息渲染成"语境"区块（不含本条）。"""

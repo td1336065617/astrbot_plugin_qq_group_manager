@@ -54,6 +54,7 @@
 | `dry_run_warn` | true | dry-run 期间是否仍发送警告与上报（关掉则完全静默，只写审计） |
 | `mode` | lenient | 默认处置强度（strict / standard / lenient / log_only） |
 | `llm_provider_id` | 空 | **审核使用的模型**；留空=跟随会话默认模型，可在「策略」页下拉选择 |
+| `join_llm_provider_id` | 空 | **入群审批使用的模型**；留空=跟随审核模型（`llm_provider_id`）；可在「入群审批」页下拉选择，并按群固化 |
 | `allow_without_full_msg` | false | 是否允许在未开启「接收全部消息」时启用审核（不建议） |
 | `sample_rate` | 1.0 | 送审比例 |
 | `image_review` | off | 图片是否送审：off 不送 / with_text 仅图文混排送图 / always 纯图片也送 |
