@@ -112,7 +112,7 @@ from .src.utils import (
 from .src.web_api import EventBus, WebApi
 
 PLUGIN_NAME = "astrbot_plugin_qq_group_manager"
-VERSION = "0.14.4"
+VERSION = "0.14.5"
 
 STATE_FLUSH_INTERVAL = 30.0
 MAINTENANCE_INTERVAL = 3600.0
@@ -1844,29 +1844,55 @@ class QQGroupManager(Star):
     ) -> tuple[str, str]:
         """决定撤回哪条消息，返回 (message_id, 来源)。
 
-        顺序：引用载荷里的真实 ID（若平台给出）→ 按引用内容回溯最近消息。
+        顺序：引用载荷里的真实 ID（若平台给出）→ 按引用正文回溯最近消息
+              → 引用载荷里的 REFIDX 索引（无正文的图片/表情消息只剩它）。
         不回落到「指令自身 ID」：那只会去删用户发的撤回指令本身，既无意义又刷失败日志。
         """
         if reply_id:
             return str(reply_id), "reply"
         quoted = strip_mention_tokens(self._quoted_text(event))
-        if not quoted:
-            return "", ""
-        deadline = now_ts() - RECALL_LOOKBACK_SECONDS
-        matches = [
-            item
-            for item in self._recent_msgs.get(group_id, [])
-            if int(item.get("ts") or 0) >= deadline and item.get("text") == quoted
-        ]
-        if not matches:
-            return "", ""
-        if len(matches) > 1:
-            self.logger.warning(
-                "撤回目标按内容匹配到 %d 条，取最近一条（群=%s）",
-                len(matches),
-                mask_openid(group_id),
-            )
-        return str(matches[-1]["msg_id"]), "recent"
+        if quoted:
+            deadline = now_ts() - RECALL_LOOKBACK_SECONDS
+            matches = [
+                item
+                for item in self._recent_msgs.get(group_id, [])
+                if int(item.get("ts") or 0) >= deadline and item.get("text") == quoted
+            ]
+            if matches:
+                if len(matches) > 1:
+                    self.logger.warning(
+                        "撤回目标按内容匹配到 %d 条，取最近一条（群=%s）",
+                        len(matches),
+                        mask_openid(group_id),
+                    )
+                return str(matches[-1]["msg_id"]), "recent"
+        reference = self._quoted_reference_idx(event)
+        if reference:
+            return reference, "reference"
+        return "", ""
+
+    @staticmethod
+    def _quoted_reference_idx(event: AstrMessageEvent) -> str:
+        """官方通道引用载荷里的 REFIDX 索引（msg_elements[0].msg_idx）。
+
+        纯图片/表情消息没有正文，按正文回溯无从下手，只剩这个索引可用。
+        """
+        raw = getattr(getattr(event, "message_obj", None), "raw_message", None)
+        candidates: list[object] = []
+        raw_data = getattr(raw, "raw_data", None)
+        if isinstance(raw_data, dict):
+            candidates.append(raw_data.get("msg_elements"))
+        candidates.append(getattr(raw, "msg_elements", None))
+        for elements in candidates:
+            if not isinstance(elements, list):
+                continue
+            for element in elements:
+                if not isinstance(element, dict):
+                    continue
+                value = str(element.get("msg_idx") or "").strip()
+                if value:
+                    return value
+        return ""
 
     async def _cmd_recall(self, event: AstrMessageEvent, group_id: str) -> list[str]:
         reply_id = self._reply_message_id(event)
@@ -1875,8 +1901,8 @@ class QQGroupManager(Star):
         if not message_id:
             return [
                 "撤回失败：无法确定要撤回哪条消息。官方通道的引用载荷不含消息 ID，"
-                "只能按引用正文回溯最近收到的消息；且平台仅允许撤回 2 分钟内发送的消息，"
-                "请引用一条刚发出的、正文可回溯的消息。"
+                "只能按引用正文回溯最近收到的消息（无正文的图片/表情消息回溯不到）；"
+                "且平台仅允许撤回 2 分钟内发送的消息，请引用一条刚发出的消息。"
             ]
         try:
             await self.api.recall_message(group_id, message_id, caller="command")

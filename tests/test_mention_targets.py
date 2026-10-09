@@ -58,12 +58,15 @@ class FakeEvent:
         self_id: str = BOT,
         group_id: str = GROUP,
         msg_id: str = "",
+        raw_data: dict | None = None,
     ) -> None:
         self.message_str = text
         self._components = list(components or [])
         self.message_obj = SimpleNamespace(
             self_id=self_id,
-            raw_message=SimpleNamespace(mentions=list(mentions or []), id=msg_id),
+            raw_message=SimpleNamespace(
+                mentions=list(mentions or []), id=msg_id, raw_data=dict(raw_data or {})
+            ),
             message_id=msg_id,
             group_id=group_id,
         )
@@ -232,6 +235,32 @@ def test_recall_refusal_mentions_platform_limit():
     plugin._recent_msgs = {}
     replies = asyncio.run(plugin._cmd_recall(FakeEvent("撤回"), GROUP))
     assert "2 分钟" in replies[0]
+
+
+def test_recall_falls_back_to_reference_idx():
+    """无正文的图片/表情消息：只剩引用载荷里的 REFIDX 索引可用。"""
+    main = load_main()
+    plugin = object.__new__(main.QQGroupManager)
+    plugin._recent_msgs = {}
+    event = FakeEvent(
+        "撤回",
+        components=[Reply(id="", chain=[], message_str="")],
+        raw_data={"msg_elements": [{"content": "", "msg_idx": "REFIDX_X"}]},
+    )
+    assert plugin._resolve_recall_target(event, GROUP, "") == ("REFIDX_X", "reference")
+
+
+def test_recall_prefers_content_match_over_reference_idx():
+    main = load_main()
+    plugin = object.__new__(main.QQGroupManager)
+    plugin._recent_msgs = {}
+    plugin._remember_recent_message(GROUP, "MSG9", "u1", "禁言 1分钟")
+    event = FakeEvent(
+        "撤回",
+        components=[Reply(id="", chain=[], message_str="禁言 1分钟")],
+        raw_data={"msg_elements": [{"content": "禁言 1分钟", "msg_idx": "REFIDX_X"}]},
+    )
+    assert plugin._resolve_recall_target(event, GROUP, "") == ("MSG9", "recent")
 
 
 def test_recall_ignores_recent_message_out_of_window():
