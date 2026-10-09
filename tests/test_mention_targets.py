@@ -237,30 +237,37 @@ def test_recall_refusal_mentions_platform_limit():
     assert "2 分钟" in replies[0]
 
 
-def test_recall_falls_back_to_reference_idx():
-    """无正文的图片/表情消息：只剩引用载荷里的 REFIDX 索引可用。"""
+def test_recall_refuses_placeholder_only_quote():
+    """引用纯图片/表情消息：占位符不是正文，绝不拿它去匹配（会误伤别人）。"""
     main = load_main()
     plugin = object.__new__(main.QQGroupManager)
     plugin._recent_msgs = {}
     event = FakeEvent(
         "撤回",
-        components=[Reply(id="", chain=[], message_str="")],
-        raw_data={"msg_elements": [{"content": "", "msg_idx": "REFIDX_X"}]},
+        components=[Reply(id="", chain=[], message_str="[表情]")],
+        raw_data={"msg_elements": [{"content": "[表情]", "msg_idx": "REFIDX_X"}]},
     )
-    assert plugin._resolve_recall_target(event, GROUP, "") == ("REFIDX_X", "reference")
+    assert plugin._resolve_recall_target(event, GROUP, "") == ("", "")
 
 
-def test_recall_prefers_content_match_over_reference_idx():
+def test_recent_index_skips_placeholder_only_messages():
+    """占位符消息不入索引：否则同群任何一条表情消息都会成为撤回目标。"""
     main = load_main()
     plugin = object.__new__(main.QQGroupManager)
     plugin._recent_msgs = {}
-    plugin._remember_recent_message(GROUP, "MSG9", "u1", "禁言 1分钟")
-    event = FakeEvent(
-        "撤回",
-        components=[Reply(id="", chain=[], message_str="禁言 1分钟")],
-        raw_data={"msg_elements": [{"content": "禁言 1分钟", "msg_idx": "REFIDX_X"}]},
-    )
-    assert plugin._resolve_recall_target(event, GROUP, "") == ("MSG9", "recent")
+    plugin._remember_recent_message(GROUP, "MSG-IMG", "u1", "[表情]")
+    plugin._remember_recent_message(GROUP, "MSG-TXT", "u1", "今天[图片]")
+    plugin._remember_recent_message(GROUP, "MSG-EMPTY", "u1", "")
+    assert [item["msg_id"] for item in plugin._recent_msgs[GROUP]] == ["MSG-TXT"]
+
+
+def test_placeholder_text_helper():
+    from src.utils import is_placeholder_text
+
+    assert is_placeholder_text("[表情]") is True
+    assert is_placeholder_text("[表情][图片]") is True
+    assert is_placeholder_text("你好[图片]") is False
+    assert is_placeholder_text("") is False
 
 
 def test_recall_ignores_recent_message_out_of_window():

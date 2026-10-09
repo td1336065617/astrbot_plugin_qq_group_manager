@@ -160,6 +160,17 @@ def strip_mention_tokens(text: Any) -> str:
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
+#: 平台把非文字消息渲染成方括号占位符（官方通道：`[表情]`/`[图片]`/`[视频]`…）。
+#: 这些不是正文内容，绝不能参与「引用正文 → 最近消息」匹配——实测会指向别人发的
+#: 表情消息，平台回 400「无操作权限」。
+PLACEHOLDER_ONLY_RE = re.compile(r"^(?:\[[^\[\]]{1,10}\])+$")
+
+
+def is_placeholder_text(text: Any) -> bool:
+    """判断是否只有占位符、没有真实正文（如 `[表情]`、`[表情][图片]`）。"""
+    return bool(PLACEHOLDER_ONLY_RE.match(str(text or "").strip()))
+
+
 def extract_mention_ids(text: Any) -> list[str]:
     """按出现顺序抽取正文中被 @ 的 ID（去重、剔除占位符）。
 
