@@ -112,7 +112,7 @@ from .src.utils import (
 from .src.web_api import EventBus, WebApi
 
 PLUGIN_NAME = "astrbot_plugin_qq_group_manager"
-VERSION = "0.14.2"
+VERSION = "0.14.3"
 
 STATE_FLUSH_INTERVAL = 30.0
 MAINTENANCE_INTERVAL = 3600.0
@@ -121,6 +121,12 @@ SEEN_MESSAGE_TTL = 600.0
 #: 每群保留的最近语境消息条数上限（送审时按 llm_context_messages 截取）
 CONTEXT_BUFFER_MAX = 20
 DEFAULT_MUTE_SECONDS = 600
+
+#: 「回复撤回」回溯窗口与单群缓存容量：官方通道的引用载荷不含消息 ID
+#: （实测 ref={"message_id": None}，elements 里只有 REFIDX 索引），
+#: 只能按「引用内容 → 最近收到的消息」回溯，因此必须给窗口与容量设上限。
+RECALL_LOOKBACK_SECONDS = 900
+RECENT_MSG_PER_GROUP = 40
 
 
 class QQGroupManager(Star):
@@ -167,6 +173,7 @@ class QQGroupManager(Star):
         self._last_prune_day: str = ""
         self._seen_messages: dict[str, float] = {}
         self._context_buffer: dict[str, list[dict[str, Any]]] = {}
+        self._recent_msgs: dict[str, list[dict[str, Any]]] = {}  # 供「回复撤回」回溯
         self._last_provider_id: str = ""       # 发言审核最近使用（展示）
         self._last_join_provider_id: str = ""  # 入群审批最近使用（展示；分链路避免串号）
         WebApi(self).register()
@@ -882,6 +889,9 @@ class QQGroupManager(Star):
             )
             await self.store.remember_member(
                 group_id, sender_openid, name=sender_name, role=sender_role
+            )
+            self._remember_recent_message(
+                group_id, self._message_id(event), sender_openid, event.message_str or ""
             )
 
             text = normalize_command(event.message_str or "")
@@ -1784,16 +1794,93 @@ class QQGroupManager(Star):
             await self.audit.set_mute_active(group_id, openid, False)
         return [f"已解除 {member_name or mask_openid(openid)} 的禁言。"]
 
+    def _remember_recent_message(
+        self, group_id: str, msg_id: str, sender_openid: str, text: str
+    ) -> None:
+        """记录最近收到的群消息，供「回复撤回」回溯真实消息 ID。
+
+        官方通道的引用载荷里没有消息 ID（只有 REFIDX 索引），因此撤回只能
+        按「引用内容 → 最近消息」回溯；插件因「接收全部消息」而见过每条消息。
+        """
+        if not (group_id and msg_id):
+            return
+        bucket = self._recent_msgs.setdefault(group_id, [])
+        bucket.append(
+            {
+                "msg_id": str(msg_id),
+                "sender": str(sender_openid or ""),
+                "text": strip_mention_tokens(text),
+                "ts": now_ts(),
+            }
+        )
+        if len(bucket) > RECENT_MSG_PER_GROUP:
+            del bucket[: len(bucket) - RECENT_MSG_PER_GROUP]
+
+    @staticmethod
+    def _quoted_text(event: AstrMessageEvent) -> str:
+        """被引用消息的正文（官方通道的引用载荷会剥掉 @ 记号）。"""
+        try:
+            components = list(event.get_messages() or [])
+        except Exception:  # pragma: no cover - 兼容异常事件对象
+            components = []
+        for component in components:
+            if not isinstance(component, Reply):
+                continue
+            text = str(getattr(component, "message_str", "") or "")
+            if text:
+                return text
+            chain = getattr(component, "chain", None) or []
+            return "".join(
+                str(getattr(item, "text", "") or "")
+                for item in chain
+                if type(item).__name__ == "Plain"
+            )
+        return ""
+
+    def _resolve_recall_target(
+        self, event: AstrMessageEvent, group_id: str, reply_id: str
+    ) -> tuple[str, str]:
+        """决定撤回哪条消息，返回 (message_id, 来源)。
+
+        顺序：引用载荷里的真实 ID（若平台给出）→ 按引用内容回溯最近消息。
+        不回落到「指令自身 ID」：那只会去删用户发的撤回指令本身，既无意义又刷失败日志。
+        """
+        if reply_id:
+            return str(reply_id), "reply"
+        quoted = strip_mention_tokens(self._quoted_text(event))
+        if not quoted:
+            return "", ""
+        deadline = now_ts() - RECALL_LOOKBACK_SECONDS
+        matches = [
+            item
+            for item in self._recent_msgs.get(group_id, [])
+            if int(item.get("ts") or 0) >= deadline and item.get("text") == quoted
+        ]
+        if not matches:
+            return "", ""
+        if len(matches) > 1:
+            self.logger.warning(
+                "撤回目标按内容匹配到 %d 条，取最近一条（群=%s）",
+                len(matches),
+                mask_openid(group_id),
+            )
+        return str(matches[-1]["msg_id"]), "recent"
+
     async def _cmd_recall(self, event: AstrMessageEvent, group_id: str) -> list[str]:
         reply_id = self._reply_message_id(event)
         own_id = self._message_id(event)
-        message_id = reply_id or own_id
+        message_id, source = self._resolve_recall_target(event, group_id, reply_id)
         if not message_id:
-            return ["拿不到这条消息的 ID（引用消息与本条消息都为空），无法撤回。"]
+            return [
+                "撤回失败：无法确定要撤回哪条消息。官方通道的引用载荷不含消息 ID，"
+                "只能按引用内容回溯最近 15 分钟内收到的消息——请引用一条正文可回溯的近期消息。"
+            ]
         try:
             await self.api.recall_message(group_id, message_id, caller="command")
         except QQApiError as exc:
-            self._record_recall_failure(group_id, message_id, reply_id, own_id, exc)
+            self._record_recall_failure(
+                group_id, message_id, reply_id, own_id, exc, source
+            )
             return [f"撤回失败：{exc.hint or exc.message}"]
         return ["已撤回该消息。"]
 
@@ -1804,13 +1891,14 @@ class QQGroupManager(Star):
         reply_id: str,
         own_id: str,
         exc: QQApiError,
+        source: str = "",
     ) -> None:
         """撤回失败留痕：记录实际发给平台的 message_id 及其来源。
 
-        平台侧失败文案无法区分「引用 ID 为空、回落成指令自身 ID」与
+        平台侧失败文案无法区分「引用载荷没有 ID、按内容回溯到别的消息」与
         「ID 正确但平台拒绝」，因此把取值与来源一并落库。
         """
-        source = "reply" if reply_id else "self"
+        source = source or ("reply" if reply_id else "unknown")
         self.logger.warning(
             "撤回失败：message_id=%s source=%s group=%s err=%s",
             message_id,

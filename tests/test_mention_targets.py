@@ -17,7 +17,12 @@ from astrbot.api.message_components import At, Reply
 
 from src.commands import match_command
 from src.store import PluginStore
-from src.utils import extract_mention_ids, normalize_command, strip_mention_tokens
+from src.utils import (
+    extract_mention_ids,
+    normalize_command,
+    now_ts,
+    strip_mention_tokens,
+)
 from tests.fakes import FakeKV
 
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
@@ -179,13 +184,52 @@ def test_resolve_target_prefers_text_target_over_bot_mention():
 # ---------------------------------------------------------------- 撤回留痕（F5）
 
 
-def test_recall_without_any_message_id_reports_clearly():
-    """拿不到 ID 时给明确回执，而不是把无事发生的空串发去平台。"""
+def test_recall_without_any_target_reports_clearly():
+    """拿不到目标时给明确回执，而不是把指令自身 ID 发去平台。"""
     plugin = object.__new__(load_main().QQGroupManager)
+    plugin._recent_msgs = {}
     event = FakeEvent("撤回")  # 无引用、无消息 ID
-    assert asyncio.run(plugin._cmd_recall(event, GROUP)) == [
-        "拿不到这条消息的 ID（引用消息与本条消息都为空），无法撤回。"
-    ]
+    replies = asyncio.run(plugin._cmd_recall(event, GROUP))
+    assert len(replies) == 1 and "无法确定要撤回哪条消息" in replies[0]
+
+
+def test_recall_prefers_reply_id_when_present():
+    plugin = object.__new__(load_main().QQGroupManager)
+    plugin._recent_msgs = {}
+    event = FakeEvent("撤回", components=[Reply(id="MSG1")])
+    assert plugin._resolve_recall_target(event, GROUP, plugin._reply_message_id(event)) == (
+        "MSG1",
+        "reply",
+    )
+
+
+def test_recall_uses_recent_message_by_quoted_text():
+    """官方通道引用载荷没有消息 ID，靠引用正文回溯到真实 message_id。"""
+    plugin = object.__new__(load_main().QQGroupManager)
+    plugin._recent_msgs = {}
+    plugin._remember_recent_message(GROUP, "MSG9", "u1", f"禁言 <@{TARGET}> 1分钟")
+    event = FakeEvent("撤回", components=[Reply(id="", chain=[], message_str="禁言   1分钟")])
+    assert plugin._resolve_recall_target(event, GROUP, "") == ("MSG9", "recent")
+
+
+def test_recall_ignores_recent_message_out_of_window():
+    plugin = object.__new__(load_main().QQGroupManager)
+    plugin._recent_msgs = {}
+    plugin._remember_recent_message(GROUP, "MSG9", "u1", "禁言 1分钟")
+    plugin._recent_msgs[GROUP][0]["ts"] = now_ts() - 3600
+    event = FakeEvent("撤回", components=[Reply(id="", chain=[], message_str="禁言 1分钟")])
+    assert plugin._resolve_recall_target(event, GROUP, "") == ("", "")
+
+
+def test_recent_message_index_is_bounded():
+    main = load_main()
+    plugin = object.__new__(main.QQGroupManager)
+    plugin._recent_msgs = {}
+    for index in range(main.RECENT_MSG_PER_GROUP + 10):
+        plugin._remember_recent_message(GROUP, f"MSG{index}", "u1", f"内容{index}")
+    bucket = plugin._recent_msgs[GROUP]
+    assert len(bucket) == main.RECENT_MSG_PER_GROUP
+    assert bucket[-1]["msg_id"] == f"MSG{main.RECENT_MSG_PER_GROUP + 9}"
 
 
 def test_recall_records_message_id_on_failure():
