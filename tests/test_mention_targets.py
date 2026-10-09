@@ -242,10 +242,41 @@ def test_recall_prefers_ordinary_member_over_admin():
     main = load_main()
     plugin = object.__new__(main.QQGroupManager)
     plugin._recent_msgs = {}
-    plugin._remember_recent_message(GROUP, "MSG-MEMBER", "u1", "同一个文本")
-    plugin._remember_recent_message(GROUP, "MSG-ADMIN", "u9", "同一个文本", None, True)
+    plugin._remember_recent_message(GROUP, "MSG-MEMBER", "u1", "同一个文本", None, "member")
+    plugin._remember_recent_message(GROUP, "MSG-ADMIN", "u9", "同一个文本", None, "owner")
     event = FakeEvent("撤回", components=[Reply(id="", chain=[], message_str="同一个文本")])
     assert plugin._resolve_recall_target(event, GROUP, "") == ("MSG-MEMBER", "recent")
+
+
+def test_recall_refuses_owner_quoted_message_without_api_call():
+    """引用元素自带 author.member_role：群主/管理员的消息不必再打一次必拒的接口。"""
+    main = load_main()
+    plugin = object.__new__(main.QQGroupManager)
+    plugin._recent_msgs = {}
+    called: list = []
+
+    class SpyApi:
+        async def recall_message(self, group_id, message_id, *, caller="moderation"):
+            called.append(message_id)
+            return {}
+
+    plugin.audit = None
+    plugin.api = SpyApi()
+    plugin.logger = logging.getLogger("test-recall-owner")
+    event = FakeEvent(
+        "撤回",
+        components=[Reply(id="", chain=[], message_str="我的消息")],
+        raw_data={
+            "message_type": 103,
+            "author": {"member_role": "member"},
+            "msg_elements": [
+                {"content": "我的消息", "author": {"member_role": "owner"}},
+            ],
+        },
+    )
+    replies = asyncio.run(plugin._cmd_recall(event, GROUP))
+    assert "40062003" in replies[0]
+    assert called == []
 
 
 def test_recall_permission_failure_explains_platform_rule():

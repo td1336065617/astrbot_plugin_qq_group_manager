@@ -114,7 +114,7 @@ from .src.utils import (
 from .src.web_api import EventBus, WebApi
 
 PLUGIN_NAME = "astrbot_plugin_qq_group_manager"
-VERSION = "0.14.8"
+VERSION = "0.14.9"
 
 STATE_FLUSH_INTERVAL = 30.0
 MAINTENANCE_INTERVAL = 3600.0
@@ -900,7 +900,7 @@ class QQGroupManager(Star):
                 sender_openid,
                 event.message_str or "",
                 self._message_files(event),
-                self.store.is_group_admin(group_id, sender_openid),
+                self._message_role(event),
             )
 
             text = normalize_command(event.message_str or "")
@@ -1810,7 +1810,7 @@ class QQGroupManager(Star):
         sender_openid: str,
         text: str,
         files: list[str] | None = None,
-        admin: bool = False,
+        role: str = "",
     ) -> None:
         """记录最近收到的群消息，供「回复撤回」回溯真实消息 ID。
 
@@ -1834,7 +1834,7 @@ class QQGroupManager(Star):
                 "sender": str(sender_openid or ""),
                 "text": cleaned,
                 "files": keys,
-                "admin": bool(admin),
+                "role": str(role or "").casefold(),
                 "ts": now_ts(),
             }
         )
@@ -1853,11 +1853,48 @@ class QQGroupManager(Star):
         elements = getattr(raw, "msg_elements", None)
         return elements if isinstance(elements, list) else []
 
-    @staticmethod
-    def _is_quote(event: AstrMessageEvent) -> bool:
-        """本条消息是否引用了别的消息（官方通道 message_type=103）。"""
+    @classmethod
+    def _is_quote(cls, event: AstrMessageEvent) -> bool:
+        """本条消息是否引用了别的消息（官方通道 message_type=103）。
+
+        官方文档《群消息（全量模式）》：message_type=103 表示引用消息，
+        嵌套内容在 msg_elements 里。补充读 raw_data 是为了兜住未暴露该属性的适配器。
+        """
         raw = getattr(getattr(event, "message_obj", None), "raw_message", None)
-        return str(getattr(raw, "message_type", "") or "") == "103"
+        value = getattr(raw, "message_type", None)
+        if value in (None, ""):
+            raw_data = getattr(raw, "raw_data", None)
+            if isinstance(raw_data, dict):
+                value = raw_data.get("message_type")
+        return str(value or "") == "103"
+
+    @staticmethod
+    def _raw_author_role(payload: Any) -> str:
+        """群内角色：官方字段 `author.member_role`（member/admin/owner）。
+
+        依据腾讯文档《群消息（全量模式）》事件体：author.member_role 即群内角色，
+        比插件自己的角色缓存更可靠（缓存可能为空或过期）。
+        """
+        if not isinstance(payload, dict):
+            return ""
+        author = payload.get("author")
+        if isinstance(author, dict):
+            return str(author.get("member_role") or "").strip().casefold()
+        return ""
+
+    def _message_role(self, event: AstrMessageEvent) -> str:
+        """本条消息发送者的群内角色。"""
+        raw = getattr(getattr(event, "message_obj", None), "raw_message", None)
+        return self._raw_author_role(getattr(raw, "raw_data", None))
+
+    def _quoted_role(self, event: AstrMessageEvent) -> str:
+        """被引用消息发送者的群内角色（引用元素自带 author）。"""
+        if not self._is_quote(event):
+            return ""
+        for element in self._raw_elements(event):
+            if isinstance(element, dict):
+                return self._raw_author_role(element)
+        return ""
 
     def _message_files(self, event: AstrMessageEvent) -> list[str]:
         """本条消息自己的附件指纹（引用元素不算，那是别人发的）。"""
@@ -1954,7 +1991,7 @@ class QQGroupManager(Star):
         """
         if not matches:
             return None
-        members = [item for item in matches if not item.get("admin")]
+        members = [item for item in matches if item.get("role") not in {"admin", "owner"}]
         pool = members or matches
         if len(pool) > 1:
             self.logger.warning(
@@ -1968,13 +2005,19 @@ class QQGroupManager(Star):
     async def _cmd_recall(self, event: AstrMessageEvent, group_id: str) -> list[str]:
         reply_id = self._reply_message_id(event)
         own_id = self._message_id(event)
+        quoted_role = self._quoted_role(event)
+        if quoted_role in {"admin", "owner"} and not reply_id:
+            return [
+                "撤回失败：平台只允许机器人撤回自己发送的消息和**普通群成员**的消息，"
+                "群主/管理员的消息撤回不了（官方错误码 40062003），这条不用再试了。"
+            ]
         message_id, source = self._resolve_recall_target(event, group_id, reply_id)
         if not message_id:
             return [
                 "撤回失败：无法确定要撤回哪条消息。官方通道的引用载荷不含消息 ID，"
-                "只能按引用正文回溯最近收到的消息；被引用的是纯图片/表情消息（正文只有"
-                "占位符）时拿不到 ID，无法撤回。且平台仅允许撤回 2 分钟内发送的消息，"
-                "请引用一条刚发出的、有文字的消息。"
+                "只能按引用正文/引用附件回溯最近收到的消息；被引用的是纯图片/表情消息时，"
+                "拿不到它的消息 ID。且平台仅允许撤回 2 分钟内发送的消息，"
+                "请引用一条刚发出的消息。"
             ]
         try:
             await self.api.recall_message(group_id, message_id, caller="command")
