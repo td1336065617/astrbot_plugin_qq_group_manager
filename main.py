@@ -114,7 +114,7 @@ from .src.utils import (
 from .src.web_api import EventBus, WebApi
 
 PLUGIN_NAME = "astrbot_plugin_qq_group_manager"
-VERSION = "0.14.10"
+VERSION = "0.14.11"
 
 STATE_FLUSH_INTERVAL = 30.0
 MAINTENANCE_INTERVAL = 3600.0
@@ -1773,6 +1773,13 @@ class QQGroupManager(Star):
         openid, member_name = self._resolve_target(event, group_id, args)
         if not openid:
             return ["请 @ 要禁言的成员，或使用其 openid。"]
+        if str(openid).casefold() in self._self_id_candidates(event):
+            return ["禁言失败：不能禁言机器人自己。"]
+        # 角色已知且是群主/管理员：平台必然拒绝（40103004），不再打接口；角色未知时照常尝试
+        if self.store.member_role(group_id, openid) in {"admin", "owner"}:
+            return [
+                "禁言失败：对方是群主/管理员，平台不允许禁言（官方错误码 40103004）。"
+            ]
         seconds = DEFAULT_MUTE_SECONDS
         for token in args:
             parsed = parse_duration(token)
@@ -1988,6 +1995,21 @@ class QQGroupManager(Star):
                 return str(picked["msg_id"]), "file"
         return "", ""
 
+    @staticmethod
+    def _recall_forbidden_text() -> str:
+        """平台只允许撤回机器人自己与普通群成员的消息（官方错误码 40062003）。"""
+        return (
+            "撤回失败：平台只允许机器人撤回自己发送的消息和普通群成员的消息，"
+            "群主/管理员的消息撤回不了（官方错误码 40062003），这条不用再试了。"
+        )
+
+    def _recent_role(self, group_id: str, message_id: str) -> str:
+        """回溯命中那条消息的发送者角色（索引里存的是官方 author.member_role）。"""
+        for item in reversed(self._recent_msgs.get(group_id, [])):
+            if str(item.get("msg_id")) == str(message_id):
+                return str(item.get("role") or "")
+        return ""
+
     def _pick_recall_candidate(
         self, matches: list[dict[str, Any]], group_id: str, label: str
     ) -> dict[str, Any] | None:
@@ -2013,24 +2035,11 @@ class QQGroupManager(Star):
     async def _cmd_recall(self, event: AstrMessageEvent, group_id: str) -> list[str]:
         reply_id = self._reply_message_id(event)
         own_id = self._message_id(event)
-        if self._is_quote(event):  # TODO(临时诊断)：确认线上引用载荷字段，随后移除
-            elements = self._raw_elements(event)
-            head = elements[0] if elements else {}
-            raw = getattr(getattr(event, "message_obj", None), "raw_message", None)
-            raw_data = getattr(raw, "raw_data", None)
-            scene = raw_data.get("message_scene") if isinstance(raw_data, dict) else None
-            self.logger.info(
-                "撤回诊断：元素键=%s scene=%s 元素=%s",
-                sorted(head.keys()) if isinstance(head, dict) else type(head).__name__,
-                scene,
-                repr(head)[:220],
-            )
+        # quoted_role 只在平台下发 MsgElement.author 时才有值（线上实测未下发），
+        # 因此下面还会用「回溯命中的那条消息的角色」再拦一次。
         quoted_role = self._quoted_role(event)
         if quoted_role in {"admin", "owner"} and not reply_id:
-            return [
-                "撤回失败：平台只允许机器人撤回自己发送的消息和**普通群成员**的消息，"
-                "群主/管理员的消息撤回不了（官方错误码 40062003），这条不用再试了。"
-            ]
+            return [self._recall_forbidden_text()]
         message_id, source = self._resolve_recall_target(event, group_id, reply_id)
         if not message_id:
             return [
@@ -2039,6 +2048,11 @@ class QQGroupManager(Star):
                 "拿不到它的消息 ID。且平台仅允许撤回 2 分钟内发送的消息，"
                 "请引用一条刚发出的消息。"
             ]
+        if source in {"recent", "file"} and self._recent_role(group_id, message_id) in {
+            "admin",
+            "owner",
+        }:
+            return [self._recall_forbidden_text()]
         try:
             await self.api.recall_message(group_id, message_id, caller="command")
         except QQApiError as exc:

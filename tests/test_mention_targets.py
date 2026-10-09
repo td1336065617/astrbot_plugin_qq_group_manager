@@ -290,6 +290,53 @@ def test_recall_refuses_owner_quoted_message_without_api_call():
     assert called == []
 
 
+def test_recall_refuses_when_matched_message_is_admin():
+    """回溯命中的那条是群主/管理员发的：平台必然拒（40062003），不打接口。"""
+    main = load_main()
+    plugin = object.__new__(main.QQGroupManager)
+    plugin._recent_msgs = {}
+    plugin._remember_recent_message(GROUP, "MSG-ADMIN", "u9", "撤回我", None, "owner")
+    called: list = []
+
+    class SpyApi:
+        async def recall_message(self, group_id, message_id, *, caller="moderation"):
+            called.append(message_id)
+            return {}
+
+    plugin.audit = None
+    plugin.api = SpyApi()
+    plugin.logger = logging.getLogger("test-recall-admin-hit")
+    event = FakeEvent("撤回", components=[Reply(id="", chain=[], message_str="撤回我")])
+    replies = asyncio.run(plugin._cmd_recall(event, GROUP))
+    assert "40062003" in replies[0]
+    assert called == []
+
+
+def test_mute_refuses_admin_target_without_api_call():
+    """禁言群主/管理员会被平台拒（40103004）；角色已知时直接说明。"""
+    main = load_main()
+    plugin = object.__new__(main.QQGroupManager)
+    plugin._recent_msgs = {}
+    plugin.store = SimpleNamespace(
+        member_role=lambda group_id, openid: "admin",
+        member_name=lambda group_id, openid: "群主",
+    )
+    called: list = []
+
+    class SpyApi:
+        async def mute_member(self, group_id, openid, *, seconds=0, caller="moderation"):
+            called.append(openid)
+            return {}
+
+    plugin.api = SpyApi()
+    plugin.audit = None
+    plugin.logger = logging.getLogger("test-mute-admin")
+    event = FakeEvent(f"禁言 {TARGET} 10分钟")
+    replies = asyncio.run(plugin._cmd_mute(event, GROUP, [TARGET, "10分钟"], "道"))
+    assert "40103004" in replies[0]
+    assert called == []
+
+
 def test_recall_permission_failure_explains_platform_rule():
     """回溯到的消息若撤不了，要按官方文档说明原因，而不是笼统说没权限。"""
     main = load_main()

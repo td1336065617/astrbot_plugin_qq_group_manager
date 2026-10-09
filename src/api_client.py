@@ -33,6 +33,7 @@ from .models import (
     ERR_GROUP_GONE,
     ERR_INTERFACE_FORBIDDEN,
     ERR_MSG_ID_EXPIRED,
+    ERR_MUTE_TARGET_FORBIDDEN,
     ERR_NOT_ADMIN,
     ERR_NOT_MEMBER,
     ERR_NOT_WHITELISTED,
@@ -62,6 +63,7 @@ SEM_NOT_FOUND = "not_found"
 SEM_RATE_LIMITED = "rate_limited"
 SEM_RECALL_EXPIRED = "recall_expired"
 SEM_RECALL_FORBIDDEN = "recall_forbidden"
+SEM_MUTE_TARGET_FORBIDDEN = "mute_target_forbidden"
 SEM_MSG_EXPIRED = "msg_id_expired"
 SEM_PROACTIVE_LIMIT = "proactive_limit"
 SEM_NOT_MEMBER = "not_member"
@@ -87,7 +89,14 @@ ERR_SEMANTICS: dict[int, tuple[str, str]] = {
     ERR_GROUP_GONE: (SEM_GROUP_GONE, "该群已失效或不存在"),
     ERR_RATE_LIMITED: (SEM_RATE_LIMITED, "触发限频，请降低调用频率"),
     ERR_RECALL_EXPIRED: (SEM_RECALL_EXPIRED, "消息发送超过 2 分钟，无法撤回"),
-    ERR_RECALL_FORBIDDEN: (SEM_RECALL_FORBIDDEN, "无撤回权限（需要群管理员）"),
+    ERR_RECALL_FORBIDDEN: (
+        SEM_RECALL_FORBIDDEN,
+        "无撤回权限：机器人需为群管理员，且只能撤回自己发送的消息或普通群成员的消息",
+    ),
+    ERR_MUTE_TARGET_FORBIDDEN: (
+        SEM_MUTE_TARGET_FORBIDDEN,
+        "目标成员是机器人/群主/管理员，平台不允许禁言",
+    ),
     ERR_MSG_ID_EXPIRED: (SEM_MSG_EXPIRED, "被动回复的 msg_id 已过期"),
     ERR_PROACTIVE_LIMIT: (SEM_PROACTIVE_LIMIT, "主动消息超出频控限制"),
     ERR_REQ_INVALID: (SEM_INVALID, "请求体不合法（多为插件构造问题）"),
@@ -113,6 +122,10 @@ TEXT_SEMANTICS: tuple[tuple[str, tuple[str, str]], ...] = (
     ("仅白名单", (SEM_NOT_WHITELISTED, "该接口仅白名单机器人可用，请向 QQ 开放平台申请权限")),
     ("机器人应用未获得调用该接口的权限", (SEM_NOT_WHITELISTED, "需要向 QQ 开放平台申请该接口权限")),
     ("检查是否是管理员未通过", (SEM_NOT_ADMIN, "机器人未被授予群管理员，请先在群内设置")),
+    (
+        "不允许被禁言",
+        (SEM_MUTE_TARGET_FORBIDDEN, "目标成员是机器人/群主/管理员，平台不允许禁言"),
+    ),
     (
         "无操作权限",
         (
