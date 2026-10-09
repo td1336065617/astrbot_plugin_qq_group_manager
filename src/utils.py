@@ -171,6 +171,32 @@ def is_placeholder_text(text: Any) -> bool:
     return bool(PLACEHOLDER_ONLY_RE.match(str(text or "").strip()))
 
 
+#: 附件 URL 里的稳定标识：`…&fileid=EhSEfWX2…`（同一条附件在「收到的消息」与
+#: 「引用元素」两侧都在，rkey 会过期、不参与比对）
+_FILEID_RE = re.compile(r"[?&]fileid=([^&\s]+)")
+
+
+def attachment_fingerprints(attachments: Any) -> list[str]:
+    """附件指纹：文件名 + fileid，用于把「引用的图片」对回「收到的消息」。
+
+    官方通道的引用载荷里没有消息 ID，纯图片/表情消息也没有正文，
+    但两侧都带同一份附件信息，靠它就能定位到真实 message_id。
+    """
+    keys: list[str] = []
+    if not isinstance(attachments, list):
+        return keys
+    for item in attachments:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("filename") or item.get("name") or "").strip()
+        if name:
+            keys.append(name.casefold())
+        matched = _FILEID_RE.search(str(item.get("url") or ""))
+        if matched:
+            keys.append(f"fileid:{matched.group(1).casefold()}")
+    return list(dict.fromkeys(keys))
+
+
 def extract_mention_ids(text: Any) -> list[str]:
     """按出现顺序抽取正文中被 @ 的 ID（去重、剔除占位符）。
 

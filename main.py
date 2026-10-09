@@ -97,6 +97,7 @@ from .src.utils import (
     CN_TZ,
     MENTION_PLACEHOLDERS,
     OPENID_RE,
+    attachment_fingerprints,
     digest_text,
     extract_mention_ids,
     is_placeholder_text,
@@ -113,7 +114,7 @@ from .src.utils import (
 from .src.web_api import EventBus, WebApi
 
 PLUGIN_NAME = "astrbot_plugin_qq_group_manager"
-VERSION = "0.14.7"
+VERSION = "0.14.8"
 
 STATE_FLUSH_INTERVAL = 30.0
 MAINTENANCE_INTERVAL = 3600.0
@@ -894,7 +895,12 @@ class QQGroupManager(Star):
                 group_id, sender_openid, name=sender_name, role=sender_role
             )
             self._remember_recent_message(
-                group_id, self._message_id(event), sender_openid, event.message_str or ""
+                group_id,
+                self._message_id(event),
+                sender_openid,
+                event.message_str or "",
+                self._message_files(event),
+                self.store.is_group_admin(group_id, sender_openid),
             )
 
             text = normalize_command(event.message_str or "")
@@ -1798,18 +1804,28 @@ class QQGroupManager(Star):
         return [f"已解除 {member_name or mask_openid(openid)} 的禁言。"]
 
     def _remember_recent_message(
-        self, group_id: str, msg_id: str, sender_openid: str, text: str
+        self,
+        group_id: str,
+        msg_id: str,
+        sender_openid: str,
+        text: str,
+        files: list[str] | None = None,
+        admin: bool = False,
     ) -> None:
         """记录最近收到的群消息，供「回复撤回」回溯真实消息 ID。
 
-        官方通道的引用载荷里没有消息 ID，因此撤回只能按「引用正文 → 最近消息」回溯；
-        插件因「接收全部消息」而见过每条消息。只有占位符（`[表情]`/`[图片]`）的消息
-        不入索引：那不是正文，匹配上只会指向别人发的同类消息。
+        官方通道的引用载荷里没有消息 ID，撤回只能按「引用正文 / 引用附件 → 最近消息」
+        回溯；插件因「接收全部消息」而见过每条消息。
+        占位符（`[表情]`/`[图片]`）不是正文，一律按空正文存：既避免文本匹配误伤
+        别人发的同类消息，又保留附件指纹供图片回溯。
         """
         if not (group_id and msg_id):
             return
         cleaned = strip_mention_tokens(text)
-        if not cleaned or is_placeholder_text(cleaned):
+        if is_placeholder_text(cleaned):
+            cleaned = ""
+        keys = [str(item) for item in (files or ()) if str(item).strip()]
+        if not cleaned and not keys:
             return
         bucket = self._recent_msgs.setdefault(group_id, [])
         bucket.append(
@@ -1817,11 +1833,56 @@ class QQGroupManager(Star):
                 "msg_id": str(msg_id),
                 "sender": str(sender_openid or ""),
                 "text": cleaned,
+                "files": keys,
+                "admin": bool(admin),
                 "ts": now_ts(),
             }
         )
         if len(bucket) > RECENT_MSG_PER_GROUP:
             del bucket[: len(bucket) - RECENT_MSG_PER_GROUP]
+
+    @staticmethod
+    def _raw_elements(event: AstrMessageEvent) -> list[Any]:
+        """原始载荷里的 msg_elements（含被引用元素与附件）。"""
+        raw = getattr(getattr(event, "message_obj", None), "raw_message", None)
+        raw_data = getattr(raw, "raw_data", None)
+        if isinstance(raw_data, dict):
+            elements = raw_data.get("msg_elements")
+            if isinstance(elements, list):
+                return elements
+        elements = getattr(raw, "msg_elements", None)
+        return elements if isinstance(elements, list) else []
+
+    @staticmethod
+    def _is_quote(event: AstrMessageEvent) -> bool:
+        """本条消息是否引用了别的消息（官方通道 message_type=103）。"""
+        raw = getattr(getattr(event, "message_obj", None), "raw_message", None)
+        return str(getattr(raw, "message_type", "") or "") == "103"
+
+    def _message_files(self, event: AstrMessageEvent) -> list[str]:
+        """本条消息自己的附件指纹（引用元素不算，那是别人发的）。"""
+        quote = self._is_quote(event)
+        keys: list[str] = []
+        raw = getattr(getattr(event, "message_obj", None), "raw_message", None)
+        raw_data = getattr(raw, "raw_data", None)
+        if isinstance(raw_data, dict) and isinstance(raw_data.get("attachments"), list):
+            keys.extend(attachment_fingerprints(raw_data["attachments"]))
+        for index, element in enumerate(self._raw_elements(event)):
+            if not isinstance(element, dict):
+                continue
+            if quote and index == 0:
+                continue  # 第 0 段是被引用的消息
+            keys.extend(attachment_fingerprints(element.get("attachments")))
+        return list(dict.fromkeys(keys))
+
+    def _quoted_files(self, event: AstrMessageEvent) -> list[str]:
+        """被引用消息的附件指纹（图片/表情的引用元素里带 filename 与 fileid）。"""
+        if not self._is_quote(event):
+            return []
+        for element in self._raw_elements(event):
+            if isinstance(element, dict):
+                return attachment_fingerprints(element.get("attachments"))
+        return []
 
     @staticmethod
     def _quoted_text(event: AstrMessageEvent) -> str:
@@ -1849,7 +1910,8 @@ class QQGroupManager(Star):
     ) -> tuple[str, str]:
         """决定撤回哪条消息，返回 (message_id, 来源)。
 
-        顺序：引用载荷里的真实 ID（若平台给出）→ 按引用正文回溯最近消息。
+        顺序：引用载荷里的真实 ID（若平台给出）→ 按引用正文回溯最近消息
+              → 按引用附件指纹（图片/表情的 filename + fileid）回溯最近消息。
         不回落到「指令自身 ID」：那只会去删用户发的撤回指令本身，既无意义又刷失败日志；
         也不回落到引用载荷里的 REFIDX 索引：实测即便 URL 编码正确，平台仍回
         404「不支持的调用」（err_code=40011002），它不是可用的 message_id。
@@ -1864,15 +1926,44 @@ class QQGroupManager(Star):
                 for item in self._recent_msgs.get(group_id, [])
                 if int(item.get("ts") or 0) >= deadline and item.get("text") == quoted
             ]
-            if matches:
-                if len(matches) > 1:
-                    self.logger.warning(
-                        "撤回目标按内容匹配到 %d 条，取最近一条（群=%s）",
-                        len(matches),
-                        mask_openid(group_id),
-                    )
-                return str(matches[-1]["msg_id"]), "recent"
+            picked = self._pick_recall_candidate(matches, group_id, "内容")
+            if picked:
+                return str(picked["msg_id"]), "recent"
+        files = set(self._quoted_files(event))
+        if files:
+            deadline = now_ts() - RECALL_LOOKBACK_SECONDS
+            hits = [
+                item
+                for item in self._recent_msgs.get(group_id, [])
+                if int(item.get("ts") or 0) >= deadline
+                and files.intersection(item.get("files") or ())
+            ]
+            picked = self._pick_recall_candidate(hits, group_id, "附件")
+            if picked:
+                return str(picked["msg_id"]), "file"
         return "", ""
+
+    def _pick_recall_candidate(
+        self, matches: list[dict[str, Any]], group_id: str, label: str
+    ) -> dict[str, Any] | None:
+        """从回溯候选里挑一条，优先普通成员的消息。
+
+        官方文档（撤回群聊消息）：机器人是群管理员时可撤回自己与**普通群成员**的消息，
+        群主/管理员的消息撤不了（错误码 40062003）。因此同一正文/附件命中多条时，
+        普通成员的候选优先，避免必然失败的撤回。
+        """
+        if not matches:
+            return None
+        members = [item for item in matches if not item.get("admin")]
+        pool = members or matches
+        if len(pool) > 1:
+            self.logger.warning(
+                "撤回目标按%s匹配到 %d 条，取最近一条（群=%s）",
+                label,
+                len(pool),
+                mask_openid(group_id),
+            )
+        return pool[-1]
 
     async def _cmd_recall(self, event: AstrMessageEvent, group_id: str) -> list[str]:
         reply_id = self._reply_message_id(event)
@@ -1891,7 +1982,13 @@ class QQGroupManager(Star):
             self._record_recall_failure(
                 group_id, message_id, reply_id, own_id, exc, source
             )
-            return [f"撤回失败：{exc.hint or exc.message}"]
+            text = f"撤回失败：{exc.hint or exc.message}"
+            if source in {"recent", "file"} and (
+                getattr(exc, "err_code", None) == 40062003
+                or "无操作权限" in str(exc.message or "")
+            ):
+                text += "。回溯到的这条消息可能由群主/管理员发送（平台不允许撤回），也可能是机器人不是群管理员"
+            return [text]
         return ["已撤回该消息。"]
 
     def _record_recall_failure(

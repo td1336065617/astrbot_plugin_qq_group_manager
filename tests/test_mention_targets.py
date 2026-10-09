@@ -237,6 +237,36 @@ def test_recall_refusal_mentions_platform_limit():
     assert "2 分钟" in replies[0]
 
 
+def test_recall_prefers_ordinary_member_over_admin():
+    """同一正文命中多条时优先普通成员：群主/管理员的消息平台必然拒撤（40062003）。"""
+    main = load_main()
+    plugin = object.__new__(main.QQGroupManager)
+    plugin._recent_msgs = {}
+    plugin._remember_recent_message(GROUP, "MSG-MEMBER", "u1", "同一个文本")
+    plugin._remember_recent_message(GROUP, "MSG-ADMIN", "u9", "同一个文本", None, True)
+    event = FakeEvent("撤回", components=[Reply(id="", chain=[], message_str="同一个文本")])
+    assert plugin._resolve_recall_target(event, GROUP, "") == ("MSG-MEMBER", "recent")
+
+
+def test_recall_permission_failure_explains_platform_rule():
+    """回溯到的消息若撤不了，要按官方文档说明原因，而不是笼统说没权限。"""
+    main = load_main()
+    plugin = object.__new__(main.QQGroupManager)
+    plugin._recent_msgs = {}
+    plugin._remember_recent_message(GROUP, "MSG9", "u1", "撤回我")
+
+    class ForbiddenApi:
+        async def recall_message(self, group_id, message_id, *, caller="moderation"):
+            raise main.QQApiError("无操作权限", err_code=40062003, semantic="forbidden")
+
+    plugin.audit = None
+    plugin.api = ForbiddenApi()
+    plugin.logger = logging.getLogger("test-recall-forbidden")
+    event = FakeEvent("撤回", components=[Reply(id="", chain=[], message_str="撤回我")])
+    replies = asyncio.run(plugin._cmd_recall(event, GROUP))
+    assert "群主/管理员" in replies[0]
+
+
 def test_recall_refuses_placeholder_only_quote():
     """引用纯图片/表情消息：占位符不是正文，绝不拿它去匹配（会误伤别人）。"""
     main = load_main()
