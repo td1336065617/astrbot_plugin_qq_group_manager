@@ -33,6 +33,7 @@ JOIN_PATH = "/v2/groups/{group_openid}/join_request_list"
 MUTE_GET_PATH = "/v2/groups/{group_openid}/restrict_chat_setting"
 MEMBERS_PATH = "/v2/groups/{group_openid}/members"
 BLACKLIST_PATH = "/v2/groups/{group_openid}/member_blacklist"
+RECALL_PATH = "/v2/groups/{group_openid}/messages/{message_id}"
 
 
 class RecordingAudit:
@@ -293,6 +294,16 @@ def test_unknown_err_code_falls_back_to_message():
         asyncio.run(api.get_restrict_setting("g1"))
     assert excinfo.value.semantic == SEM_NOT_ADMIN
     assert excinfo.value.retryable is False
+
+
+def test_recall_message_url_encodes_message_id():
+    """带 `/` 的 message_id（官方引用载荷的 REFIDX）必须编码，否则平台只回 404。"""
+    transport = FakeTransport({("DELETE", RECALL_PATH): {"trace_id": "t1"}})
+    api, _ = make_api(transport)
+    asyncio.run(api.recall_message("g1", "REFIDX_/a+b", caller="command"))
+    sent = transport.calls_for("DELETE", RECALL_PATH)[-1]
+    assert sent["path_params"]["message_id"] == "REFIDX_%2Fa%2Bb"
+    assert sent["path_params"]["group_openid"] == "g1"
 
 
 def test_semantic_from_message_helper():

@@ -15,6 +15,7 @@ import asyncio
 import json
 import time
 from typing import Any, Protocol, runtime_checkable
+from urllib.parse import quote
 
 from .models import (
     BLACKLIST_PAGE_MAX,
@@ -302,6 +303,18 @@ class TokenBucket:
 # --------------------------------------------------------------------------
 # 客户端
 # --------------------------------------------------------------------------
+def _encode_path_params(params: dict[str, Any] | None) -> dict[str, Any] | None:
+    """URL 编码路径参数。
+
+    botpy 的 Route 直接 str.format 拼路径、不做编码：ID 里带 `/` 时（例如官方通道
+    引用载荷的 REFIDX_…）路径会被拆成多段，平台只能回 404「不支持的调用」
+    （实测 err_code=40011002）。十六进制 openid 与 ROBOT1.0_… 消息 ID 编码后不变。
+    """
+    if not params:
+        return params
+    return {key: quote(str(value), safe="") for key, value in params.items()}
+
+
 class QQGroupAPI:
     """QQ 群管理接口封装（Route 路径与官方文档一致）。"""
 
@@ -503,7 +516,7 @@ class QQGroupAPI:
                 payload = await self.transport.request(  # type: ignore[union-attr]
                     method,
                     path,
-                    path_params=path_params,
+                    path_params=_encode_path_params(path_params),
                     query=query,
                     json_body=json_body,
                 )
