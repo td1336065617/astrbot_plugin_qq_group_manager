@@ -7,6 +7,25 @@
 
 ---
 
+## [0.14.10] - 2026-10-09
+
+> 🐛 修复：官方通道的**角色缓存一直是空的**，导致群主/群管也过不了群管指令的权限门槛。
+
+### 🔍 现象与根因
+- 线上实况：`role_cache` 只有 14 群 / 333 人，且全是 OneBot 通道的 QQ 号；
+  官方通道那个群（`C8D6272C…`）**一条角色记录都没有**（`member_cache` 却有 1108 人）。
+- 根因：`_sender_meta` 走官方分支读 `author.member_role`，而 AstrBot 给官方通道打的
+  `_User` 补丁只暴露 `id/username/bot/avatar/member_openid/user_openid/is_you`，没有
+  `member_role` → 取到空串 → `remember_member` 只在 role 非空时写缓存 → 永远不写。
+- 而官方原始载荷里本来就有：`raw_data.author.member_role`（《群消息（全量模式）》事件体）。
+
+### 🐛 修复
+- `_sender_meta` 在 `author.member_role` 为空时回落读 `raw_data.author.member_role`，
+  于是官方通道也能正确记录 `member`/`admin`/`owner`，群管指令权限判定恢复正常。
+
+### ✅ 测试
+- 新增：`_sender_meta` 必须能从 `raw_data.author.member_role` 取到角色。
+
 ## [0.14.9] - 2026-10-09
 
 > 📖 精读腾讯官方文档《群消息（全量模式）》《群@机器人消息》《消息类型》《撤回群聊消息》

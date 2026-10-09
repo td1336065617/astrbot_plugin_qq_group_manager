@@ -114,7 +114,7 @@ from .src.utils import (
 from .src.web_api import EventBus, WebApi
 
 PLUGIN_NAME = "astrbot_plugin_qq_group_manager"
-VERSION = "0.14.9"
+VERSION = "0.14.10"
 
 STATE_FLUSH_INTERVAL = 30.0
 MAINTENANCE_INTERVAL = 3600.0
@@ -1013,6 +1013,14 @@ class QQGroupManager(Star):
             sender_openid = str(getattr(author, "member_openid", "") or sender_openid)
             sender_name = str(getattr(author, "username", "") or sender_name)
             role = str(getattr(author, "member_role", "") or "")
+            if not role:
+                # AstrBot 给官方通道打的 _User 补丁没有 member_role 字段，但原始载荷
+                # （raw_data.author.member_role，官方文档《群消息（全量模式）》）有值。
+                # 不补这一步，官方通道的角色缓存永远是空的 → 群管指令会把群主/管理员也拦住。
+                raw_data = getattr(raw, "raw_data", None)
+                raw_author = raw_data.get("author") if isinstance(raw_data, dict) else None
+                if isinstance(raw_author, dict):
+                    role = str(raw_author.get("member_role") or "")
         else:
             # OneBot：sender.role（owner / admin / member）
             sender = raw.get("sender") if isinstance(raw, dict) else getattr(raw, "sender", None)

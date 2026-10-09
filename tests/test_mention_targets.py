@@ -248,6 +248,17 @@ def test_recall_prefers_ordinary_member_over_admin():
     assert plugin._resolve_recall_target(event, GROUP, "") == ("MSG-MEMBER", "recent")
 
 
+def test_sender_meta_falls_back_to_raw_author_role():
+    """官方通道 _User 补丁没有 member_role，角色必须从 raw_data.result 里补。"""
+    main = load_main()
+    event = FakeEvent("你好", msg_id="MSG-1")
+    event.message_obj.raw_message.author = SimpleNamespace(
+        member_openid="U1", username="小明"
+    )
+    event.message_obj.raw_message.raw_data = {"author": {"member_role": "owner"}}
+    assert main.QQGroupManager._sender_meta(event) == ("U1", "小明", "owner")
+
+
 def test_recall_refuses_owner_quoted_message_without_api_call():
     """引用元素自带 author.member_role：群主/管理员的消息不必再打一次必拒的接口。"""
     main = load_main()
