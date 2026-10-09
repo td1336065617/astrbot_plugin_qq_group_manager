@@ -141,12 +141,46 @@ def human_duration(seconds: int | None) -> str:
     return "".join(parts) if parts else f"{seconds} 秒"
 
 
+#: 任意形态的 @ 记号：官方通道 <@openid> / <@!openid>、OneBot [CQ:at,qq=123]、显示层 [At:xxx]
+_MENTION_TEXT_RE = re.compile(r"<@!?[^>]+>|\[CQ:at,qq=[^\]]+\]|\[At:[^\]]+\]", re.I)
+
+#: 从正文抽取被 @ 的 ID（两个分支：尖括号形态 / CQ 码形态）
+_MENTION_ID_RE = re.compile(r"<@!?([^>]+)>|\[CQ:at,qq=([^,\]]+)", re.I)
+
+#: 不是真实成员的占位符（AstrBot 在「@机器人」时会把 self_id 写成 qq_official）
+MENTION_PLACEHOLDERS = frozenset({"qq_official", "unknown_selfid", "all", "everyone"})
+
+#: 官方族 openid 形态（32 位十六进制），用于「显式给出 ID」的判定
+OPENID_RE = re.compile(r"[0-9a-fA-F]{32}")
+
+
+def strip_mention_tokens(text: Any) -> str:
+    """清掉任意形态的 @ 记号，只留指令本体（用于指令匹配）。"""
+    cleaned = _MENTION_TEXT_RE.sub(" ", str(text or ""))
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def extract_mention_ids(text: Any) -> list[str]:
+    """按出现顺序抽取正文中被 @ 的 ID（去重、剔除占位符）。
+
+    仅可用于原始文本：归一化后的文本里 @ 记号已被剥离。
+    """
+    found: list[str] = []
+    for groups in _MENTION_ID_RE.findall(str(text or "")):
+        value = next((str(item).strip() for item in groups if item), "")
+        if not value or value.casefold() in MENTION_PLACEHOLDERS:
+            continue
+        if value not in found:
+            found.append(value)
+    return found
+
+
 def normalize_command(text: Any) -> str:
-    """归一化指令文本：去首尾空白、压缩空白、去掉一个前导斜杠。"""
+    """归一化指令文本：去首尾空白、压缩空白、去掉一个前导斜杠、剥离 @ 记号。"""
     value = re.sub(r"\s+", " ", str(text or "")).strip()
     if value.startswith("/"):
         value = value[1:].lstrip()
-    return value
+    return strip_mention_tokens(value)
 
 
 def split_command(text: Any) -> tuple[str, list[str]]:

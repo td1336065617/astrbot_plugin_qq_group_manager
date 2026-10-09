@@ -95,7 +95,10 @@ from .src.scheduler import TaskScheduler, TaskSpec
 from .src.store import AstrBotKVBackend, PluginStore
 from .src.utils import (
     CN_TZ,
+    MENTION_PLACEHOLDERS,
+    OPENID_RE,
     digest_text,
+    extract_mention_ids,
     mask_openid,
     mask_uid,
     normalize_command,
@@ -103,6 +106,7 @@ from .src.utils import (
     parse_duration,
     parse_iso,
     safe_json_dumps,
+    strip_mention_tokens,
     to_iso,
 )
 from .src.web_api import EventBus, WebApi
@@ -1390,15 +1394,59 @@ class QQGroupManager(Star):
     # 指令处理
     # ------------------------------------------------------------------
     @staticmethod
-    def _at_targets(event: AstrMessageEvent) -> list[tuple[str, str]]:
-        """取出消息中 @ 的人（openid, 昵称）。"""
+    def _self_id_candidates(event: AstrMessageEvent) -> set[str]:
+        """机器人自身可能出现的 ID 形态（统一小写便于比对）。"""
+        values: list[str] = []
+        getter = getattr(event, "get_self_id", None)
+        if callable(getter):
+            try:
+                values.append(str(getter() or ""))
+            except Exception:  # 兼容异常事件对象
+                pass
+        values.append(str(getattr(getattr(event, "message_obj", None), "self_id", "") or ""))
+        return {item.strip().casefold() for item in values if item.strip()}
+
+    def _at_targets(self, event: AstrMessageEvent) -> list[tuple[str, str]]:
+        """取出消息中 @ 的成员（openid, 昵称）。
+
+        三层兜底：① raw_message.mentions（官方通道，带 username）
+                  ② 消息链 At 组件（OneBot 主路径）
+                  ③ 原始正文文本（官方通道「@别人」的唯一形态）
+        并排除机器人自身、is_you、占位符（qq_official / all）。
+        """
         targets: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        self_ids = self._self_id_candidates(event)
+
+        def add(openid: object, name: object) -> None:
+            value = str(openid or "").strip()
+            key = value.casefold()
+            if not value or key in seen or key in self_ids:
+                return
+            if key in MENTION_PLACEHOLDERS:
+                return
+            seen.add(key)
+            targets.append((value, str(name or "")))
+
+        raw = getattr(getattr(event, "message_obj", None), "raw_message", None)
+        mentions = getattr(raw, "mentions", None)
+        if isinstance(mentions, dict):
+            mentions = list(mentions.values())
+        for mention in mentions or []:
+            if bool(getattr(mention, "is_you", False)):
+                continue
+            add(
+                getattr(mention, "id", "") or getattr(mention, "member_openid", ""),
+                getattr(mention, "username", ""),
+            )
+
         for component in event.get_messages():
             if isinstance(component, At):
-                openid = str(getattr(component, "qq", "") or "")
-                name = str(getattr(component, "name", "") or "")
-                if openid and openid != "all":
-                    targets.append((openid, name))
+                add(getattr(component, "qq", ""), getattr(component, "name", ""))
+
+        for openid in extract_mention_ids(str(event.message_str or "")):
+            add(openid, "")
+
         return targets
 
     @staticmethod
@@ -1436,15 +1484,20 @@ class QQGroupManager(Star):
     def _resolve_target(
         self, event: AstrMessageEvent, group_id: str, args: list[str]
     ) -> tuple[str, str]:
-        """解析指令目标：@某人 → openid；否则按昵称缓存或原始 openid。"""
+        """解析指令目标：现场 @ → 显式 ID → 昵称缓存。
+
+        注意：@ 目标必须取自原始事件（_at_targets）。指令归一化会剥掉
+        <@…> 记号，args 里已不含它；args 只用于时长等参数。
+        """
         targets = self._at_targets(event)
         if targets:
-            return targets[0]
+            openid, live_name = targets[0]
+            return openid, live_name or self.store.member_name(group_id, openid)
         for token in args:
-            cleaned = token.strip().lstrip("@")
+            cleaned = strip_mention_tokens(token).lstrip("@").strip()
             if not cleaned or cleaned.startswith("-"):
                 continue
-            if cleaned.startswith("u_") or len(cleaned) >= 24:
+            if cleaned.startswith("u_") or OPENID_RE.fullmatch(cleaned):
                 return cleaned, self.store.member_name(group_id, cleaned)
             matches = self.store.find_member_by_name(group_id, cleaned)
             if matches:
