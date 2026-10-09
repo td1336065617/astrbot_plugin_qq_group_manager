@@ -115,7 +115,7 @@ from .src.utils import (
 from .src.web_api import EventBus, WebApi
 
 PLUGIN_NAME = "astrbot_plugin_qq_group_manager"
-VERSION = "0.14.13"
+VERSION = "0.14.14"
 
 STATE_FLUSH_INTERVAL = 30.0
 MAINTENANCE_INTERVAL = 3600.0
@@ -914,7 +914,7 @@ class QQGroupManager(Star):
                     mask_openid(sender_openid),
                 )
                 if name in MENU_COMMANDS:
-                    menu_image = await self._menu_image(sender_name)
+                    menu_image = await self._menu_image(event, sender_name)
                     if menu_image:
                         yield event.image_result(menu_image)
                         return
@@ -2001,18 +2001,26 @@ class QQGroupManager(Star):
                 return str(picked["msg_id"]), "file"
         return "", ""
 
-    async def _menu_image(self, requester: str) -> str:
+    async def _menu_image(self, event: Any, requester: str) -> str:
         """把菜单渲染成图片（返回图片 URL）。
 
         关闭开关或渲染服务不可用时返回空串，由调用方回落成文字菜单。
         """
         if not self.store.get_setting("menu_image", True):
             return ""
+        group_name = ""
+        getter = getattr(event, "get_group_name", None)
+        if callable(getter):
+            try:  # 平台不给群名时留空，不影响出图
+                group_name = str(getter() or "").strip()
+            except Exception:
+                group_name = ""
         try:
             html = menu_html(
                 version=VERSION,
                 requested_at=datetime.now().strftime("%Y-%m-%d %H:%M"),
                 requester=requester,
+                group_name=group_name,
             )
             return await self.html_render(
                 html,

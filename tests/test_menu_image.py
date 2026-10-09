@@ -5,7 +5,7 @@ import asyncio
 import logging
 
 from src.commands import menu_text
-from src.menu_render import menu_html
+from src.menu_render import menu_html, split_item
 
 import test_mention_targets as mt
 
@@ -47,10 +47,12 @@ def test_menu_text_is_byte_stable():
 
 
 def test_menu_html_contains_all_sections():
-    html = menu_html(version="0.14.13", requested_at="2026-10-09 14:30", requester="道")
+    html = menu_html(
+        version="0.14.13", requested_at="2026-10-09 14:30", requester="道", group_name="测试群"
+    )
     for key in ("所有人", "群主 / 群管理员", "AstrBot 管理员", "群管理自检", "撤回（引用消息"):
         assert key in html
-    assert "v0.14.13" in html and "请求人 道" in html
+    assert "v0.14.13" in html and "请求人 道" in html and "测试群" in html
     assert html.startswith("<!DOCTYPE html>") and html.endswith("</html>")
 
 
@@ -58,6 +60,25 @@ def test_menu_html_escapes_dynamic_text():
     html = menu_html(requester="<b>坏</b>&\"")
     assert "&lt;b&gt;坏&lt;/b&gt;" in html
     assert "<b>坏</b>" not in html
+
+
+def test_split_item_prefers_bullet_separator():
+    assert split_item("群信息 ─ 本群档案与机器人在群状态") == ("群信息", "本群档案与机器人在群状态")
+    assert split_item("申诉通过 / 申诉驳回 [理由] ─ 回复申诉消息处理") == (
+        "申诉通过 / 申诉驳回 [理由]",
+        "回复申诉消息处理",
+    )
+
+
+def test_split_item_falls_back_to_first_space():
+    assert split_item("审核模式 严格/标准/宽松/仅记录") == ("审核模式", "严格/标准/宽松/仅记录")
+    assert split_item("关键词 添加/删除/列表 · 信任 @某人") == ("关键词", "添加/删除/列表 · 信任 @某人")
+    assert split_item("审核开启 / 审核关闭") == ("审核开启 / 审核关闭", "")
+
+
+def test_split_item_keeps_long_text_as_description():
+    command, description = split_item("这是一条没有指令前缀的很长很长的说明文字内容")
+    assert command == "" and description.startswith("这是一条")
 
 
 def _plugin(store, render):
@@ -77,7 +98,8 @@ def test_menu_image_returns_rendered_url():
         return "https://example.com/menu.jpg"
 
     plugin = _plugin(mt.make_store(), render)
-    url = asyncio.run(plugin._menu_image("道"))
+    event = mt.FakeEvent("群管理菜单")
+    url = asyncio.run(plugin._menu_image(event, "道"))
     assert url == "https://example.com/menu.jpg"
     assert seen and "群管理菜单" in seen[0] and "<html" in seen[0]
 
@@ -87,7 +109,7 @@ def test_menu_image_falls_back_to_text_on_error():
         raise RuntimeError("t2i 不可用")
 
     plugin = _plugin(mt.make_store(), render)
-    assert asyncio.run(plugin._menu_image("道")) == ""
+    assert asyncio.run(plugin._menu_image(mt.FakeEvent("群管理菜单"), "道")) == ""
 
 
 def test_menu_image_respects_off_switch():
@@ -99,7 +121,7 @@ def test_menu_image_respects_off_switch():
         raise AssertionError("开关关闭时不应调用渲染")
 
     plugin = _plugin(_Off(), render)
-    assert asyncio.run(plugin._menu_image("道")) == ""
+    assert asyncio.run(plugin._menu_image(mt.FakeEvent("群管理菜单"), "道")) == ""
 
 
 class _MenuEvent(mt.FakeEvent):
