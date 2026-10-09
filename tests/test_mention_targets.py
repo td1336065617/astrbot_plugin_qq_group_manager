@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import logging
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-from astrbot.api.message_components import At
+from astrbot.api.message_components import At, Reply
 
 from src.commands import match_command
 from src.store import PluginStore
@@ -51,12 +52,14 @@ class FakeEvent:
         components: list | None = None,
         self_id: str = BOT,
         group_id: str = GROUP,
+        msg_id: str = "",
     ) -> None:
         self.message_str = text
         self._components = list(components or [])
         self.message_obj = SimpleNamespace(
             self_id=self_id,
-            raw_message=SimpleNamespace(mentions=list(mentions or [])),
+            raw_message=SimpleNamespace(mentions=list(mentions or []), id=msg_id),
+            message_id=msg_id,
             group_id=group_id,
         )
 
@@ -171,4 +174,47 @@ def test_resolve_target_prefers_text_target_over_bot_mention():
     store = make_store()
     event = FakeEvent(f"禁言 <@{TARGET}>", components=[At(qq=BOT, name="爱莉希雅")])
     assert make_plugin(store)._resolve_target(event, GROUP, []) == (TARGET, "")
+
+
+# ---------------------------------------------------------------- 撤回留痕（F5）
+
+
+def test_recall_without_any_message_id_reports_clearly():
+    """拿不到 ID 时给明确回执，而不是把无事发生的空串发去平台。"""
+    plugin = object.__new__(load_main().QQGroupManager)
+    event = FakeEvent("撤回")  # 无引用、无消息 ID
+    assert asyncio.run(plugin._cmd_recall(event, GROUP)) == [
+        "拿不到这条消息的 ID（引用消息与本条消息都为空），无法撤回。"
+    ]
+
+
+def test_recall_records_message_id_on_failure():
+    """撤回失败必须留下「实际发给平台的 message_id 及来源」，用于定论路径。"""
+    main = load_main()
+    plugin = object.__new__(main.QQGroupManager)
+    recorded: list[dict] = []
+
+    class FakeAudit:
+        def record_action(self, **payload):
+            recorded.append(payload)
+            return True
+
+    class FailingApi:
+        async def recall_message(self, group_id, message_id, *, caller="moderation"):
+            raise main.QQApiError(
+                "无操作权限",
+                semantic="forbidden",
+                hint="机器人没有该操作的权限（多为非群管理员）",
+            )
+
+    plugin.audit = FakeAudit()
+    plugin.api = FailingApi()
+    plugin.logger = logging.getLogger("test-recall")
+    event = FakeEvent("撤回", components=[Reply(id="MSG1")])
+
+    replies = asyncio.run(plugin._cmd_recall(event, GROUP))
+    assert replies == ["撤回失败：机器人没有该操作的权限（多为非群管理员）"]
+    assert recorded and recorded[0]["action"] == "recall_failed"
+    assert "message_id=MSG1" in recorded[0]["err_msg"]
+    assert recorded[0]["err_msg"].endswith("source=reply")
 

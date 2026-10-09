@@ -1455,7 +1455,7 @@ class QQGroupManager(Star):
 
         QQ 官方适配器不同版本对引用消息的暴露形态不一致，这里按
         Reply 组件 → message_obj.reply → message_obj.raw_message.reply 依次尝试；
-        全部取不到时返回空串，调用方回退到"最近一条被处置记录"。
+        全部取不到时返回空串，调用方回退到本条消息自身的 ID。
         """
         try:
             components = list(event.get_messages() or [])
@@ -1785,14 +1785,52 @@ class QQGroupManager(Star):
         return [f"已解除 {member_name or mask_openid(openid)} 的禁言。"]
 
     async def _cmd_recall(self, event: AstrMessageEvent, group_id: str) -> list[str]:
-        message_id = self._reply_message_id(event) or self._message_id(event)
+        reply_id = self._reply_message_id(event)
+        own_id = self._message_id(event)
+        message_id = reply_id or own_id
         if not message_id:
-            return ["请引用要撤回的消息后发送「撤回」。"]
+            return ["拿不到这条消息的 ID（引用消息与本条消息都为空），无法撤回。"]
         try:
             await self.api.recall_message(group_id, message_id, caller="command")
         except QQApiError as exc:
+            self._record_recall_failure(group_id, message_id, reply_id, own_id, exc)
             return [f"撤回失败：{exc.hint or exc.message}"]
         return ["已撤回该消息。"]
+
+    def _record_recall_failure(
+        self,
+        group_id: str,
+        message_id: str,
+        reply_id: str,
+        own_id: str,
+        exc: QQApiError,
+    ) -> None:
+        """撤回失败留痕：记录实际发给平台的 message_id 及其来源。
+
+        平台侧失败文案无法区分「引用 ID 为空、回落成指令自身 ID」与
+        「ID 正确但平台拒绝」，因此把取值与来源一并落库。
+        """
+        source = "reply" if reply_id else "self"
+        self.logger.warning(
+            "撤回失败：message_id=%s source=%s group=%s err=%s",
+            message_id,
+            source,
+            mask_openid(group_id),
+            exc.hint or exc.message,
+        )
+        if self.audit is None:
+            return
+        try:
+            self.audit.record_action(
+                group_id=group_id,
+                action="recall_failed",
+                ok=0,
+                err_code=exc.err_code,
+                err_msg=f"{exc.hint or exc.message}|message_id={message_id}|source={source}",
+                detail=f"reply_id={reply_id} own_id={own_id}",
+            )
+        except Exception:  # 留痕失败不得影响回执
+            self.logger.warning("撤回失败留痕写入异常", exc_info=True)
 
     async def _cmd_log(self, group_id: str, args: list[str]) -> list[str]:
         if self.audit is None:
