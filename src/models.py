@@ -550,6 +550,7 @@ def default_settings() -> dict[str, Any]:
         "prompt_system": "",
         "prompt_user": "",
         "flood_threshold": 8,
+        "menu_image": True,
         "probe_full_msg_interval": 1800,
         "capability_log_dedupe_window": 1800,
     }

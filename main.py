@@ -26,6 +26,7 @@ from astrbot.api.message_components import At, Plain, Reply
 from astrbot.api.star import Context, Star
 
 from .src.actions import ActionExecutor
+from .src.menu_render import menu_html
 from .src.api_client import BotpyTransport, QQApiError, QQGroupAPI
 from .src.audit import AuditStore
 from .src.commands import (
@@ -114,7 +115,7 @@ from .src.utils import (
 from .src.web_api import EventBus, WebApi
 
 PLUGIN_NAME = "astrbot_plugin_qq_group_manager"
-VERSION = "0.14.12"
+VERSION = "0.14.13"
 
 STATE_FLUSH_INTERVAL = 30.0
 MAINTENANCE_INTERVAL = 3600.0
@@ -912,6 +913,11 @@ class QQGroupManager(Star):
                     mask_openid(group_id),
                     mask_openid(sender_openid),
                 )
+                if name in MENU_COMMANDS:
+                    menu_image = await self._menu_image(sender_name)
+                    if menu_image:
+                        yield event.image_result(menu_image)
+                        return
                 try:
                     replies = await self._handle_command(
                         event,
@@ -1994,6 +2000,29 @@ class QQGroupManager(Star):
             if picked:
                 return str(picked["msg_id"]), "file"
         return "", ""
+
+    async def _menu_image(self, requester: str) -> str:
+        """把菜单渲染成图片（返回图片 URL）。
+
+        关闭开关或渲染服务不可用时返回空串，由调用方回落成文字菜单。
+        """
+        if not self.store.get_setting("menu_image", True):
+            return ""
+        try:
+            html = menu_html(
+                version=VERSION,
+                requested_at=datetime.now().strftime("%Y-%m-%d %H:%M"),
+                requester=requester,
+            )
+            return await self.html_render(
+                html,
+                {},
+                return_url=True,
+                options={"full_page": True, "type": "jpeg", "quality": 85},
+            )
+        except Exception as exc:  # 渲染失败不能影响菜单可用性
+            self.logger.warning("菜单图片渲染失败，回落文字菜单：%s", exc)
+            return ""
 
     @staticmethod
     def _recall_forbidden_text() -> str:
