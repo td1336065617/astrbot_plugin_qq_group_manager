@@ -2013,6 +2013,18 @@ class QQGroupManager(Star):
     async def _cmd_recall(self, event: AstrMessageEvent, group_id: str) -> list[str]:
         reply_id = self._reply_message_id(event)
         own_id = self._message_id(event)
+        if self._is_quote(event):  # TODO(临时诊断)：确认线上引用载荷字段，随后移除
+            elements = self._raw_elements(event)
+            head = elements[0] if elements else {}
+            raw = getattr(getattr(event, "message_obj", None), "raw_message", None)
+            raw_data = getattr(raw, "raw_data", None)
+            scene = raw_data.get("message_scene") if isinstance(raw_data, dict) else None
+            self.logger.info(
+                "撤回诊断：元素键=%s scene=%s 元素=%s",
+                sorted(head.keys()) if isinstance(head, dict) else type(head).__name__,
+                scene,
+                repr(head)[:220],
+            )
         quoted_role = self._quoted_role(event)
         if quoted_role in {"admin", "owner"} and not reply_id:
             return [
