@@ -112,7 +112,7 @@ from .src.utils import (
 from .src.web_api import EventBus, WebApi
 
 PLUGIN_NAME = "astrbot_plugin_qq_group_manager"
-VERSION = "0.14.3"
+VERSION = "0.14.4"
 
 STATE_FLUSH_INTERVAL = 30.0
 MAINTENANCE_INTERVAL = 3600.0
@@ -122,10 +122,12 @@ SEEN_MESSAGE_TTL = 600.0
 CONTEXT_BUFFER_MAX = 20
 DEFAULT_MUTE_SECONDS = 600
 
-#: 「回复撤回」回溯窗口与单群缓存容量：官方通道的引用载荷不含消息 ID
-#: （实测 ref={"message_id": None}，elements 里只有 REFIDX 索引），
-#: 只能按「引用内容 → 最近收到的消息」回溯，因此必须给窗口与容量设上限。
-RECALL_LOOKBACK_SECONDS = 900
+#: 「回复撤回」回溯窗口与单群缓存容量。
+#: 官方通道的引用载荷不含消息 ID（实测 ref={"message_id": None}，
+#: elements 里只有 REFIDX 索引），只能按「引用正文 → 最近收到的消息」回溯；
+#: 窗口必须 ≤ 平台可撤回时限（api_client.ERR_RECALL_EXPIRED = 2 分钟），
+#: 否则 2 分钟以上的消息会「回溯成功 → 平台拒绝」，用户看到平台错误而非明确说明。
+RECALL_LOOKBACK_SECONDS = 120
 RECENT_MSG_PER_GROUP = 40
 
 
@@ -1833,7 +1835,7 @@ class QQGroupManager(Star):
             return "".join(
                 str(getattr(item, "text", "") or "")
                 for item in chain
-                if type(item).__name__ == "Plain"
+                if isinstance(item, Plain)
             )
         return ""
 
@@ -1873,7 +1875,8 @@ class QQGroupManager(Star):
         if not message_id:
             return [
                 "撤回失败：无法确定要撤回哪条消息。官方通道的引用载荷不含消息 ID，"
-                "只能按引用内容回溯最近 15 分钟内收到的消息——请引用一条正文可回溯的近期消息。"
+                "只能按引用正文回溯最近收到的消息；且平台仅允许撤回 2 分钟内发送的消息，"
+                "请引用一条刚发出的、正文可回溯的消息。"
             ]
         try:
             await self.api.recall_message(group_id, message_id, caller="command")

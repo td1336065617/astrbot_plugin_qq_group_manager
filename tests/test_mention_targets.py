@@ -77,6 +77,15 @@ class FakeEvent:
     def get_self_id(self) -> str:
         return self.message_obj.self_id
 
+    def get_platform_id(self) -> str:
+        return "qq_official"
+
+    def get_sender_id(self) -> str:
+        return "u1"
+
+    def get_sender_name(self) -> str:
+        return "小号"
+
 
 def make_plugin(store=None):
     plugin = object.__new__(load_main().QQGroupManager)
@@ -212,13 +221,57 @@ def test_recall_uses_recent_message_by_quoted_text():
     assert plugin._resolve_recall_target(event, GROUP, "") == ("MSG9", "recent")
 
 
-def test_recall_ignores_recent_message_out_of_window():
+def test_recall_window_matches_platform_limit():
+    """回溯窗口必须 ≤ 平台可撤回时限（2 分钟），否则会出现「回溯成功→平台拒绝」。"""
+    main = load_main()
+    assert main.RECALL_LOOKBACK_SECONDS <= 120
+
+
+def test_recall_refusal_mentions_platform_limit():
     plugin = object.__new__(load_main().QQGroupManager)
     plugin._recent_msgs = {}
+    replies = asyncio.run(plugin._cmd_recall(FakeEvent("撤回"), GROUP))
+    assert "2 分钟" in replies[0]
+
+
+def test_recall_ignores_recent_message_out_of_window():
+    main = load_main()
+    plugin = object.__new__(main.QQGroupManager)
+    plugin._recent_msgs = {}
     plugin._remember_recent_message(GROUP, "MSG9", "u1", "禁言 1分钟")
-    plugin._recent_msgs[GROUP][0]["ts"] = now_ts() - 3600
+    plugin._recent_msgs[GROUP][0]["ts"] = now_ts() - (main.RECALL_LOOKBACK_SECONDS + 1)
     event = FakeEvent("撤回", components=[Reply(id="", chain=[], message_str="禁言 1分钟")])
     assert plugin._resolve_recall_target(event, GROUP, "") == ("", "")
+
+
+class _SilentApi:
+    """只满足 on_group_message 早期调用（_bind_event / _handle_onebot_request）。"""
+
+    available = False
+    kind = "official"
+
+    def bind_event(self, event) -> None:
+        return None
+
+
+def test_group_message_populates_recent_index():
+    """接线测试：群消息必须真的进入回溯索引（否则撤回永远回溯不到）。"""
+    main = load_main()
+    plugin = object.__new__(main.QQGroupManager)
+    plugin.store = make_store()
+    plugin.api = _SilentApi()
+    plugin.audit = None
+    plugin.logger = logging.getLogger("qqgm-recent")
+    plugin._platform_id = ""
+    plugin._recent_msgs = {}
+
+    async def run():
+        event = FakeEvent("随便聊聊", msg_id="MSG-1")
+        async for _ in main.QQGroupManager.on_group_message(plugin, event):
+            pass
+
+    asyncio.run(run())
+    assert [item["msg_id"] for item in plugin._recent_msgs.get(GROUP, [])] == ["MSG-1"]
 
 
 def test_recent_message_index_is_bounded():
