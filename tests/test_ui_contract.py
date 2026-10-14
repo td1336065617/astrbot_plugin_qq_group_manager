@@ -373,3 +373,12 @@ def test_join_card_follow_semantics_disambiguated():
     assert "跟随全局（移除本群值）" in text
     assert "const serverValue = scope.follow_global" in text
 
+
+
+def test_spam_flood_settings_guard_missing_value():
+    """防刷屏冷却项：0 是有效值（关闭），但缺值不得静默写回 0（否则等于悄悄关掉冷却）。"""
+    text = app_js()
+    assert "const spamCooldownValue = Number(settings.spam_flood_cooldown);" in text
+    assert "Number.isFinite(spamCooldownValue) ? spamCooldownValue : 300," in text
+    assert "spam_flood_cooldown: Number(spamCooldown.input.value)," in text
+

@@ -460,3 +460,54 @@ def test_spam_item_key_skips_placeholder(tmp_path):
         del main
 
     asyncio.run(scenario())
+
+
+def test_chain_spam_error_does_not_break_moderation(tmp_path):
+    """刷屏判定抛异常时：不得打断内容审核（只 warning），也不能静默。"""
+
+    async def scenario():
+        env = await make_env(tmp_path)
+        _main, service, _store, _audit, _transport = env
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("模拟刷屏判定故障")
+
+        service.rules.note_spam = boom
+        reached = []
+
+        class Recorder:
+            """记录内容审核是否仍然被走到。"""
+
+            def should_send(self, **kwargs):
+                del kwargs
+                reached.append(True)
+                return False
+
+        service.moderator = Recorder()
+        event = await send_many(env, 3)
+        assert reached == [True, True, True], "刷屏判定失败后仍必须继续走内容审核"
+        assert event.sent == [], "判定失败时不得误发警告"
+
+    asyncio.run(scenario())
+
+
+def test_spam_disabled_keeps_old_flow_identical(tmp_path):
+    """开关关闭时：刷屏链路完全不介入（骨架仍由原处计算，去重行为不变）。"""
+
+    async def scenario():
+        env = await make_env(tmp_path, settings={"spam_flood_enabled": False})
+        _main, service, _store, _audit, _transport = env
+        called = []
+        original = service.rules.note_spam
+
+        def recorder(*args, **kwargs):
+            called.append(True)
+            return original(*args, **kwargs)
+
+        service.rules.note_spam = recorder
+        for index in range(3):
+            await send_many(env, 1, prefix=f"off{index}")
+        assert called == [], "开关关闭时不得调用 note_spam"
+
+    asyncio.run(scenario())
+

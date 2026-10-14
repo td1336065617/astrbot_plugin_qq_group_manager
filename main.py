@@ -121,7 +121,7 @@ from .src.utils import (
 from .src.web_api import EventBus, WebApi
 
 PLUGIN_NAME = "astrbot_plugin_qq_group_manager"
-VERSION = "0.14.15"
+VERSION = "0.14.16"
 
 STATE_FLUSH_INTERVAL = 30.0
 MAINTENANCE_INTERVAL = 3600.0
@@ -1346,18 +1346,23 @@ class QQGroupManager(Star):
         exempt = self._is_exempt(event, group_id, sender_openid, sender_role)
         spam_skeleton = ""
         if settings.get("spam_flood_enabled", True) and not exempt:
-            spam_skeleton = await self._check_spam_flood(
-                event,
-                group_id=group_id,
-                config=config,
-                settings=settings,
-                text=text,
-                images=images,
-                msg_id=msg_id,
-                sender_openid=sender_openid,
-                sender_name=sender_name,
-                sender_role=sender_role,
-            )
+            try:
+                spam_skeleton = await self._check_spam_flood(
+                    event,
+                    group_id=group_id,
+                    config=config,
+                    settings=settings,
+                    text=text,
+                    images=images,
+                    msg_id=msg_id,
+                    sender_openid=sender_openid,
+                    sender_name=sender_name,
+                    sender_role=sender_role,
+                )
+            except Exception as exc:
+                # 可选子功能失败不得打断内容审核，也不能静默：留一条 warning
+                self.logger.warning("防刷屏判定失败（不影响内容审核）：%s", exc)
+                spam_skeleton = ""
         if not text.strip() and not send_images:
             return
         # 先取上文再记录本条：语境区块里不含当前消息

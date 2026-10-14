@@ -923,7 +923,13 @@ async function viewPolicy(root) {
   const spamOn = checkField('防刷屏（同一人重复发送相同内容）', settings.spam_flood_enabled !== false);
   const spamCount = numField('刷屏阈值（条；达阈值按 2 级、2 倍按 3 级处置）', settings.spam_flood_count || 5, 2, 100, 1);
   const spamWindow = numField('刷屏统计窗口（秒）', settings.spam_flood_window || 60, 10, 600, 10);
-  const spamCooldown = numField('刷屏警告冷却（秒，0=关闭）', settings.spam_flood_cooldown, 0, 3600, 30);
+  const spamCooldownValue = Number(settings.spam_flood_cooldown);
+  // 0 是有效值（关闭冷却），所以不能用 || 兜底；但缺值时不能把 0 静默写回配置
+  const spamCooldown = numField(
+    '刷屏警告冷却（秒，0=关闭）',
+    Number.isFinite(spamCooldownValue) ? spamCooldownValue : 300,
+    0, 3600, 30
+  );
   const domainAllow = checkField('竞赛域名白名单降权（白名单内链接不计 link 分，仍走规则与送审）', settings.domain_allowlist_enabled !== false);
   const domainArea = el('textarea', { rows: '4', class: 'mono', placeholder: '一行一个域名，例如 codeforces.com' });
   domainArea.value = (settings.domain_allowlist || []).join('\n');
