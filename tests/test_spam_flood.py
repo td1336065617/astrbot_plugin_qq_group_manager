@@ -10,6 +10,7 @@ import asyncio
 import importlib
 import logging
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -148,6 +149,7 @@ async def make_env(tmp_path: Path, *, mode: str = "standard", dry_run: bool = Fa
     service._last_provider_id = ""
     service._platform_id = ""
     service._spam_cooldown = {}
+    service._spam_clock = time.monotonic  # 与 __init__ 一致（测试用 __new__ 装配）
     return main, service, store, audit, transport
 
 
@@ -615,4 +617,167 @@ def test_repeat_multiplier_counts_one_message_once(tmp_path):
         assert len(service.actions._violations[("g1", "u1")]) == 2
 
     asyncio.run(scenario())
+
+
+
+# ----------------------------------------------------------------------
+# 交叉验证补测（子代理审计指出的盲区，逐条对应）
+# ----------------------------------------------------------------------
+
+
+def test_note_spam_window_param_respected():
+    """窗口参数必须真的生效（用非默认窗口，抓"写死 60 秒"这类回归）。"""
+    clock = FakeClock()
+    engine = make_engine(clock)
+    for _ in range(4):
+        engine.note_spam("g1", "u1", "txt:哈哈", window=10.0)
+    clock.now = 11.0
+    stat = engine.note_spam("g1", "u1", "txt:哈哈", window=10.0)
+    assert stat.count == 1, "10 秒窗口内 +11 秒后旧条目必须滑出"
+
+
+def test_ratio_boundary_exactly_half_still_hits(tmp_path):
+    """占比恰好 0.5 必须命中（锁死是 `<` 而不是 `<=`）。"""
+
+    async def scenario():
+        env = await make_env(tmp_path)
+        _main, _service, _store, _audit, _transport = env
+        # 先发 5 条不同内容，再连发 5 条相同：第 10 条时 count=5、total=10，占比恰好 50%
+        for index in range(5):
+            await send_many(env, 1, text=f"别的话{index}", prefix=f"half-b{index}")
+        event = None
+        for index in range(4):
+            event = await send_many(env, 1, text=SAME, prefix=f"half-a{index}")
+        assert event.sent == [], "前 9 条还没到阈值"
+        event = await send_many(env, 1, text=SAME, prefix="half-a9")
+        assert len(event.sent) == 1, "5/10 = 50% 属于命中（ratio >= 0.5）"
+
+    asyncio.run(scenario())
+
+
+def test_chain_empty_key_counts_toward_ratio(tmp_path):
+    """占位符消息（空 key）要计入占比分母：5 条相同 + 6 条占位符 → 45% 不命中。"""
+
+    async def scenario():
+        env = await make_env(tmp_path)
+        _main, _service, _store, _audit, _transport = env
+        # 占位符必须先发：占比是**逐条增量**评估的——若 5 条相同先到，第 5 条时占比就是 100%
+        for index in range(6):
+            await send_many(env, 1, text="[表情]", prefix=f"mix-p{index}")
+        for index in range(5):
+            await send_many(env, 1, text=SAME, prefix=f"mix-a{index}")
+        rows = await audit_rows(env, "events")
+        # 必须断言审计（而不是"最后一条消息有没有收到警告"）：
+        # 若空 key 没计入分母，动作会在第 5 条（更早的事件对象）就发生，断言末条会看不到
+        assert rows["total"] == 0, "5/11 < 50%，不该命中（说明空 key 计入了分母）"
+
+    asyncio.run(scenario())
+
+
+def test_spam_cooldown_zero_disables_cooldown(tmp_path):
+    """spam_flood_cooldown=0 表示关闭冷却：同档也要每次都动作。"""
+
+    async def scenario():
+        env = await make_env(tmp_path, settings={"spam_flood_cooldown": 0})
+        _main, _service, _store, _audit, _transport = env
+        await send_many(env, 5)
+        first = await audit_rows(env, "events")
+        assert first["total"] == 1
+        await send_many(env, 1, prefix="nc")
+        second = await audit_rows(env, "events")
+        assert second["total"] == 2, "冷却关闭时同档应再次动作"
+
+    asyncio.run(scenario())
+
+
+def test_spam_cooldown_expires_after_duration(tmp_path):
+    """冷却到期后同档可以再次动作（时钟可注入，避免"300→1 秒"这类回归测不出）。"""
+
+    async def scenario():
+        env = await make_env(tmp_path, settings={"spam_flood_cooldown": 300})
+        _main, service, _store, _audit, _transport = env
+        fake = FakeClock()
+        service._spam_clock = fake.monotonic
+        await send_many(env, 5)
+        rows = await audit_rows(env, "events")
+        assert rows["total"] == 1
+        fake.now = 299.0
+        assert service._spam_cooldown_ok("g1", "u1", 2, {"spam_flood_cooldown": 300}) is False
+        fake.now = 301.0
+        assert service._spam_cooldown_ok("g1", "u1", 2, {"spam_flood_cooldown": 300}) is True
+
+    asyncio.run(scenario())
+
+
+def test_spam_item_key_groups_skeleton_variants(tmp_path):
+    """同一文案的变体（插符号/全角）要聚成同一个 key。"""
+
+    async def scenario():
+        env = await make_env(tmp_path)
+        _main, service, _store, _audit, _transport = env
+        event = FakeEvent(SAME)
+        plain = service._spam_item_key(event, "打卡", [])
+        dotted = service._spam_item_key(event, "打·卡", [])
+        spaced = service._spam_item_key(event, "打 卡", [])
+        assert plain == dotted == spaced, f"骨架变体应同键：{plain!r} / {dotted!r} / {spaced!r}"
+
+    asyncio.run(scenario())
+
+
+def test_chain_image_component_file_only_is_detected(tmp_path):
+    """真实 Image 组件的形状是 file=url / url=""（Image.fromURL），两个分支都要覆盖。"""
+
+    async def scenario():
+        env = await make_env(tmp_path)
+        _main, _service, _store, _audit, _transport = env
+        event = None
+        for index in range(5):
+            component = SimpleNamespace(url="", file=f"https://x/pic.jpg?rkey={index}")
+            event = await send_many(
+                env, 1, text="", components=[component], prefix=f"fileonly{index}"
+            )
+        assert len(event.sent) == 1, "file 里带 URL 的组件（真实形状）也必须被判刷屏"
+
+    asyncio.run(scenario())
+
+
+def test_chain_skips_group_admins_and_trusted(tmp_path):
+    """豁免不只 is_admin：群主/群管理员角色与信任名单同样豁免且不进统计。"""
+
+    async def scenario():
+        env = await make_env(tmp_path)
+        _main, _service, store, _audit, _transport = env
+        owner = await send_many(env, 6, role="owner", sender="owner-1", prefix="own")
+        assert owner.sent == []
+        admin = await send_many(env, 6, role="admin", sender="admin-1", prefix="adm")
+        assert admin.sent == []
+        # 信任名单走独立 KV 键（store.update_trusted），不是 GroupConfig.trusted
+        await store.update_trusted("g1", ["trusted-1"])
+        trusted = await send_many(env, 6, sender="trusted-1", prefix="tru")
+        assert trusted.sent == []
+        rows = await audit_rows(env, "events")
+        assert rows["total"] == 0
+
+    asyncio.run(scenario())
+
+
+def test_spam_flood_enabled_normalized_to_bool():
+    """spam_flood_enabled 必须与同类开关一样被归一化成 bool（脏数据不得溜过去）。"""
+    from src.store import normalize_settings
+
+    settings = normalize_settings({"spam_flood_enabled": "false"})
+    assert isinstance(settings["spam_flood_enabled"], bool)
+
+
+
+
+def test_spam_flood_defaults_are_stable():
+    """默认值是对外契约（直接决定生产行为）：5 条 / 60 秒 / 300 秒冷却 / 默认开启。"""
+    from src.models import default_settings
+
+    settings = default_settings()
+    assert settings["spam_flood_enabled"] is True
+    assert settings["spam_flood_count"] == 5
+    assert settings["spam_flood_window"] == 60
+    assert settings["spam_flood_cooldown"] == 300
 

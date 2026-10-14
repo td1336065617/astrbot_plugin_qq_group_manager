@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import sys
 import time
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -122,7 +123,7 @@ from .src.utils import (
 from .src.web_api import EventBus, WebApi
 
 PLUGIN_NAME = "astrbot_plugin_qq_group_manager"
-VERSION = "0.14.17"
+VERSION = "0.14.18"
 
 STATE_FLUSH_INTERVAL = 30.0
 MAINTENANCE_INTERVAL = 3600.0
@@ -188,6 +189,8 @@ class QQGroupManager(Star):
         self._recent_msgs: dict[str, list[dict[str, Any]]] = {}  # 供「回复撤回」回溯
         #: 防刷屏警告冷却：key = f"{group_id}:{sender}" → 上次警告时间（now_ts）
         self._spam_cooldown: dict[str, tuple[float, int]] = {}
+        #: 刷屏冷却时钟（可注入，便于测试；与 RuleEngine 一样用单调时钟）
+        self._spam_clock: Callable[[], float] = time.monotonic
         self._last_provider_id: str = ""       # 发言审核最近使用（展示）
         self._last_join_provider_id: str = ""  # 入群审批最近使用（展示；分链路避免串号）
         WebApi(self).register()
@@ -1206,7 +1209,7 @@ class QQGroupManager(Star):
         """
         cooldown = float(settings.get("spam_flood_cooldown", 300) or 0)
         key = group_id + ":" + sender_openid
-        now = time.monotonic()  # 与 RuleEngine 的窗口时钟一致，避免 NTP 回拨影响冷却
+        now = self._spam_clock()  # 与 RuleEngine 的窗口时钟一致，避免 NTP 回拨影响冷却
         last_ts, last_severity = self._spam_cooldown.get(key, (0.0, 0))
         if cooldown > 0 and severity <= last_severity and now - last_ts < cooldown:
             return False

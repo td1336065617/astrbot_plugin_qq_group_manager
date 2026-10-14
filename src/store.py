@@ -107,6 +107,7 @@ def normalize_settings(raw: Any) -> dict[str, Any]:
         "join_answer_case_sensitive",
         "store_text",
         "domain_allowlist_enabled",
+        "spam_flood_enabled",
         "appeal_enabled",
         "appeal_auto_whitelist",
         "appeal_notify",
