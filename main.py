@@ -91,7 +91,13 @@ from .src.normalize import skeleton_text
 from .src.platforms.router import ChannelRouter
 from .src.policy import ApprovalPolicyService
 from .src.profiles import ApplicantProfileService
-from .src.rules import SCORE_RULES, RuleEngine
+from .src.rules import (
+    SCORE_RULES,
+    SPAM_ESCALATE_RATIO,
+    SPAM_MIN_RATIO,
+    RuleEngine,
+    SpamStat,
+)
 from .src.scheduler import TaskScheduler, TaskSpec
 from .src.store import AstrBotKVBackend, PluginStore
 from .src.utils import (
@@ -115,7 +121,7 @@ from .src.utils import (
 from .src.web_api import EventBus, WebApi
 
 PLUGIN_NAME = "astrbot_plugin_qq_group_manager"
-VERSION = "0.14.14"
+VERSION = "0.14.15"
 
 STATE_FLUSH_INTERVAL = 30.0
 MAINTENANCE_INTERVAL = 3600.0
@@ -179,6 +185,8 @@ class QQGroupManager(Star):
         self._seen_messages: dict[str, float] = {}
         self._context_buffer: dict[str, list[dict[str, Any]]] = {}
         self._recent_msgs: dict[str, list[dict[str, Any]]] = {}  # 供「回复撤回」回溯
+        #: 防刷屏警告冷却：key = f"{group_id}:{sender}" → 上次警告时间（now_ts）
+        self._spam_cooldown: dict[str, float] = {}
         self._last_provider_id: str = ""       # 发言审核最近使用（展示）
         self._last_join_provider_id: str = ""  # 入群审批最近使用（展示；分链路避免串号）
         WebApi(self).register()
@@ -1156,6 +1164,156 @@ class QQGroupManager(Star):
             return None
         return max(0, int((now_ts() - first_seen) / 86400))
 
+    # ------------------------------------------------------------------
+    # 防刷屏（同一个人连续发相同内容）：确定性判定，不经过 LLM
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _stable_url(url: str) -> str:
+        """剥掉会过期的查询参数（官方通道图片 URL 的 rkey 每次不同），只留稳定前缀。"""
+        return str(url or "").split("?")[0].split("#")[0]
+
+    def _spam_item_key(
+        self, event: AstrMessageEvent, text: str, images: list[str], *, skeleton: str = ""
+    ) -> str:
+        """刷屏判重键：文本用骨架，图片用稳定指纹（fileid/filename）；空串=不参与统计。"""
+        body = (text or "").strip()
+        if body and not is_placeholder_text(body):
+            if not skeleton:
+                skeleton, _hits = skeleton_text(body, self.store.homoglyph() or None)
+            return "txt:" + (skeleton or body)[:200]
+        fingers = [fp for fp in self._message_files(event) if fp]
+        if not fingers:
+            fingers = [self._stable_url(url) for url in images if url]
+        fingers = sorted({fp for fp in fingers if fp})
+        return ("file:" + "|".join(fingers))[:200] if fingers else ""
+
+    def _spam_cooldown_ok(
+        self, group_id: str, sender_openid: str, severity: int, settings: dict[str, Any]
+    ) -> bool:
+        """同群同人冷却：同档（或更低档）在冷却期内不重复动作，**升档不受冷却限制**。
+
+        例如 5 条已经警告过，继续刷到 10 条仍必须能升级成禁言——否则"越刷越没事"。
+        """
+        cooldown = float(settings.get("spam_flood_cooldown", 300) or 0)
+        key = group_id + ":" + sender_openid
+        now = now_ts()
+        last_ts, last_severity = self._spam_cooldown.get(key, (0.0, 0))
+        if cooldown > 0 and severity <= last_severity and now - last_ts < cooldown:
+            return False
+        self._spam_cooldown[key] = (now, severity)
+        if len(self._spam_cooldown) > 5000:
+            self._spam_cooldown.clear()
+        return True
+
+    def _spam_verdict(self, stat: SpamStat, *, threshold: int, window: float) -> Verdict:
+        """刷屏 → 违规判定：用严重度表达档位，动作交给既有处置矩阵。"""
+        escalate = max(threshold + 1, int(threshold * SPAM_ESCALATE_RATIO))
+        return Verdict(
+            verdict="violation",
+            category="刷屏灌水",
+            severity=3 if stat.count >= escalate else 2,
+            confidence=1.0,
+            reason=(
+                f"同人 {int(window)} 秒内重复发送相同内容 {stat.count} 条"
+                f"（占其发言 {stat.ratio:.0%}）"
+            ),
+            source="rule",
+        )
+
+    async def _apply_spam_action(
+        self,
+        *,
+        event: AstrMessageEvent,
+        group_id: str,
+        config: Any,
+        settings: dict[str, Any],
+        stat: SpamStat,
+        verdict: Verdict,
+        text: str,
+        msg_id: str,
+        sender_openid: str,
+        sender_name: str,
+        sender_role: str,
+    ) -> None:
+        """按既有处置矩阵执行刷屏动作（dry-run / 能力降级 / 审计全部复用）。"""
+
+        async def _send(text_out: str) -> None:
+            await event.send(MessageChain([Plain(text_out)]))
+
+        summary = await self.actions.handle(
+            group_id=group_id,
+            config=config,
+            verdict=verdict,
+            settings=settings,
+            msg_id=msg_id,
+            sender_openid=sender_openid,
+            sender_name=sender_name,
+            sender_role=sender_role,
+            message_excerpt=text,
+            text_digest=digest_text(text),
+            rule_hits=[],
+            hard_actions=None,
+            source="rule",
+            umo=event.unified_msg_origin,
+            send=_send,
+        )
+        self.logger.info(
+            "防刷屏命中：群=%s 成员=%s 条数=%s/%s 占比=%.0f%% 严重度=%s 动作=%s",
+            group_id,
+            sender_name or sender_openid,
+            stat.count,
+            stat.total,
+            stat.ratio * 100,
+            verdict.severity,
+            summary,
+        )
+
+    async def _check_spam_flood(
+        self,
+        event: AstrMessageEvent,
+        *,
+        group_id: str,
+        config: Any,
+        settings: dict[str, Any],
+        text: str,
+        images: list[str],
+        msg_id: str,
+        sender_openid: str,
+        sender_name: str,
+        sender_role: str,
+    ) -> str:
+        """登记并判定刷屏；命中则立即处置。返回本条骨架（供去重复用）。"""
+        body = (text or "").strip()
+        skeleton = ""
+        if body and not is_placeholder_text(body):
+            skeleton, _hits = skeleton_text(body, self.store.homoglyph() or None)
+        item_key = self._spam_item_key(event, text, images, skeleton=skeleton)
+        if not item_key:
+            return skeleton
+        window = float(settings.get("spam_flood_window", 60) or 60)
+        threshold = int(settings.get("spam_flood_count", 5) or 5)
+        stat = self.rules.note_spam(group_id, sender_openid, item_key, window=window)
+        if stat.count < threshold or stat.ratio < SPAM_MIN_RATIO:
+            return skeleton
+        verdict = self._spam_verdict(stat, threshold=threshold, window=window)
+        if not self._spam_cooldown_ok(group_id, sender_openid, verdict.severity, settings):
+            return skeleton
+        await self._apply_spam_action(
+            event=event,
+            group_id=group_id,
+            config=config,
+            settings=settings,
+            stat=stat,
+            verdict=verdict,
+            text=text,
+            msg_id=msg_id,
+            sender_openid=sender_openid,
+            sender_name=sender_name,
+            sender_role=sender_role,
+        )
+        return skeleton
+
     async def _moderate(
         self,
         event: AstrMessageEvent,
@@ -1183,20 +1341,39 @@ class QQGroupManager(Star):
         ):
             limit = int(settings.get("image_review_max", 1) or 1)
             send_images = images[: max(1, limit)]
+        # 防刷屏：判定必须在这条早退之前——纯图片消息在 image_review=off 时会直接 return，
+        # 那样"刷图/刷表情"就漏了。豁免者既不动作也不登记（与既有的豁免口径一致）。
+        exempt = self._is_exempt(event, group_id, sender_openid, sender_role)
+        spam_skeleton = ""
+        if settings.get("spam_flood_enabled", True) and not exempt:
+            spam_skeleton = await self._check_spam_flood(
+                event,
+                group_id=group_id,
+                config=config,
+                settings=settings,
+                text=text,
+                images=images,
+                msg_id=msg_id,
+                sender_openid=sender_openid,
+                sender_name=sender_name,
+                sender_role=sender_role,
+            )
         if not text.strip() and not send_images:
             return
         # 先取上文再记录本条：语境区块里不含当前消息
         context_messages = self._recent_context(group_id)
         self._note_context(group_id, sender_name, text)
-        if self._is_exempt(event, group_id, sender_openid, sender_role):
+        if exempt:  # 上面已算过，避免重复判定
             return
 
         recent = self.rules.note_message(group_id, sender_openid)
         threshold = int(settings.get("flood_threshold", 8) or 8)
         duplicate_senders = 0
         if text.strip():
-            # 用骨架文本做去重键：同一文案的变体写法也能聚到一起
-            skeleton, _hits = skeleton_text(text, self.store.homoglyph() or None)
+            # 用骨架文本做去重键：同一文案的变体写法也能聚到一起（刷屏判定算过就直接复用）
+            if not spam_skeleton:
+                spam_skeleton = skeleton_text(text, self.store.homoglyph() or None)[0]
+            skeleton = spam_skeleton
             duplicate_senders = self.rules.note_content(
                 group_id,
                 skeleton or text,

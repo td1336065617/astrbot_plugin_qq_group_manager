@@ -464,6 +464,11 @@ def default_settings() -> dict[str, Any]:
         "auto_enforce_normalized": False,
         "duplicate_flood_window": 300,
         "duplicate_flood_members": 3,
+        # 防刷屏（同一个人连续发相同内容）：与"同文案多号刷屏"是两件事
+        "spam_flood_enabled": True,
+        "spam_flood_count": 5,
+        "spam_flood_window": 60,
+        "spam_flood_cooldown": 300,
         # 竞赛域名白名单：白名单内链接不计 link 分（只降权，不豁免规则与送审）
         "domain_allowlist_enabled": True,
         "domain_allowlist": [
@@ -587,6 +592,9 @@ NUMERIC_BOUNDS: dict[str, tuple[float, float]] = {
     "fuzzy_max_distance": (0, 3),
     "duplicate_flood_window": (30, 3600),
     "duplicate_flood_members": (2, 20),
+    "spam_flood_count": (2, 100),
+    "spam_flood_window": (10, 600),
+    "spam_flood_cooldown": (0, 3600),
     "probe_full_msg_interval": (300, 86400),
     "capability_log_dedupe_window": (0, 86400),
 }

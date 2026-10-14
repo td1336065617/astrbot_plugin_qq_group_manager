@@ -851,6 +851,10 @@ SIGNAL_LABELS = {
 MAX_CACHE_GROUPS = 500
 FLOOD_WINDOW = 60.0
 DUPLICATE_WINDOW = 300.0
+#: 防刷屏升级倍数：条数达到阈值 × 该倍数 → 严重度升一档（时长由 action_matrix/mute_steps 决定）
+SPAM_ESCALATE_RATIO = 2
+#: 防刷屏占比下限：命中内容需占该成员窗口内发言的比例（防止"聊天多、偶有重复"被误判）
+SPAM_MIN_RATIO = 0.5
 
 
 @dataclass(slots=True)
@@ -882,6 +886,22 @@ class RuleHit:
             "score": self.score,
             "enforce": self.enforce,
         }
+
+
+@dataclass(slots=True)
+class SpamStat:
+    """窗口内"同人重复内容"的统计结果。
+
+    count = 最大同内容组的条数（不是某条指定内容的条数，这样"交替刷屏"也能命中）。
+    """
+
+    count: int = 0
+    total: int = 0
+    key: str = ""
+
+    @property
+    def ratio(self) -> float:
+        return (self.count / self.total) if self.total else 0.0
 
 
 @dataclass(slots=True)
@@ -993,6 +1013,8 @@ class RuleEngine:
         self._homoglyph: dict[str, str] = {}
         self._recent: dict[str, deque[float]] = {}
         self._content: dict[str, deque[tuple[float, str]]] = {}
+        #: 防刷屏：key = f"{group_id}:{member}" → deque[(ts, item_key)]
+        self._spam: dict[str, deque[tuple[float, str]]] = {}
         self._clock = time.monotonic
         self.auto_enforce_normalized = bool(auto_enforce_normalized)
         self.fuzzy_max_distance = max(0, int(fuzzy_max_distance))
@@ -1138,6 +1160,40 @@ class RuleEngine:
         while bucket and bucket[0][0] < cutoff:
             bucket.popleft()
         return len({item[1] for item in bucket})
+
+    def note_spam(
+        self,
+        group_id: str,
+        member_openid: str,
+        item_key: str,
+        *,
+        window: float = FLOOD_WINDOW,
+    ) -> SpamStat:
+        """登记一条发言，返回窗口内「最大同内容组」的条数与占比（纯内存）。
+
+        与 `note_content`（多号同文案）互不干扰：这里只看"同一个人"重复同一内容。
+        """
+        if not member_openid or not item_key:
+            return SpamStat()
+        key = group_id + ":" + member_openid
+        now = self._clock()
+        bucket = self._spam.get(key)
+        if bucket is None:
+            if len(self._spam) > MAX_CACHE_GROUPS * 100:
+                self._spam.clear()
+            bucket = deque(maxlen=200)
+            self._spam[key] = bucket
+        bucket.append((now, item_key))
+        cutoff = now - max(10.0, float(window))
+        while bucket and bucket[0][0] < cutoff:
+            bucket.popleft()
+        counts: dict[str, int] = {}
+        for _ts, item in bucket:
+            counts[item] = counts.get(item, 0) + 1
+        if not counts:
+            return SpamStat()
+        best_key, best = max(counts.items(), key=lambda kv: kv[1])
+        return SpamStat(count=best, total=len(bucket), key=best_key[:120])
 
     # ------------------------------------------------------------------
     def _match_rule(self, rule: dict[str, Any], views: Any) -> tuple[str, bool]:

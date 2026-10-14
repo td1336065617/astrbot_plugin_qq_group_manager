@@ -919,6 +919,11 @@ async function viewPolicy(root) {
   const autoEnforce = checkField('归一化/模板命中直接按规则动作处置（默认关：先送审）', settings.auto_enforce_normalized);
   const dupWindow = numField('同文案多号刷屏窗口（秒）', settings.duplicate_flood_window || 300, 30, 3600, 30);
   const dupMembers = numField('同文案多号刷屏人数阈值', settings.duplicate_flood_members || 3, 2, 20, 1);
+  /* 防刷屏：同一个人连续发相同内容（与上面“多号同文案”是两件事） */
+  const spamOn = checkField('防刷屏（同一人重复发送相同内容）', settings.spam_flood_enabled !== false);
+  const spamCount = numField('刷屏阈值（条；达阈值按 2 级、2 倍按 3 级处置）', settings.spam_flood_count || 5, 2, 100, 1);
+  const spamWindow = numField('刷屏统计窗口（秒）', settings.spam_flood_window || 60, 10, 600, 10);
+  const spamCooldown = numField('刷屏警告冷却（秒，0=关闭）', settings.spam_flood_cooldown, 0, 3600, 30);
   const domainAllow = checkField('竞赛域名白名单降权（白名单内链接不计 link 分，仍走规则与送审）', settings.domain_allowlist_enabled !== false);
   const domainArea = el('textarea', { rows: '4', class: 'mono', placeholder: '一行一个域名，例如 codeforces.com' });
   domainArea.value = (settings.domain_allowlist || []).join('\n');
@@ -1005,6 +1010,10 @@ async function viewPolicy(root) {
       auto_enforce_normalized: autoEnforce.input.checked,
       duplicate_flood_window: Number(dupWindow.input.value),
       duplicate_flood_members: Number(dupMembers.input.value),
+      spam_flood_enabled: spamOn.input.checked,
+      spam_flood_count: Number(spamCount.input.value),
+      spam_flood_window: Number(spamWindow.input.value),
+      spam_flood_cooldown: Number(spamCooldown.input.value),
       domain_allowlist_enabled: domainAllow.input.checked,
       domain_allowlist: domainArea.value.split('\n').map((item) => item.trim()).filter(Boolean),
       appeal_enabled: appealEnabled.input.checked,
@@ -1041,6 +1050,7 @@ async function viewPolicy(root) {
     '归一化让规则"看得见"形近字、插符号、全角与拼音变体；风险分把多个弱信号累加，达到阈值即送审（不影响纯闲聊）。', [
     el('div', { class: 'row' }, [normalizeOn.node, homoglyphOn.node, templateOn.node, pinyinOn.node]),
     el('div', { class: 'row' }, [fuzzyDist.node, riskField.node, dupWindow.node, dupMembers.node]),
+    el('div', { class: 'row' }, [spamOn.node, spamCount.node, spamWindow.node, spamCooldown.node]),
     el('div', { class: 'row' }, [autoEnforce.node]),
     pinyinHint,
   ]));
