@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -121,7 +122,7 @@ from .src.utils import (
 from .src.web_api import EventBus, WebApi
 
 PLUGIN_NAME = "astrbot_plugin_qq_group_manager"
-VERSION = "0.14.16"
+VERSION = "0.14.17"
 
 STATE_FLUSH_INTERVAL = 30.0
 MAINTENANCE_INTERVAL = 3600.0
@@ -186,7 +187,7 @@ class QQGroupManager(Star):
         self._context_buffer: dict[str, list[dict[str, Any]]] = {}
         self._recent_msgs: dict[str, list[dict[str, Any]]] = {}  # 供「回复撤回」回溯
         #: 防刷屏警告冷却：key = f"{group_id}:{sender}" → 上次警告时间（now_ts）
-        self._spam_cooldown: dict[str, float] = {}
+        self._spam_cooldown: dict[str, tuple[float, int]] = {}
         self._last_provider_id: str = ""       # 发言审核最近使用（展示）
         self._last_join_provider_id: str = ""  # 入群审批最近使用（展示；分链路避免串号）
         WebApi(self).register()
@@ -1176,17 +1177,25 @@ class QQGroupManager(Star):
     def _spam_item_key(
         self, event: AstrMessageEvent, text: str, images: list[str], *, skeleton: str = ""
     ) -> str:
-        """刷屏判重键：文本用骨架，图片用稳定指纹（fileid/filename）；空串=不参与统计。"""
+        """刷屏判重键：文本用骨架、图片用稳定指纹（fileid/filename）；两者都有则用复合键。
+
+        复合键是必须的：同一条短文案配**不同图片**（"打卡"+"好看"这类）若只按文本聚组，
+        会把正常晒图当成刷屏。空串表示该条不参与计数（只计入占比分母）。
+        """
         body = (text or "").strip()
+        text_key = ""
         if body and not is_placeholder_text(body):
             if not skeleton:
                 skeleton, _hits = skeleton_text(body, self.store.homoglyph() or None)
-            return "txt:" + (skeleton or body)[:200]
+            text_key = "txt:" + (skeleton or body)[:200]
         fingers = [fp for fp in self._message_files(event) if fp]
         if not fingers:
             fingers = [self._stable_url(url) for url in images if url]
         fingers = sorted({fp for fp in fingers if fp})
-        return ("file:" + "|".join(fingers))[:200] if fingers else ""
+        file_key = ("file:" + "|".join(fingers))[:200] if fingers else ""
+        if text_key and file_key:
+            return (text_key + "+" + file_key)[:250]
+        return text_key or file_key
 
     def _spam_cooldown_ok(
         self, group_id: str, sender_openid: str, severity: int, settings: dict[str, Any]
@@ -1197,7 +1206,7 @@ class QQGroupManager(Star):
         """
         cooldown = float(settings.get("spam_flood_cooldown", 300) or 0)
         key = group_id + ":" + sender_openid
-        now = now_ts()
+        now = time.monotonic()  # 与 RuleEngine 的窗口时钟一致，避免 NTP 回拨影响冷却
         last_ts, last_severity = self._spam_cooldown.get(key, (0.0, 0))
         if cooldown > 0 and severity <= last_severity and now - last_ts < cooldown:
             return False
@@ -1289,12 +1298,11 @@ class QQGroupManager(Star):
         if body and not is_placeholder_text(body):
             skeleton, _hits = skeleton_text(body, self.store.homoglyph() or None)
         item_key = self._spam_item_key(event, text, images, skeleton=skeleton)
-        if not item_key:
-            return skeleton
         window = float(settings.get("spam_flood_window", 60) or 60)
         threshold = int(settings.get("spam_flood_count", 5) or 5)
+        # 空 key 也登记：它只计入占比分母（"占其发言"的口径才成立）
         stat = self.rules.note_spam(group_id, sender_openid, item_key, window=window)
-        if stat.count < threshold or stat.ratio < SPAM_MIN_RATIO:
+        if not item_key or stat.count < threshold or stat.ratio < SPAM_MIN_RATIO:
             return skeleton
         verdict = self._spam_verdict(stat, threshold=threshold, window=window)
         if not self._spam_cooldown_ok(group_id, sender_openid, verdict.severity, settings):

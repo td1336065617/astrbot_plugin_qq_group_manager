@@ -65,8 +65,8 @@ class ActionExecutor:
         self.audit = audit
         self.logger = logger
         self._clock = clock
-        self._done: dict[tuple[str, str, str], float] = {}
-        self._violations: dict[tuple[str, str], list[float]] = {}
+        self._done: dict[tuple[str, str, str, int], float] = {}
+        self._violations: dict[tuple[str, str], list[tuple[float, str]]] = {}
         self.notifier: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None
         self.stats: dict[str, int] = {
             "executed": 0,
@@ -76,9 +76,13 @@ class ActionExecutor:
         }
 
     # ------------------------------------------------------------------
-    def _seen(self, group_id: str, msg_id: str, action: str) -> bool:
-        """幂等判断：近期已执行过则返回 True。"""
-        key = (group_id, msg_id or "-", action)
+    def _seen(self, group_id: str, msg_id: str, action: str, severity: int = 0) -> bool:
+        """幂等判断：近期已对「同一条消息 + 同一个动作 + 同一个严重度」执行过则返回 True。
+
+        严重度必须进入幂等键：同一条消息可能先被刷屏链路按 3 级处置、再被内容链路判到 4 级，
+        若只按 (群, 消息, 动作) 去重，更重的 4 级禁言会被"重复推送"顶掉，等于处罚被削弱。
+        """
+        key = (group_id, msg_id or "-", action, int(severity))
         now = self._clock()
         if len(self._done) > 4000:
             self._done = {
@@ -90,14 +94,23 @@ class ActionExecutor:
         self._done[key] = now
         return False
 
-    def _repeat_multiplier(self, group_id: str, member_openid: str) -> int:
-        """24 小时内重复违规次数 → 时长倍数（1~3）。"""
+    def _repeat_multiplier(self, group_id: str, member_openid: str, msg_id: str = "") -> int:
+        """24 小时内重复违规次数 → 时长倍数（1~3）。
+
+        同一条消息只计一次：一条消息可能同时被刷屏链路与内容链路处置，
+        计两次会让后续禁言时长被更快放大（对群成员不公平）。
+        """
         if not member_openid:
             return 1
         key = (group_id, member_openid)
         now = self._clock()
-        bucket = [stamp for stamp in self._violations.get(key, []) if now - stamp < REPEAT_WINDOW]
-        bucket.append(now)
+        bucket = [
+            item for item in self._violations.get(key, []) if now - item[0] < REPEAT_WINDOW
+        ]
+        if msg_id and any(item[1] == msg_id for item in bucket):
+            self._violations[key] = bucket
+            return max(1, min(REPEAT_MAX_MULTIPLIER, len(bucket)))
+        bucket.append((now, msg_id))
         self._violations[key] = bucket
         return max(1, min(REPEAT_MAX_MULTIPLIER, len(bucket)))
 
@@ -247,7 +260,9 @@ class ActionExecutor:
             )
 
         results: list[ActionResult] = []
-        multiplier = self._repeat_multiplier(group_id, sender_openid) if actions else 1
+        multiplier = (
+            self._repeat_multiplier(group_id, sender_openid, msg_id) if actions else 1
+        )
         for action in actions:
             result = await self._execute(
                 action=action,
@@ -306,7 +321,7 @@ class ActionExecutor:
         umo: str,
         note: str = "",
     ) -> ActionResult:
-        if self._seen(group_id, msg_id, action):
+        if self._seen(group_id, msg_id, action, verdict.severity):
             self.stats["skipped"] += 1
             return ActionResult(action=action, ok=True, message="重复推送，已跳过")
         dry_run = bool(self.api.dry_run()) if self.api is not None else True

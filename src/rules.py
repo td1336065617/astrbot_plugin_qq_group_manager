@@ -1172,8 +1172,10 @@ class RuleEngine:
         """登记一条发言，返回窗口内「最大同内容组」的条数与占比（纯内存）。
 
         与 `note_content`（多号同文案）互不干扰：这里只看"同一个人"重复同一内容。
+        `item_key` 允许为空（占位符 / 取不到附件指纹的消息）：只计入占比分母，不参与计数，
+        这样 `SpamStat.ratio` 的口径才是"该内容占其窗口内全部发言的比例"。
         """
-        if not member_openid or not item_key:
+        if not member_openid:
             return SpamStat()
         key = group_id + ":" + member_openid
         now = self._clock()
@@ -1189,9 +1191,10 @@ class RuleEngine:
             bucket.popleft()
         counts: dict[str, int] = {}
         for _ts, item in bucket:
-            counts[item] = counts.get(item, 0) + 1
+            if item:  # 空 key 只计入分母
+                counts[item] = counts.get(item, 0) + 1
         if not counts:
-            return SpamStat()
+            return SpamStat(total=len(bucket))
         best_key, best = max(counts.items(), key=lambda kv: kv[1])
         return SpamStat(count=best, total=len(bucket), key=best_key[:120])
 

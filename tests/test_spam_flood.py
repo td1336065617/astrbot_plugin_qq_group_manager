@@ -236,10 +236,23 @@ def test_note_spam_alternating_hits_max_group():
     assert stat.ratio == 0.5
 
 
-def test_note_spam_ignores_blank_key():
+def test_note_spam_blank_key_counts_only_toward_ratio():
+    """空 key（占位符 / 取不到附件指纹）只计入占比分母，不参与"同内容"计数。"""
     engine = make_engine()
     stat = engine.note_spam("g1", "u1", "")
-    assert (stat.count, stat.total) == (0, 0)
+    assert (stat.count, stat.total) == (0, 1)
+    assert stat.ratio == 0.0
+
+
+def test_note_spam_ratio_uses_all_messages():
+    """占比分母 = 该成员窗口内全部发言（含不参与计数的消息）。"""
+    engine = make_engine()
+    for _ in range(4):
+        stat = engine.note_spam("g1", "u1", "txt:哈哈")
+    assert (stat.count, stat.total) == (4, 4)
+    stat = engine.note_spam("g1", "u1", "")
+    assert (stat.count, stat.total) == (4, 5)
+    assert abs(stat.ratio - 0.8) < 1e-9
 
 
 # ----------------------------------------------------------------------
@@ -508,6 +521,98 @@ def test_spam_disabled_keeps_old_flow_identical(tmp_path):
         for index in range(3):
             await send_many(env, 1, prefix=f"off{index}")
         assert called == [], "开关关闭时不得调用 note_spam"
+
+    asyncio.run(scenario())
+
+
+
+def test_spam_item_key_composite_when_text_and_image(tmp_path):
+    """同文案 + 不同图片不能聚成一组（否则晒图会被误判刷屏）；同文案 + 同图仍能聚。"""
+
+    async def scenario():
+        env = await make_env(tmp_path)
+        _main, service, _store, _audit, _transport = env
+        event = FakeEvent("打卡")
+        first = service._spam_item_key(
+            event, "打卡", ["https://x/a.jpg?fileid=A&rkey=1"]
+        )
+        second = service._spam_item_key(
+            event, "打卡", ["https://x/b.jpg?fileid=B&rkey=1"]
+        )
+        again = service._spam_item_key(
+            event, "打卡", ["https://x/a.jpg?fileid=A&rkey=2"]
+        )
+        assert first != second, "同文案不同图必须区分开"
+        assert first == again, "同文案同图（rkey 变化）仍应聚成一组"
+        assert first.startswith("txt:") and "+file:" in first
+
+    asyncio.run(scenario())
+
+
+def test_actions_heavier_action_on_same_message_is_not_skipped(tmp_path):
+    """同一条消息先被刷屏（3 级）处置、再被判 4 级：更重的处罚必须落地，不能被幂等顶掉。"""
+
+    async def scenario():
+        env = await make_env(tmp_path)
+        _main, service, store, _audit, transport = env
+        settings = store.settings()
+        config = store.group("g1")
+
+        async def handle(severity):
+            return await service.actions.handle(
+                group_id="g1",
+                config=config,
+                verdict=Verdict(
+                    verdict="violation",
+                    category="刷屏灌水" if severity == 3 else "广告引流",
+                    severity=severity,
+                    confidence=1.0,
+                    source="rule",
+                ),
+                settings=settings,
+                msg_id="same-msg",
+                sender_openid="u1",
+                sender_name="小号",
+                send=None,
+            )
+
+        await handle(3)
+        assert len(transport.calls_for("POST", MUTE_PATH)) == 1
+        await handle(4)
+        assert len(transport.calls_for("POST", MUTE_PATH)) == 2, "4 级禁言必须执行"
+        # 同严重度重复推送仍被幂等拦住
+        await handle(4)
+        assert len(transport.calls_for("POST", MUTE_PATH)) == 2, "同档重复推送应被跳过"
+
+    asyncio.run(scenario())
+
+
+def test_repeat_multiplier_counts_one_message_once(tmp_path):
+    """同一条消息被两条链路各处置一次时，重复违规只计一次（否则时长被更快放大）。"""
+
+    async def scenario():
+        env = await make_env(tmp_path)
+        _main, service, store, _audit, _transport = env
+        settings = store.settings()
+        config = store.group("g1")
+
+        async def handle(msg_id, severity):
+            await service.actions.handle(
+                group_id="g1",
+                config=config,
+                verdict=Verdict(verdict="violation", severity=severity, category="刷屏灌水"),
+                settings=settings,
+                msg_id=msg_id,
+                sender_openid="u1",
+                sender_name="小号",
+                send=None,
+            )
+
+        await handle("m1", 2)
+        await handle("m1", 3)
+        assert len(service.actions._violations[("g1", "u1")]) == 1, "同一条消息只计一次"
+        await handle("m2", 2)
+        assert len(service.actions._violations[("g1", "u1")]) == 2
 
     asyncio.run(scenario())
 
