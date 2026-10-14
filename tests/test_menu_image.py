@@ -4,10 +4,10 @@ from __future__ import annotations
 import asyncio
 import logging
 
+import test_mention_targets as mt
+
 from src.commands import menu_text
 from src.menu_render import menu_html, split_item
-
-import test_mention_targets as mt
 
 GOLDEN_MENU = "\n".join(
     [

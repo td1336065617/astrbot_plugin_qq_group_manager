@@ -27,7 +27,6 @@ from astrbot.api.message_components import At, Plain, Reply
 from astrbot.api.star import Context, Star
 
 from .src.actions import ActionExecutor
-from .src.menu_render import menu_html
 from .src.api_client import BotpyTransport, QQApiError, QQGroupAPI
 from .src.audit import AuditStore
 from .src.commands import (
@@ -78,6 +77,7 @@ from .src.commands import (
 from .src.group_names import refresh_group_names as refresh_group_names_impl
 from .src.join_review import JoinReviewer
 from .src.links import allowlisted_domains, extract_domains, qr_risk_text
+from .src.menu_render import menu_html
 from .src.models import (
     CAP_BOT_STATE,
     CAP_FULL_MSG,
