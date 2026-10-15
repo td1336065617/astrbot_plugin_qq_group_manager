@@ -844,6 +844,13 @@ async function viewPolicy(root) {
   const repeatMul = checkField('重复违规时长累加（≤3 倍）', settings.repeat_offense_multiplier);
   const autoBlacklist = checkField('自动拉黑（内邀能力）', settings.auto_blacklist);
   const autoRemove = checkField('自动移除成员（内邀能力，风险高）', settings.auto_remove);
+  /* AI 能力（工具） */
+  const aiToolsOn = checkField('开启 AI 工具（只读：群信息 / 审核状态 / 统计 / 日志）', settings.qqgm_ai_tools_enabled !== false);
+  const aiToolsRead = checkField('AI 只读工具可用', settings.qqgm_ai_tools_read_enabled !== false);
+  const aiToolsWrite = checkField('AI 写工具（禁言 / 解禁，风险较高）', settings.qqgm_ai_tools_write_enabled === true);
+  const aiRespectLenient = checkField('AI 写操作遵守群模式（lenient 只警告、log-only 不处置）', settings.qqgm_ai_respect_lenient !== false);
+  const aiThrottleLimit = numField('AI 节流：窗口内最多调用次数', settings.qqgm_ai_throttle_limit, 1, 60, 1);
+  const aiThrottleWindow = numField('AI 节流：窗口秒数', settings.qqgm_ai_throttle_window, 5, 3600, 5);
   const modeSelect = el('select');
   (options.modes || []).forEach((mode) => {
     modeSelect.appendChild(el('option', { value: mode, text: mode, selected: mode === settings.mode ? 'selected' : null }));
@@ -1025,6 +1032,12 @@ async function viewPolicy(root) {
       appeal_enabled: appealEnabled.input.checked,
       appeal_auto_whitelist: appealAuto.input.checked,
       appeal_notify: appealNotify.input.checked,
+      qqgm_ai_tools_enabled: aiToolsOn.input.checked,
+      qqgm_ai_tools_read_enabled: aiToolsRead.input.checked,
+      qqgm_ai_tools_write_enabled: aiToolsWrite.input.checked,
+      qqgm_ai_respect_lenient: aiRespectLenient.input.checked,
+      qqgm_ai_throttle_limit: Number(aiThrottleLimit.input.value),
+      qqgm_ai_throttle_window: Number(aiThrottleWindow.input.value),
       prompt_system: systemPrompt.value,
       prompt_user: userPrompt.value,
     };
@@ -1088,6 +1101,12 @@ async function viewPolicy(root) {
     el('label', { class: 'field' }, [el('span', { text: '管理员通知会话（umo）' }), notifySession]),
     el('div', { class: 'field-actions' }, [el('span', { class: 'muted', text: '送审条件：' })]),
     conditions,
+  ]));
+
+  root.appendChild(card('AI 能力（工具）', '让大模型能查群信息 / 审核状态 / 统计 / 最近日志；授权后还能禁言、解禁。只影响 AI，人类指令不受影响。', [
+    el('div', { class: 'row' }, [aiToolsOn.node, aiToolsRead.node]),
+    el('div', { class: 'row' }, [aiToolsWrite.node, aiRespectLenient.node]),
+    el('div', { class: 'row' }, [aiThrottleLimit.node, aiThrottleWindow.node]),
   ]));
 
   root.appendChild(card('处置矩阵', 'verdict = violation 时按 severity 执行的动作；lenient 模式只会保留警告与上报。', [matrixBox]));

@@ -187,6 +187,10 @@ DDL_STATEMENTS: tuple[str, ...] = (
 )
 
 #: 日志种类 → (表名, 允许筛选的列)
+#: 统计口径：AI 工具产生的动作不计入「审核量/违规量」（需求 QG-07 / 设计 §5.3）
+AI_EVENT_EXCLUDE = " AND COALESCE(source, '') != 'llm_tool'"
+
+
 LOG_TABLES: dict[str, tuple[str, tuple[str, ...]]] = {
     "events": (
         "mod_events",
@@ -652,7 +656,7 @@ class AuditStore:
         """取该成员在本群最近一条被处置（非 allow）的记录，用于申诉关联。"""
         rows = await self._fetch_all(
             "SELECT * FROM mod_events WHERE group_id = ? AND sender_openid = ? "
-            "AND verdict != 'allow' ORDER BY ts_unix DESC LIMIT 1",
+            "AND verdict != 'allow'" + AI_EVENT_EXCLUDE + " ORDER BY ts_unix DESC LIMIT 1",
             (group_id, member_openid),
         )
         return rows[0] if rows else None
@@ -662,7 +666,7 @@ class AuditStore:
         if not msg_id:
             return None
         rows = await self._fetch_all(
-            "SELECT * FROM mod_events WHERE group_id = ? AND msg_id = ? "
+            "SELECT * FROM mod_events WHERE group_id = ? AND msg_id = ? " + AI_EVENT_EXCLUDE + " "
             "ORDER BY ts_unix DESC LIMIT 1",
             (group_id, msg_id),
         )
@@ -882,7 +886,7 @@ class AuditStore:
             "SUM(CASE WHEN verdict = 'allow' THEN 1 ELSE 0 END) AS allow_count, "
             "SUM(CASE WHEN appealed = 1 THEN 1 ELSE 0 END) AS appeals, "
             "SUM(CASE WHEN appeal_state = 'accepted' THEN 1 ELSE 0 END) AS accepted "
-            "FROM mod_events WHERE ts_unix >= ? GROUP BY category ORDER BY total DESC",
+            "FROM mod_events WHERE ts_unix >= ?" + AI_EVENT_EXCLUDE + " GROUP BY category ORDER BY total DESC",
             (since,),
         )
         result: list[dict[str, Any]] = []
@@ -902,7 +906,7 @@ class AuditStore:
             "SUM(CASE WHEN verdict = 'allow' THEN 1 ELSE 0 END) AS allow_count, "
             "SUM(CASE WHEN appealed = 1 THEN 1 ELSE 0 END) AS appeals, "
             "SUM(CASE WHEN appeal_state = 'accepted' THEN 1 ELSE 0 END) AS accepted "
-            "FROM mod_events WHERE ts_unix >= ? "
+            "FROM mod_events WHERE ts_unix >= ?" + AI_EVENT_EXCLUDE + " "
             "GROUP BY group_id, group_name ORDER BY total DESC",
             (since,),
         )
@@ -1169,7 +1173,7 @@ class AuditStore:
         """近 N 天概览统计（供 WebUI 总览使用）。"""
         since = now_ts() - max(1, int(days)) * 86400
         events = await self._fetch_all(
-            "SELECT verdict, COUNT(*) AS n FROM mod_events WHERE ts_unix >= ? GROUP BY verdict",
+            "SELECT verdict, COUNT(*) AS n FROM mod_events WHERE ts_unix >= ?" + AI_EVENT_EXCLUDE + " GROUP BY verdict",
             (since,),
         )
         actions = await self._fetch_all(

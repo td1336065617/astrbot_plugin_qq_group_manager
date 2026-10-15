@@ -26,6 +26,10 @@ if _PLUGIN_ROOT not in sys.path:  # 允许 from .src... 导入与直接运行测
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 from astrbot.api.message_components import At, Plain, Reply
 from astrbot.api.star import Context, Star
+try:                      # AI 公共件（纯逻辑，四仓库各一份）
+    from . import ai_common
+except ImportError:       # 测试里以顶层模块导入
+    import ai_common
 
 from .src.actions import ActionExecutor
 from .src.api_client import BotpyTransport, QQApiError, QQGroupAPI
@@ -123,7 +127,7 @@ from .src.utils import (
 from .src.web_api import EventBus, WebApi
 
 PLUGIN_NAME = "astrbot_plugin_qq_group_manager"
-VERSION = "0.14.18"
+VERSION = "0.15.0"
 
 STATE_FLUSH_INTERVAL = 30.0
 MAINTENANCE_INTERVAL = 3600.0
@@ -1808,6 +1812,312 @@ class QQGroupManager(Star):
             return await self._cmd_dry_run(args)
         return []
 
+    # ------------------------------------------------------------------
+    # AI 能力：4 个只读工具 + 2 个写工具（写默认关）
+    #   · 只读：群信息 / 审核状态 / 统计 / 最近日志（都给群管可见）
+    #   · 写：禁言 / 解禁（管理员 + 显式开启 + 走 handle_manual，审计 verdict=manual）
+    # ------------------------------------------------------------------
+    async def _ai_guard(self, event: AstrMessageEvent, tool: str, *, write: bool = False):
+        """统一门禁：开关（读/写分开）+ 节流；被拒返回错误 JSON 文本。"""
+        settings = self.store.settings()
+        if not settings.get("qqgm_ai_tools_enabled"):
+            return ai_common.fail("disabled", "群管的 AI 工具已在配置里关闭", hint="管理员可在插件页打开")
+        if write and not settings.get("qqgm_ai_tools_write_enabled"):
+            return ai_common.fail(
+                "disabled",
+                "AI 写操作未开启（只读工具仍可用）",
+                hint="管理员需在插件页打开「AI 写工具（禁言/解禁）」",
+            )
+        if not write and not settings.get("qqgm_ai_tools_read_enabled"):
+            return ai_common.fail("disabled", "群管的 AI 只读工具已在配置里关闭")
+        limit = int(settings.get("qqgm_ai_throttle_limit") or 5)
+        window = int(settings.get("qqgm_ai_throttle_window") or 60)
+        throttle = getattr(self, "_ai_throttle", None)
+        if throttle is None or (throttle.limit, throttle.window) != (limit, window):
+            throttle = ai_common.ToolThrottle(limit=limit, window=window)
+            self._ai_throttle = throttle
+        key = "%s:%s" % (
+            getattr(event, "unified_msg_origin", "") or "unknown",
+            getattr(event, "get_sender_id", lambda: "")() or "-",
+        )   # 设计 §3.4：节流维度是每个调用者，不是整群
+        wait = throttle.check(tool, key)
+        if wait:
+            return ai_common.fail("throttled", "操作太频繁，请 %d 秒后再试" % wait, retry_after=wait)
+        return None
+
+    def _ai_group_admin(self, event: AstrMessageEvent, group_id: str) -> bool:
+        """群管谓词：AstrBot 管理员 or 本群群主/管理员（与人类指令一致）。"""
+        try:
+            if event.is_admin():
+                return True
+        except Exception:
+            pass
+        sender = str(getattr(event, "get_sender_id", lambda: "")() or "")
+        try:
+            return bool(self.store.is_group_admin(group_id, sender))
+        except Exception:
+            return False
+
+    @filter.llm_tool(name="qqgm_group_info")
+    async def qqgm_group_info(self, event: AstrMessageEvent, **kwargs) -> str:
+        """查看本群档案与机器人在群状态（群名/简介/分类/人数/机器人是否群管）。
+
+        何时使用：用户问"这个群什么情况/多少人/机器人是不是群管"。
+        何时别用：与群档案无关的问题不要调用。
+
+        Args:
+            detail(string): 可选，summary（默认）或 full（更完整）。
+        """
+        group_id = str(event.get_group_id() or "").strip()
+        if not group_id:
+            return ai_common.fail("platform_unsupported", "该工具只在群聊里可用")
+        blocked = await self._ai_guard(event, "qqgm_group_info")
+        if blocked:
+            return blocked
+        raw_detail = (kwargs or {}).get("detail")
+        detail = ai_common.pick_enum(raw_detail, ("summary", "full"), None)
+        if detail is None:
+            if str(raw_detail or "").strip():
+                return ai_common.fail("invalid_argument", "detail 只能是 summary 或 full", field="detail")
+            detail = "summary"
+        try:
+            text = await self._cmd_group_info(group_id)
+        except Exception as exc:
+            self.logger.warning("AI 工具取群信息失败：%s", exc)
+            return ai_common.fail("capability_unavailable", "群信息暂时取不到（机器人可能不在群里或平台不可用）")
+        text = ai_common.sanitize(text, 1200 if detail == "full" else 600)
+        self.logger.info("AI 工具 qqgm_group_info 命中（group=%s）", group_id)
+        return ai_common.ok({"group_id": group_id, "text": text})
+
+    @filter.llm_tool(name="qqgm_moderation_status")
+    async def qqgm_moderation_status(self, event: AstrMessageEvent, **kwargs) -> str:
+        """查看本群审核状态：开关、模式、dry-run、阈值、入群审批模式。
+
+        何时使用：用户（尤其群管）问"本群审核开着吗/什么模式"。
+        何时别用：查历史记录用 qqgm_recent_events。
+
+        """
+        group_id = str(event.get_group_id() or "").strip()
+        if not group_id:
+            return ai_common.fail("platform_unsupported", "该工具只在群聊里可用")
+        blocked = await self._ai_guard(event, "qqgm_moderation_status")
+        if blocked:
+            return blocked
+        sender = str(getattr(event, "get_sender_id", lambda: "")() or "")
+        # QG-02：该工具对所有人开放（只读、不含关键词等规则细节）
+        try:
+            text = await self._cmd_status(group_id, sender, False, self.store.is_group_admin(group_id, sender))
+        except Exception as exc:
+            self.logger.warning("AI 工具取审核状态失败：%s", exc)
+            return ai_common.fail("internal_error", "读取审核状态失败")
+        self.logger.info("AI 工具 qqgm_moderation_status 命中（group=%s）", group_id)
+        return ai_common.ok({"group_id": group_id, "text": ai_common.sanitize(text, 900)})
+
+    @filter.llm_tool(name="qqgm_stats")
+    async def qqgm_stats(self, event: AstrMessageEvent, **kwargs) -> str:
+        """查看本群审核统计（近 1 天或 7 天的判定与处置数量）。
+
+        何时使用：群管问"今天审了多少/违规多少/处置了几次"。
+        何时别用：要看具体记录用 qqgm_recent_events。
+
+        Args:
+            days(number): 可选，1 或 7，默认 1。
+        """
+        group_id = str(event.get_group_id() or "").strip()
+        if not group_id:
+            return ai_common.fail("platform_unsupported", "该工具只在群聊里可用")
+        blocked = await self._ai_guard(event, "qqgm_stats")
+        if blocked:
+            return blocked
+        if not self._ai_group_admin(event, group_id):
+            return ai_common.fail("permission_denied", "仅群主/群管理员或 AstrBot 管理员可用")
+        raw_days = (kwargs or {}).get("days")
+        if str(raw_days or "").strip():
+            days = ai_common.parse_int(raw_days, 1, 30)
+            if days not in (1, 7):
+                return ai_common.fail("invalid_argument", "days 只能是 1 或 7", field="days")
+        else:
+            days = 1
+        try:
+            lines = await self._cmd_stats([str(days)])
+        except Exception as exc:
+            self.logger.warning("AI 工具取统计失败：%s", exc)
+            return ai_common.fail("internal_error", "读取统计失败")
+        text = "\n".join(str(item) for item in (lines or []))
+        self.logger.info("AI 工具 qqgm_stats 命中（group=%s，days=%d）", group_id, days)
+        return ai_common.ok({"group_id": group_id, "days": days, "text": ai_common.sanitize(text, 1200)})
+
+    @filter.llm_tool(name="qqgm_recent_events")
+    async def qqgm_recent_events(self, event: AstrMessageEvent, **kwargs) -> str:
+        """查看本群最近的审核记录（已脱敏：只给判定摘要与处置动作）。
+
+        何时使用：群管问"最近都处理了什么/有没有误判"。
+        何时别用：只看数量用 qqgm_stats。
+
+        Args:
+            limit(number): 可选，1~20，默认 5。
+        """
+        group_id = str(event.get_group_id() or "").strip()
+        if not group_id:
+            return ai_common.fail("platform_unsupported", "该工具只在群聊里可用")
+        blocked = await self._ai_guard(event, "qqgm_recent_events")
+        if blocked:
+            return blocked
+        if not self._ai_group_admin(event, group_id):
+            return ai_common.fail("permission_denied", "仅群主/群管理员或 AstrBot 管理员可用")
+        raw_limit = (kwargs or {}).get("limit")
+        if str(raw_limit or "").strip():
+            limit = ai_common.parse_int(raw_limit, 1, 20)
+            if limit is None:
+                return ai_common.fail("invalid_argument", "limit 只能是 1~20 的整数", field="limit")
+        else:
+            limit = 5
+        if self.audit is None:
+            return ai_common.fail("capability_unavailable", "审计库尚未就绪")
+        try:
+            result = await self.audit.query_logs(
+                "events", filters={"group_id": group_id}, page=1, page_size=limit
+            )
+        except Exception as exc:
+            self.logger.warning("AI 工具取最近日志失败：%s", exc)
+            return ai_common.fail("internal_error", "读取审核日志失败")
+        items = result.get("items") or []
+        text = log_text(items) if items else "（本群近期没有被处置的记录）"
+        self.logger.info("AI 工具 qqgm_recent_events 命中（group=%s，%d 条）", group_id, len(items))
+        return ai_common.ok({"group_id": group_id, "count": len(items), "text": ai_common.sanitize(text, 1500)})
+
+    @filter.llm_tool(name="qqgm_mute_user")
+    async def qqgm_mute_user(self, event: AstrMessageEvent, **kwargs) -> str:
+        """禁言本群某个成员（写操作，需管理员明确授权后才会真正生效）。
+
+        何时使用：群管在对话中明确要求"禁言某人 10 分钟"。
+        何时别用：只是想警告时不要禁言；拿不准就先用只读工具确认身份。
+
+        Args:
+            target(string): 必填，成员昵称或 @昵称（群里已绑定/在册的成员）。
+            minutes(number): 必填，禁言分钟数，1~43200（1 分钟 ~ 30 天）。
+            reason(string): 可选，处置理由（会写进审计）。
+        """
+        return await self._ai_tool_mute(event, kwargs)
+
+    @filter.llm_tool(name="qqgm_unmute_user")
+    async def qqgm_unmute_user(self, event: AstrMessageEvent, **kwargs) -> str:
+        """解除本群某个成员的禁言（写操作，需管理员明确授权后才会真正生效）。
+
+        何时使用：群管说"解禁某人/把他放出来"。
+        何时别用：禁言用 qqgm_mute_user。
+
+        Args:
+            target(string): 必填，成员昵称或 @昵称。
+        """
+        return await self._ai_tool_unmute(event, kwargs)
+
+    async def _ai_tool_mute(self, event: AstrMessageEvent, kwargs: dict) -> str:
+        group_id = str(event.get_group_id() or "").strip()
+        if not group_id:
+            return ai_common.fail("platform_unsupported", "该工具只在群聊里可用")
+        blocked = await self._ai_guard(event, "qqgm_mute_user", write=True)
+        if blocked:
+            return blocked
+        if not self._ai_group_admin(event, group_id):
+            return ai_common.fail("permission_denied", "仅群主/群管理员或 AstrBot 管理员可用")
+        target = ai_common.sanitize((kwargs or {}).get("target"), 60)
+        if not target:
+            return ai_common.fail("invalid_argument", "缺少 target（成员昵称）", field="target")
+        minutes = ai_common.parse_int((kwargs or {}).get("minutes"), 1, 43200)
+        if minutes is None:
+            return ai_common.fail("invalid_argument", "minutes 只能是 1~43200 的整数（分钟）", field="minutes")
+        reason = ai_common.sanitize((kwargs or {}).get("reason"), 120)
+        openid, name = self._resolve_target(event, group_id, [target])
+        if not openid:
+            return ai_common.fail(
+                "not_found",
+                "本群没有找到叫「%s」的成员" % target,
+                hint="可以让他先在群里发一条消息，或改用 @ 提及",
+            )
+        settings = dict(self.store.settings())
+        if not settings.get("qqgm_ai_respect_lenient", True):
+            settings["mode"] = "standard"          # 显式授权时不降级
+        result = await self.actions.handle_manual(
+            action="mute",
+            group_id=group_id,
+            config=self.store.group_or_default(group_id),
+            settings=settings,
+            sender_openid=openid,
+            sender_name=name or target,
+            seconds=int(minutes) * 60,
+            umo=str(getattr(event, "unified_msg_origin", "") or ""),
+            source="llm_tool",
+            reason=reason or "AI 工具请求禁言",
+            dedupe_key="ai:mute:" + openid,   # 幂等键按目标区分，避免第二个目标被误判重复
+        )
+        if not result.get("ok"):
+            return ai_common.fail(
+                "capability_unavailable",
+                str(result.get("error") or result.get("message") or "禁言未执行"),
+                detail=result.get("detail") or {},
+            )
+        self.logger.info(
+            "AI 工具 qqgm_mute_user 执行（group=%s，目标=%s，%s 分钟，dry_run=%s）",
+            group_id,
+            ai_common.mask_id(openid),
+            minutes,
+            bool(result.get("dry_run")),
+        )
+        return ai_common.ok(
+            {
+                "target": name or target,
+                "minutes": int(minutes),
+                "executed": bool(result.get("executed", True)),
+                "downgraded_to": result.get("downgraded_to") or "",
+                "dry_run": bool(result.get("dry_run")),
+                "message": result.get("message") or "已执行",
+            }
+        )
+
+    async def _ai_tool_unmute(self, event: AstrMessageEvent, kwargs: dict) -> str:
+        group_id = str(event.get_group_id() or "").strip()
+        if not group_id:
+            return ai_common.fail("platform_unsupported", "该工具只在群聊里可用")
+        blocked = await self._ai_guard(event, "qqgm_unmute_user", write=True)
+        if blocked:
+            return blocked
+        if not self._ai_group_admin(event, group_id):
+            return ai_common.fail("permission_denied", "仅群主/群管理员或 AstrBot 管理员可用")
+        target = ai_common.sanitize((kwargs or {}).get("target"), 60)
+        if not target:
+            return ai_common.fail("invalid_argument", "缺少 target（成员昵称）", field="target")
+        openid, name = self._resolve_target(event, group_id, [target])
+        if not openid:
+            return ai_common.fail("not_found", "本群没有找到叫「%s」的成员" % target)
+        settings = dict(self.store.settings())
+        if not settings.get("qqgm_ai_respect_lenient", True):
+            settings["mode"] = "standard"
+        result = await self.actions.handle_manual(
+            action="unmute",
+            group_id=group_id,
+            config=self.store.group_or_default(group_id),
+            settings=settings,
+            sender_openid=openid,
+            sender_name=name or target,
+            umo=str(getattr(event, "unified_msg_origin", "") or ""),
+            source="llm_tool",
+            reason="AI 工具请求解禁",
+            dedupe_key="ai:unmute:" + openid,
+        )
+        if not result.get("ok"):
+            return ai_common.fail(
+                "capability_unavailable",
+                str(result.get("error") or result.get("message") or "解禁未执行"),
+            )
+        self.logger.info("AI 工具 qqgm_unmute_user 执行（group=%s，目标=%s）", group_id, ai_common.mask_id(openid))
+        return ai_common.ok(
+            {
+                "target": name or target,
+                "dry_run": bool(result.get("dry_run")),
+                "message": result.get("message") or "已执行",
+            }
+        )
     async def _cmd_group_info(self, group_id: str) -> str:
         profile = None
         state = None

@@ -27,6 +27,9 @@ from .models import (
 )
 from .utils import now_ts, safe_json_dumps, to_iso, truncate
 
+#: AI/显式入口允许的动作（撤回/拉黑/移除**不给** AI，见需求 QG-09）
+MANUAL_ACTIONS: tuple[str, ...] = ("mute", "unmute", "warn")
+
 MATRIX_ACTIONS: tuple[str, ...] = (
     "warn",
     "recall",
@@ -76,7 +79,15 @@ class ActionExecutor:
         }
 
     # ------------------------------------------------------------------
-    def _seen(self, group_id: str, msg_id: str, action: str, severity: int = 0) -> bool:
+    def _seen(
+        self,
+        group_id: str,
+        msg_id: str,
+        action: str,
+        severity: int = 0,
+        *,
+        commit: bool = True,
+    ) -> bool:
         """幂等判断：近期已对「同一条消息 + 同一个动作 + 同一个严重度」执行过则返回 True。
 
         严重度必须进入幂等键：同一条消息可能先被刷屏链路按 3 级处置、再被内容链路判到 4 级，
@@ -91,8 +102,16 @@ class ActionExecutor:
         stamp = self._done.get(key)
         if stamp is not None and now - stamp < IDEMPOTENT_TTL:
             return True
-        self._done[key] = now
+        if commit:
+            self._done[key] = now
         return False
+
+    def _commit_seen(
+        self, group_id: str, msg_id: str, action: str, severity: int = 0
+    ) -> None:
+        """幂等键落账：只在真的执行成功后调用（dry-run / 失败不落）。"""
+        key = (group_id, msg_id or "-", action, int(severity))
+        self._done[key] = self._clock()
 
     def _repeat_multiplier(self, group_id: str, member_openid: str, msg_id: str = "") -> int:
         """24 小时内重复违规次数 → 时长倍数（1~3）。
@@ -305,6 +324,125 @@ class ActionExecutor:
             "severity": verdict.severity,
         }
 
+    #: AI/显式入口允许的动作（不含 recall/blacklist/remove：撤回/拉黑/踢人不给 AI）
+    async def handle_manual(
+        self,
+        *,
+        action: str,
+        group_id: str,
+        config: GroupConfig,
+        settings: dict[str, Any],
+        sender_openid: str,
+        sender_name: str = "",
+        sender_role: str = "member",
+        seconds: int | None = None,
+        msg_id: str = "",
+        umo: str = "",
+        dedupe_key: str = "",   # 幂等作用域（AI 工具按「动作+目标」去重）
+        source: str = "llm_tool",
+        reason: str = "",
+    ) -> dict[str, Any]:
+        """显式动作入口（AI 工具 / 后台手动）：只允许 MANUAL_ACTIONS。
+
+        与 handle 的区别：不参与矩阵规划、不参与重复倍率、审计固定
+        verdict="manual"、source 由调用方给（AI 工具传 llm_tool）。
+        """
+        want = str(action or "").strip().lower()
+        if want not in MANUAL_ACTIONS:
+            return {
+                "ok": False,
+                "error": "动作不在允许清单内",
+                "allowed": list(MANUAL_ACTIONS),
+            }
+        if not sender_openid:
+            return {"ok": False, "error": "缺少目标成员 OpenID"}
+        mode = str(config.mode or settings.get("mode") or "standard")
+        downgraded_to = ""
+        if mode == "log_only":
+            # 设计 §5.6：仅记录模式是策略结果，不是错误（返回 ok=True + executed=False）
+            return {
+                "ok": True,
+                "executed": False,
+                "mode": mode,
+                "action": want,
+                "message": "本群处于「仅记录」模式：已记录，未实际处置",
+            }
+        if mode == "lenient" and want == "mute":
+            downgraded_to = "warn"
+            want = "warn"
+        verdict = Verdict(
+            verdict="manual",
+            category="人工",
+            severity=3,
+            confidence=1.0,
+            reason=reason or "显式处置",
+            source=source,
+        )
+        event_id: int | None = None
+        if self.audit is not None:
+            event_id = await self.audit.insert_event(
+                group_id=group_id,
+                group_name=config.name,
+                msg_id=msg_id,
+                sender_openid=sender_openid,
+                sender_name=sender_name,
+                sender_role=sender_role,
+                source=source,
+                verdict="manual",
+                category=verdict.category,
+                severity=verdict.severity,
+                confidence=verdict.confidence,
+                reason=verdict.reason,
+                rule_hits=safe_json_dumps([]),
+                text_digest="",
+                text_excerpt=truncate(reason, 120),
+                raw_verdict="",
+                dry_run=self.api.dry_run() if self.api is not None else False,
+                sampled=False,
+            )
+        result = await self._execute(
+            action=want,
+            group_id=group_id,
+            config=config,
+            settings=settings,
+            verdict=verdict,
+            msg_id=msg_id,
+            sender_openid=sender_openid,
+            sender_name=sender_name,
+            multiplier=1,                      # 显式入口不参与重复倍率
+            send=None,
+            umo=umo,
+            note=reason,
+            seconds_override=seconds,
+            caller=source,
+            ledger_source=source,
+            msg_id_override=msg_id or dedupe_key or None,
+        )
+        if self.audit is not None:
+            self.audit.record_action(
+                event_id=event_id,
+                group_id=group_id,
+                action=result.action,
+                target_openid=sender_openid,
+                duration_sec=int((result.detail or {}).get("seconds") or 0),
+                ok=result.ok,
+                dry_run=bool(result.dry_run),
+                err_code=result.err_code,
+                err_msg=result.message,
+                detail=safe_json_dumps(result.detail or {}),
+            )
+        executed = bool(result.ok) and not bool(result.dry_run)
+        policy_skip = bool(downgraded_to) and not executed   # 宽松模式降级但没能真的发送提醒
+        return {
+            # 设计 §5.6：模式决定"不处置/只提醒"是策略结果，不算能力错误
+            "ok": bool(result.ok) or policy_skip,
+            "action": result.action,
+            "executed": executed,
+            "dry_run": bool(result.dry_run),
+            "message": result.message,
+            "detail": result.detail or {},
+            "downgraded_to": downgraded_to,
+        }
     async def _execute(
         self,
         *,
@@ -320,10 +458,63 @@ class ActionExecutor:
         send: Callable[[str], Awaitable[None]] | None,
         umo: str,
         note: str = "",
+        seconds_override: int | None = None,
+        caller: str = "moderation",
+        ledger_source: str = "auto",
+        msg_id_override: str | None = None,
     ) -> ActionResult:
-        if self._seen(group_id, msg_id, action, verdict.severity):
+        """幂等 → 分发 → 按结果决定是否落幂等键。
+
+        幂等键只在"真的执行了"之后落账：dry-run（演练）与失败都不落，
+        否则演练一次就会把真实处置在 TTL 内顶掉。
+        """
+        scope = msg_id_override if msg_id_override is not None else msg_id
+        if not scope:
+            # 缺省也按目标区分，避免"同群不同人"被误判成重复
+            scope = "manual:%s:%s" % (action, sender_openid or "-")
+        if self._seen(group_id, scope, action, verdict.severity, commit=False):
             self.stats["skipped"] += 1
             return ActionResult(action=action, ok=True, message="重复推送，已跳过")
+        result = await self._dispatch_action(
+            action=action,
+            group_id=group_id,
+            config=config,
+            settings=settings,
+            verdict=verdict,
+            msg_id=msg_id,
+            sender_openid=sender_openid,
+            sender_name=sender_name,
+            multiplier=multiplier,
+            send=send,
+            umo=umo,
+            note=note,
+            seconds_override=seconds_override,
+            caller=caller,
+            ledger_source=ledger_source,
+        )
+        if result.ok and not result.dry_run:
+            self._commit_seen(group_id, scope, action, verdict.severity)
+        return result
+
+    async def _dispatch_action(
+        self,
+        *,
+        action: str,
+        group_id: str,
+        config: GroupConfig,
+        settings: dict[str, Any],
+        verdict: Verdict,
+        msg_id: str,
+        sender_openid: str,
+        sender_name: str,
+        multiplier: int,
+        send: Callable[[str], Awaitable[None]] | None,
+        umo: str,
+        note: str = "",
+        seconds_override: int | None = None,
+        caller: str = "moderation",
+        ledger_source: str = "auto",
+    ) -> ActionResult:
         dry_run = bool(self.api.dry_run()) if self.api is not None else True
         # dry-run 只拦截"破坏性动作"（撤回/禁言/拉黑/移除）；警告与上报是给用户/管理员的
         # 反馈，默认照常执行，否则 dry-run 期间使用者会误以为插件没工作。
@@ -343,7 +534,25 @@ class ActionExecutor:
                 return await self._recall(group_id, msg_id, config, dry_run)
             if action == "mute":
                 return await self._mute(
-                    group_id, sender_openid, config, settings, verdict, multiplier, dry_run
+                    group_id,
+                    sender_openid,
+                    config,
+                    settings,
+                    verdict,
+                    multiplier,
+                    dry_run,
+                    seconds_override=seconds_override,
+                    caller=caller,
+                    ledger_source=ledger_source,
+                )
+            if action == "unmute":
+                return await self._unmute(
+                    group_id,
+                    sender_openid,
+                    config,
+                    dry_run,
+                    caller=caller,
+                    ledger_source=ledger_source,
                 )
             if action == "blacklist":
                 return await self._blacklist(group_id, sender_openid, config, dry_run)
@@ -424,6 +633,10 @@ class ActionExecutor:
         verdict: Verdict,
         multiplier: int,
         dry_run: bool,
+        *,
+        seconds_override: int | None = None,
+        caller: str = "moderation",
+        ledger_source: str = "auto",
     ) -> ActionResult:
         if not member_openid:
             return ActionResult(action="mute", ok=False, message="缺少成员 OpenID")
@@ -432,18 +645,23 @@ class ActionExecutor:
             return ActionResult(
                 action="mute", ok=False, message="能力不可用：禁言需要机器人为群管理员"
             )
-        seconds = self._mute_seconds(settings, int(verdict.severity or 1), multiplier)
+        if seconds_override is None:
+            seconds = self._mute_seconds(settings, int(verdict.severity or 1), multiplier)
+        else:
+            max_days = int(settings.get("max_mute_days", 30) or 30)
+            ceiling = min(max_days * 86400, MUTE_MAX_SECONDS)
+            seconds = max(60, min(int(seconds_override), ceiling))
         response = await self.api.mute_member(
-            group_id, member_openid, seconds=seconds, caller="moderation"
+            group_id, member_openid, seconds=seconds, caller=caller
         )
         until_ts = to_iso(now_ts() + seconds)
-        if self.audit is not None:
+        if self.audit is not None and not (dry_run or bool(response.get("_dry_run"))):
             await self.audit.upsert_mute(
                 group_id=group_id,
                 member_openid=member_openid,
                 until_unix=now_ts() + seconds,
                 reason=f"{verdict.category}（severity={verdict.severity}）",
-                source="auto",
+                source=ledger_source,
                 active=True,
             )
         self.stats["executed"] += 1
@@ -454,6 +672,34 @@ class ActionExecutor:
             detail={"seconds": seconds, "until_ts": until_ts, "multiplier": multiplier},
         )
 
+    async def _unmute(
+        self,
+        group_id: str,
+        member_openid: str,
+        config: GroupConfig,
+        dry_run: bool,
+        *,
+        caller: str = "moderation",
+        ledger_source: str = "llm_tool",
+    ) -> ActionResult:
+        """解除禁言（AI/显式入口用；人类「解禁」指令走 main.py 的同名 API）。"""
+        if not member_openid:
+            return ActionResult(action="unmute", ok=False, message="缺少成员 OpenID")
+        if not config.capability_ok(CAP_MUTE):
+            self.stats["downgraded"] += 1
+            return ActionResult(
+                action="unmute", ok=False, message="能力不可用：解禁需要机器人为群管理员"
+            )
+        response = await self.api.unmute_member(group_id, member_openid, caller=caller)
+        if self.audit is not None and not (dry_run or bool(response.get("_dry_run"))):
+            await self.audit.set_mute_active(group_id, member_openid, False)
+        self.stats["executed"] += 1
+        return ActionResult(
+            action="unmute",
+            ok=True,
+            dry_run=bool(response.get("_dry_run")),
+            detail={"until_ts": "", "ledger_written": not (dry_run or bool(response.get("_dry_run")))},
+        )
     async def _blacklist(
         self, group_id: str, member_openid: str, config: GroupConfig, dry_run: bool
     ) -> ActionResult:

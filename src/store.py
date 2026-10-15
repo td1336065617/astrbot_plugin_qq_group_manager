@@ -116,6 +116,10 @@ def normalize_settings(raw: Any) -> dict[str, Any]:
         "template_enabled",
         "pinyin_enabled",
         "auto_enforce_normalized",
+        "qqgm_ai_tools_enabled",
+        "qqgm_ai_tools_read_enabled",
+        "qqgm_ai_tools_write_enabled",
+        "qqgm_ai_respect_lenient",
     ):
         settings[key] = bool(settings.get(key))
     if settings.get("mode") not in MODERATION_MODES:
