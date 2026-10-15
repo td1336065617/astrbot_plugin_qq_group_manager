@@ -9,6 +9,15 @@ from pathlib import Path
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 
 
+def _declared_plugin_name() -> str:
+    # 插件身份以 metadata.yaml 的 name 为准：本机/CI 的目录名可能不同
+    for line in (PLUGIN_ROOT / "metadata.yaml").read_text(encoding="utf-8").splitlines():
+        if line.startswith("name:"):
+            return line.split(":", 1)[1].strip()
+    raise AssertionError("metadata.yaml 缺少 name 字段")
+
+
+
 def _import_main():
     parent = str(PLUGIN_ROOT.parent)
     if parent not in sys.path:
@@ -19,7 +28,7 @@ def _import_main():
 def test_metadata_contract():
     yaml = importlib.import_module("yaml")
     meta = yaml.safe_load((PLUGIN_ROOT / "metadata.yaml").read_text(encoding="utf-8"))
-    assert meta["name"] == PLUGIN_ROOT.name
+    assert meta["name"] == _declared_plugin_name()
     assert meta["support_platforms"] == [
         "qq_official",
         "qq_official_webhook",
@@ -32,7 +41,7 @@ def test_metadata_contract():
 
 def test_main_imports_and_commands():
     main = _import_main()
-    assert PLUGIN_ROOT.name == main.PLUGIN_NAME
+    assert _declared_plugin_name() == main.PLUGIN_NAME
     assert main.VERSION
     commands = importlib.import_module(f"{PLUGIN_ROOT.name}.src.commands")
     match = commands.match_command
@@ -65,7 +74,7 @@ def test_web_api_registers_prefixed_routes():
     web_api.WebApi(service).register()
     routes = service.context.routes
     assert routes, "至少应注册一个 Web API"
-    prefix = "/" + PLUGIN_ROOT.name + "/"
+    prefix = "/" + _declared_plugin_name() + "/"
     assert all(item["route"].startswith(prefix) for item in routes)
     paths = {item["route"] for item in routes}
     for expected in (

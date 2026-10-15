@@ -26,6 +26,15 @@ from src.utils import digest_text, now_ts
 from tests.fakes import FakeAudit, FakeKV, FakeTransport
 
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _declared_plugin_name() -> str:
+    # 插件身份以 metadata.yaml 的 name 为准：本机/CI 的目录名可能不同
+    for line in (PLUGIN_ROOT / "metadata.yaml").read_text(encoding="utf-8").splitlines():
+        if line.startswith("name:"):
+            return line.split(":", 1)[1].strip()
+    raise AssertionError("metadata.yaml 缺少 name 字段")
+
 MUTE_PATH = "/v2/groups/{group_openid}/restrict_chat_setting"
 TEXT = "这是一条被误判的正常消息"
 
@@ -460,7 +469,7 @@ def test_appeal_web_routes_registered():
     service = Service()
     web_api.WebApi(service).register()
     paths = {item["route"] for item in service.context.routes}
-    prefix = "/" + PLUGIN_ROOT.name + "/"
+    prefix = "/" + _declared_plugin_name() + "/"
     for expected in ("appeals", "appeals/decide", "appeal_whitelist"):
         assert prefix + expected in paths, expected
     # 版本号必须与 metadata.yaml 一致（避免两处各写各的，改版时漏一处）
