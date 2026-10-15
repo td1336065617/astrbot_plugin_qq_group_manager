@@ -7,7 +7,30 @@ import pathlib
 import re
 import sys
 
-SELF = pathlib.Path(__file__).resolve().parent.parent.name
+
+def _norm(name: str) -> str:
+    """归一化名字：忽略大小写与分隔符差异（CI 的 checkout 目录名常与插件名不同）。"""
+    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", str(name).lower())
+
+
+_SELF_DIR = pathlib.Path(__file__).resolve().parent.parent
+
+
+def _self_keys() -> set[str]:
+    """本插件的全部写法：目录名 + metadata.yaml 的 name。"""
+    names = {_SELF_DIR.name}
+    try:
+        for line in (_SELF_DIR / "metadata.yaml").read_text(encoding="utf-8").splitlines():
+            if line.startswith("name:"):
+                names.add(line.split(":", 1)[1].strip().strip(chr(34)).strip(chr(39)))
+                break
+    except OSError:
+        pass
+    return {_norm(item) for item in names if item}
+
+
+SELF = _SELF_DIR.name
+SELF_KEYS = _self_keys()
 ALL_PLUGINS = (
     "astrbot_plugin_qq_group_manager",
     "acmer_qq_group_bot",
@@ -16,10 +39,9 @@ ALL_PLUGINS = (
     "caidandaohang",
     "sticker_plugin",
 )
-OTHERS = tuple(name for name in ALL_PLUGINS if name != SELF)
+OTHERS = tuple(name for name in ALL_PLUGINS if _norm(name) not in SELF_KEYS)
 PATTERN = re.compile("|".join(re.escape(name) for name in OTHERS))
 SKIP_DIRS = {"__pycache__", ".git", ".venv", "node_modules", "data"}
-
 
 def targets(root: pathlib.Path) -> list[pathlib.Path]:
     files = []

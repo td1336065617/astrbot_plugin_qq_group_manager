@@ -44,3 +44,31 @@ def test_manual_actions_exclude_destructive_ones() -> None:
     block = actions[start : start + 120]
     for forbidden in ("recall", "blacklist", "remove"):
         assert forbidden not in block, forbidden + " 不应出现在 MANUAL_ACTIONS"
+
+
+def test_gate_accepts_renamed_checkout(tmp_path) -> None:
+    """门禁必须容忍目录名与插件名不同（CI 会把仓库克隆成 acmerQQ-group-bot 之类）。"""
+    import shutil
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parent.parent
+    copy = tmp_path / "renamed-checkout"
+    (copy / "tools").mkdir(parents=True)
+    shutil.copyfile(repo / "tools" / "check_no_cross_plugin_imports.py", copy / "tools" / "check_no_cross_plugin_imports.py")
+    shutil.copyfile(repo / "metadata.yaml", copy / "metadata.yaml")
+    sample = copy / "sample.py"
+    meta = (repo / "metadata.yaml").read_text(encoding="utf-8")
+    plugin_name = next(
+        line.split(":", 1)[1].strip() for line in meta.splitlines() if line.startswith("name:")
+    )
+    text = chr(34) * 3 + "自身数据目录：data/plugin_data/" + plugin_name + "/x.db" + chr(34) * 3 + chr(10)
+    sample.write_text(text, encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, str(copy / "tools" / "check_no_cross_plugin_imports.py"), "."],
+        cwd=str(copy),
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

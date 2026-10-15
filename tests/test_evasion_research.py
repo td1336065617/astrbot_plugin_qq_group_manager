@@ -72,6 +72,12 @@ def test_black_slang_words_in_normal_context_are_not_flagged(engine, text):
 
 def test_leet_fold_view_visible():
     """色q1ng / 赌b0 折叠后应能被模板与信号看到。"""
+    from src.normalize import pinyin_available
+
+    if not pinyin_available():
+        import pytest
+
+        pytest.skip("未安装 pypinyin（可选依赖），跳过拼音视图用例")
     from src.normalize import leet_fold, normalize
 
     assert leet_fold("色q1ng") == "色qing"
