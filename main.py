@@ -127,7 +127,7 @@ from .src.utils import (
 from .src.web_api import EventBus, WebApi
 
 PLUGIN_NAME = "astrbot_plugin_qq_group_manager"
-VERSION = "0.15.0"
+VERSION = "0.15.1"
 
 STATE_FLUSH_INTERVAL = 30.0
 MAINTENANCE_INTERVAL = 3600.0
@@ -1906,16 +1906,26 @@ class QQGroupManager(Star):
         sender = str(getattr(event, "get_sender_id", lambda: "")() or "")
         # QG-02：该工具对所有人开放（只读、不含关键词等规则细节）
         try:
-            text = await self._cmd_status(group_id, sender, False, self.store.is_group_admin(group_id, sender))
+            text = await self._cmd_status(
+                group_id, sender, bool(event.is_admin()), self.store.is_group_admin(group_id, sender)
+            )   # F1：全局管理员也要按 is_admin() 传，否则 AI 答「不豁免」而指令答「豁免」
         except Exception as exc:
             self.logger.warning("AI 工具取审核状态失败：%s", exc)
             return ai_common.fail("internal_error", "读取审核状态失败")
         self.logger.info("AI 工具 qqgm_moderation_status 命中（group=%s）", group_id)
-        return ai_common.ok({"group_id": group_id, "text": ai_common.sanitize(text, 900)})
+        return ai_common.ok(
+            {
+                "group_id": group_id,
+                "scope": "all_groups",
+                "text": ai_common.sanitize(text, 900),
+            }
+        )
 
     @filter.llm_tool(name="qqgm_stats")
     async def qqgm_stats(self, event: AstrMessageEvent, **kwargs) -> str:
-        """查看本群审核统计（近 1 天或 7 天的判定与处置数量）。
+        """查看审核统计（近 1 天或 7 天的判定与处置数量）。
+
+        注意：这是**所有群的汇总**（与人类「审核统计」指令同口径），不要说成"本群"。
 
         何时使用：群管问"今天审了多少/违规多少/处置了几次"。
         何时别用：要看具体记录用 qqgm_recent_events。
@@ -2089,7 +2099,11 @@ class QQGroupManager(Star):
             return ai_common.fail("invalid_argument", "缺少 target（成员昵称）", field="target")
         openid, name = self._resolve_target(event, group_id, [target])
         if not openid:
-            return ai_common.fail("not_found", "本群没有找到叫「%s」的成员" % target)
+            return ai_common.fail(
+                "not_found",
+                "本群没有找到叫「%s」的成员" % target,
+                hint="可以让他先在群里发一条消息，或改用 @ 提及",
+            )
         settings = dict(self.store.settings())
         if not settings.get("qqgm_ai_respect_lenient", True):
             settings["mode"] = "standard"

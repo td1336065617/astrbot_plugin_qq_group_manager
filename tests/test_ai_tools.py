@@ -220,3 +220,35 @@ def test_throttle_blocks_after_limit(monkeypatch) -> None:
     third = payload(run(bot.qqgm_unmute_user(event, target="小明")))
     assert first["ok"] is True and second["ok"] is True
     assert third["ok"] is False and third["error"]["code"] == "throttled"
+
+
+def test_moderation_status_passes_global_admin_flag(monkeypatch) -> None:
+    """F1：AI 工具也要把 AstrBot 全局管理员传进 _cmd_status。
+
+    否则同一个全局管理员问"我是否豁免审核"，AI 答"否"、人类指令答"是"。
+    """
+    bot = make_bot()
+    seen: dict = {}
+
+    async def fake_status(group_id, sender, admin, group_admin):
+        seen["admin"] = admin
+        return "我是否豁免审核：是" if admin else "我是否豁免审核：否"
+
+    monkeypatch.setattr(bot, "_cmd_status", fake_status)
+    data = payload(run(bot.qqgm_moderation_status(FakeEvent(is_admin=True))))
+    assert data["ok"] is True, data
+    assert seen["admin"] is True, seen
+    assert "是" in data["data"]["text"]
+
+
+def test_unmute_not_found_has_recovery_hint(monkeypatch) -> None:
+    """F8：unmute 的 not_found 必须和 mute 一样给出自救提示。"""
+    bot = make_bot({"qqgm_ai_tools_write_enabled": True}, group_admin=True)
+
+    def no_target(event, group_id, args):
+        return "", ""
+
+    monkeypatch.setattr(bot, "_resolve_target", no_target)
+    data = payload(run(bot.qqgm_unmute_user(FakeEvent(), target="查无此人")))
+    assert data["ok"] is False and data["error"]["code"] == "not_found"
+    assert data["error"].get("hint"), data
