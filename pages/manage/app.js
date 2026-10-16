@@ -1838,12 +1838,16 @@ async function openProviderPicker(items, order, onDone) {
     }
     shown.forEach((item) => {
       const pos = draft.indexOf(item.id);
-      const input = el('input', { type: 'checkbox' });
+      const input = el('input', { type: 'checkbox', dataset: { id: item.id } });
       input.checked = pos >= 0;
       input.addEventListener('change', () => {
         draft = toggleProvider(draft, item.id, input.checked);
+        const keepTop = listBox.scrollTop;
         renderList();
         renderCount();
+        listBox.scrollTop = keepTop;      // 勾选后不要把列表弹回顶部
+        const again = listBox.querySelector('input[data-id="' + item.id + '"]');
+        if (again) again.focus();          // 键盘用户连续勾选时不丢焦点
       });
       const info = providerDisplay(item);
       const tail = (pos >= 0 ? '第 ' + (pos + 1) + ' 顺位' : '')
