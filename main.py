@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import json
 import sys
 import time
@@ -95,7 +97,9 @@ from .src.models import (
 from .src.moderator import (
     LLMModerator,
     ModerationRequest,
-    choose_provider_id,
+    choose_provider_chain,
+    classify_failure,
+    should_fallback,
     resolve_prompt_version,
 )
 from .src.normalize import skeleton_text
@@ -133,7 +137,7 @@ from .src.utils import (
 from .src.web_api import EventBus, WebApi
 
 PLUGIN_NAME = "astrbot_plugin_qq_group_manager"
-VERSION = "0.15.3"
+VERSION = "0.15.4"
 
 STATE_FLUSH_INTERVAL = 30.0
 MAINTENANCE_INTERVAL = 3600.0
@@ -296,7 +300,22 @@ class QQGroupManager(Star):
         self.scheduler.add(TaskSpec("probe_capabilities", self._task_probe_capabilities, interval))
         self.scheduler.add(TaskSpec("maintenance", self._task_maintenance, MAINTENANCE_INTERVAL))
         self.scheduler.add(TaskSpec("join_poll", self._task_join_poll, self._join_interval()))
+        self.scheduler.add(TaskSpec("join_pending_sweep", self._task_join_pending_sweep, 86400))
         self.scheduler.add(TaskSpec("mute_sync", self._task_mute_sync, MUTE_SYNC_INTERVAL))
+
+    async def _task_join_pending_sweep(self) -> None:
+        "每日清理：把长期 pending 的入群申请标记过期（0=关闭）。"
+        if self.audit is None:
+            return
+        days = int(self.store.get_setting("join_pending_expire_days", 7) or 0)
+        try:
+            expired = await self.audit.expire_pending_joins(days)
+        except Exception as exc:  # pragma: no cover
+            self.logger.error("入群申请过期清理失败：%s", exc)
+            return
+        if expired:
+            self.logger.info("已把 %d 条超过 %d 天未处理的入群申请标记过期", expired, days)
+
 
     def _join_interval(self) -> float:
         try:
@@ -503,6 +522,26 @@ class QQGroupManager(Star):
             "now": to_iso(),
         }
 
+    def _provider_supports_image(self, provider_id: str) -> bool:
+        """该 provider 是否支持图片输入；能力未知时按「支持」处理（不因未知而漏审）。"""
+        try:
+            for provider in self.context.get_all_providers() or []:
+                meta = provider.meta()
+                if str(getattr(meta, "id", "") or "") != str(provider_id or ""):
+                    continue
+                config = getattr(provider, "provider_config", None)
+                getter = getattr(config, "get", None)
+                if getter is None:
+                    return True
+                modalities = getter("modalities", None)
+                if not isinstance(modalities, (list, tuple)) or not modalities:
+                    return True
+                return "image" in {str(item) for item in modalities}
+        except Exception:
+            return True
+        return True
+
+
     def available_provider_ids(self) -> list[str]:
         """当前可用的对话模型 ID 列表（供审核模型选择与校验）。"""
         ids: list[str] = []
@@ -707,24 +746,88 @@ class QQGroupManager(Star):
         if not configured and provider_setting != "llm_provider_id":
             # 入群审批没单独配模型（含显式空值）时，跟随发言审核模型（WebUI 的默认选项）
             configured = str(self.store.get_setting("llm_provider_id") or "")
-        provider_id = choose_provider_id(configured, session_default, available)
-        if configured and provider_id != configured:
+        fallback_key = (
+            "join_llm_fallback_provider_ids"
+            if provider_setting == "join_llm_provider_id"
+            else "llm_fallback_provider_ids"
+        )
+        fallbacks = [str(item) for item in (self.store.get_setting(fallback_key) or []) if str(item)]
+        chain = choose_provider_chain(configured, session_default, fallbacks, available)
+        # 含图消息：跳过不支持图片输入的候选（未知能力的候选按支持处理，宁可试也不要漏审）
+        if list(request.image_urls):
+            image_ok = [pid for pid in chain if self._provider_supports_image(pid)]
+            rest = [pid for pid in chain if pid not in image_ok]
+            chain = image_ok + rest  # 支持图片的排前；其余留作最后兜底（不失审）
+        circuit_check = getattr(self.moderator, "provider_circuit_open", None)
+        if circuit_check is not None:
+            usable = [pid for pid in chain if not circuit_check(pid)]
+            chain = usable or chain[:1]
+        attempt_timeout = float(self.store.get_setting("llm_timeout", 20) or 20)
+        if configured and chain and chain[0] != configured:
             self.logger.warning(
                 "配置的审核模型 %s 当前不可用，已回退到 %s",
                 configured,
-                provider_id or "会话默认模型",
+                chain[0] or "会话默认模型",
             )
-        if provider_id:
+        last_error: BaseException | None = None
+        for index, provider_id in enumerate(chain):
             self._note_used_provider(provider_setting, provider_id)
             request.provider_id = provider_id
-            response = await self.context.llm_generate(
-                chat_provider_id=provider_id,
-                prompt=user_prompt,
-                system_prompt=system_prompt,
-                contexts=[],
-                image_urls=list(request.image_urls) or None,
-            )
-            return str(getattr(response, "completion_text", "") or "")
+            request.fallback_index = index
+            hop_failed_code = ""
+            for attempt in range(2):  # 超时：同 provider 重试一次，再交给下一个候选
+                try:
+                    response = await asyncio.wait_for(
+                        self.context.llm_generate(
+                            chat_provider_id=provider_id,
+                            prompt=user_prompt,
+                            system_prompt=system_prompt,
+                            contexts=[],
+                            image_urls=list(request.image_urls) or None,
+                        ),
+                        timeout=max(1.0, attempt_timeout),
+                    )
+                except Exception as exc:
+                    code = classify_failure(exc)
+                    note = getattr(self.moderator, "note_provider_result", None)
+                    # 按「一次逻辑调用」记账（A-2）：只在整跳失败后记一次，避免超时重试把熔断阈值加速一倍；
+                    # 且只有可回退的失败才计入（A-1）：安全拒绝/客户端错误不是「provider 挂了」，
+                    # 计进去会在阈值后被熔断，导致后续安全拒绝被静默回退掉（那等于把违规放进来）。
+                    if should_fallback(code):
+                        hop_failed_code = code
+                    if self.audit is not None:
+                        try:
+                            self.audit.record_capability(
+                                group_id=request.group_id,
+                                capability="llm_judge",
+                                ok=False,
+                                err_code=code,
+                            )
+                        except Exception:  # pragma: no cover - 审计失败不影响审核
+                            pass
+                    last_error = exc
+                    self.logger.warning(
+                        "审核模型 %s 调用失败（%s，第 %d 次）",
+                        provider_id,
+                        code,
+                        attempt + 1,
+                    )
+                    if code == "timeout" and attempt == 0:
+                        continue
+                    if not should_fallback(code):
+                        raise
+                    break
+                else:
+                    note = getattr(self.moderator, "note_provider_result", None)
+                    if note is not None:
+                        note(provider_id, True)
+                    return str(getattr(response, "completion_text", "") or "")
+            if hop_failed_code:
+                note = getattr(self.moderator, "note_provider_result", None)
+                if note is not None:  # 一次逻辑调用只记一次失败
+                    note(provider_id, False, hop_failed_code)
+        if last_error is not None:
+            raise last_error
         provider = await self.context.get_using_provider_async(umo=umo or None)
         if provider is None:
             raise RuntimeError("未配置可用的对话模型")
@@ -911,6 +1014,9 @@ class QQGroupManager(Star):
                 return
             platform_id = str(event.get_platform_id() or "")
             sender_openid, sender_name, sender_role = self._sender_meta(event)
+            # 平台原始载荷缺 role 时（OneBot 常见）回落到角色缓存，避免审计里 sender_role 大面积为空
+            if not sender_role:
+                sender_role = self.store.member_role(group_id, sender_openid)
             await self.store.touch_group(
                 group_id, name=self._group_name(event), platform_id=platform_id
             )
@@ -1450,6 +1556,7 @@ class QQGroupManager(Star):
         latency_ms = 0
         sampled = False
         used_provider_id = ""  # 本次实际使用的审核模型（仅 LLM 送审时回填；BUG-02）
+        used_fallback_index = 0  # 本次生效的备用下标（非 LLM 路径恒 0）
         prompt_version = ""  # 本次判定使用的提示词版本（非 LLM 路径留空）
 
         if hard_actions:
@@ -1563,6 +1670,7 @@ class QQGroupManager(Star):
             latency_ms = int((time.monotonic() - started) * 1000)
             sampled = verdict.source == "llm"
             used_provider_id = request.provider_id
+            used_fallback_index = int(getattr(request, "fallback_index", 0) or 0)
 
         if verdict is None:
             return
@@ -1603,6 +1711,7 @@ class QQGroupManager(Star):
             umo=event.unified_msg_origin,
             provider_id=used_provider_id,
             stage=verdict.stage,
+            fallback_index=used_fallback_index,
             prompt_version=prompt_version,
             latency_ms=latency_ms,
             sampled=sampled,

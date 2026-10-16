@@ -1518,3 +1518,21 @@ class RuleEngine:
             evaluation.signals["flood"] = SCORE_RULES["flood"]
             evaluation.score = min(100, evaluation.score + SCORE_RULES["flood"])
         return evaluation
+
+def export_inventory() -> dict[str, Any]:
+    """导出内置规则本体（只读）：硬规则/软规则/模板/评分/条件。
+
+    供 WebUI 只读视图与 CLI 导出共用；只读模块级常量，无副作用。
+    """
+    keywords = ("RULE", "TEMPLATE", "PATTERN", "SCORE", "CONDITION")
+    inventory: dict[str, Any] = {}
+    for name, value in globals().items():
+        if name.startswith("_"):
+            continue
+        if not any(token in name for token in keywords):
+            continue
+        if isinstance(value, (list, tuple)):
+            inventory[name] = list(value)
+        elif isinstance(value, dict):
+            inventory[name] = dict(value)
+    return inventory

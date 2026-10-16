@@ -156,6 +156,25 @@ def describe_error(err_code: int | None) -> tuple[str, str]:
     return ERR_SEMANTICS.get(err_code, (SEM_UNKNOWN, f"未知错误码 {err_code}"))
 
 
+#: 平台未返回 retcode 时的合成错误码（负数，与平台错误码不冲突，便于聚合归因）
+SYNTHETIC_ERR_CODES = {
+    SEM_TIMEOUT: -1,
+    SEM_SERVER: -2,
+    SEM_TRANSPORT: -3,
+    SEM_RATE_LIMITED: -4,
+    SEM_UNKNOWN: -9,
+}
+
+
+def synthetic_err_code(error) -> int | None:
+    """平台错误码优先；缺失时按语义给合成码（超时/服务端/传输/限流/未知）。"""
+    code = getattr(error, "err_code", None)
+    if code is not None:
+        return int(code)
+    semantic = str(getattr(error, "semantic", "") or "")
+    return SYNTHETIC_ERR_CODES.get(semantic, -9)
+
+
 class QQApiError(Exception):
     """QQ 开放平台调用失败。"""
 
@@ -596,7 +615,7 @@ class QQGroupAPI:
             method=method,
             path=path,
             ok=False,
-            err_code=last_error.err_code,
+            err_code=synthetic_err_code(last_error),
             trace_id=last_error.trace_id,
             duration_ms=int((self._clock() - started) * 1000),
             retries=attempt,

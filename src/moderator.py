@@ -142,6 +142,8 @@ class ModerationRequest:
     normalized_text: str = ""
     context_messages: list[dict[str, str]] = field(default_factory=list)
     provider_id: str = ""   # 本次实际使用的模型 id（由 main._llm_call 回填，供审计归因）
+    #: 本次判定实际生效的 provider 在候选链中的下标（0=主模型，1..n=备用）
+    fallback_index: int = 0
 
     def render_context(self) -> str:
         """把最近群消息渲染成"语境"区块（不含本条）。"""
@@ -329,6 +331,8 @@ class ModeratorStats:
     rate_waits: int = 0
     peak_concurrency: int = 0
     circuit_open_until: float = 0.0
+    #: 按 provider 的熔断截止时刻（monotonic）：主模型连续失败不应连累备用
+    provider_circuit_until: dict[str, float] = field(default_factory=dict)
     last_error: str = ""
     day: str = ""
     day_calls: int = 0
@@ -379,6 +383,8 @@ class LLMModerator:
         self.logger = logger
         self.stats = ModeratorStats()
         self._cache: dict[str, _CacheEntry] = {}
+        #: 按 provider 的连续失败计数（用于 provider 级熔断与失败归因）
+        self._provider_failures: dict[str, int] = {}
         self._consecutive_failures = 0
         self._semaphore: asyncio.Semaphore | None = None
         self._semaphore_size = 0
@@ -563,6 +569,26 @@ class LLMModerator:
             self._cache.clear()
         self._cache[key] = _CacheEntry(expires=self._clock() + ttl, verdict=verdict)
 
+    def note_provider_result(self, provider_id, ok, code=""):
+        """按 provider 记账：备用成功不误开主模型熔断；失败计数供归因。"""
+        key = str(provider_id or "").strip()
+        if not key:
+            return
+        if ok:
+            self._provider_failures[key] = 0
+            return
+        self._provider_failures[key] = self._provider_failures.get(key, 0) + 1
+        threshold = int(self.settings().get("circuit_break_threshold", 5) or 5)
+        if self._provider_failures[key] >= max(1, threshold):
+            self.stats.provider_circuit_until[key] = self._clock() + 300
+            self._provider_failures[key] = 0
+
+    def provider_circuit_open(self, provider_id):
+        """该 provider 是否处于熔断期（主模型熔断时跳过，直接用备用）。"""
+        until = float(self.stats.provider_circuit_until.get(str(provider_id or "").strip(), 0.0))
+        return until > self._clock()
+
+
     def _record_failure(self, error: str) -> None:
         self.stats.failures += 1
         self.stats.last_error = error
@@ -625,10 +651,13 @@ class LLMModerator:
         self.stats.calls += 1
         self.stats.day_calls += 1
         timeout = float(settings.get("llm_timeout", 20) or 20)
+        # 回退链：每跳各自用 llm_timeout，外层预算按候选数放宽（备用为空时=旧行为）
+        fallback_items = [item for item in (settings.get("llm_fallback_provider_ids") or []) if str(item)]
+        budget = max(1.0, timeout) if not fallback_items else timeout * (1 + len(fallback_items)) + 5.0
         try:
             raw = await asyncio.wait_for(
                 self.provider_call(request, system_prompt, user_prompt),  # type: ignore[misc]
-                timeout=max(1.0, timeout),
+                timeout=budget,
             )
         except Exception as exc:
             self._record_failure(f"{type(exc).__name__}: {exc}")
@@ -721,6 +750,80 @@ class ModerationOutcome:
     sampled: bool = False
     source: str = "llm"
     hits: list[dict[str, Any]] = field(default_factory=list)
+
+
+#: 允许触发回退的失败类型（安全拒绝/参数错误/未知一律不切，避免绕过风控）
+FALLBACK_CODES = frozenset({
+    "network",
+    "provider_not_found",
+    "rate_limited",
+    "server_error",
+    "timeout",
+})
+#: 安全策略类报文特征词（命中即视为平台主动拒绝：不重试、不回退）
+SAFETY_MARKERS = ("safety", "content_filter", "policy", "moderation", "blocked", "risk")
+
+
+def classify_failure(exc):
+    """把异常压平成稳定的 err_code（只用于路由与观测，不记录正文）。"""
+    # SDK 在 chat_provider_id 不存在时抛 ProviderNotFoundError（get_provider_by_id）：
+    # 这正是「该候选用不了」，必须让回退链继续走，否则用户删/改了备用模型会整条链直接失败。
+    if type(exc).__name__ == "ProviderNotFoundError":
+        return "provider_not_found"
+    if exc is None:
+        return "refuse_unknown"
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
+        return "timeout"
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+    text = str(exc).lower()
+    if status == 429 or "rate limit" in text or "too many requests" in text or "429" in text:
+        return "rate_limited"
+    if isinstance(status, int) and 500 <= status < 600:
+        return "server_error"
+    if status in (400, 403):
+        if any(marker in text for marker in SAFETY_MARKERS):
+            return "safety_refused"
+        return "client_error"
+    if any(marker in text for marker in SAFETY_MARKERS):
+        return "safety_refused"
+    if "timeout" in text or "timed out" in text:
+        return "timeout"
+    if isinstance(status, int) and 400 <= status < 500:
+        return "client_error"
+    if isinstance(exc, (ConnectionError, OSError)) or "connect" in text or "network" in text:
+        return "network"
+    if "bad gateway" in text or "server error" in text or "unavailable" in text:
+        return "server_error"
+    return "refuse_unknown"
+
+
+def should_fallback(code):
+    """是否需要换下一个 provider。"""
+    return str(code or "") in FALLBACK_CODES
+
+
+def choose_provider_chain(configured, session_default, fallbacks=None, available=None):
+    """按优先级给出候选链：主模型 → 用户自定义备用 1..n → 会话默认（兜底）。
+
+    规则对齐框架先例（core/astr_main_agent.py）：按序、按 id 去重、跳过当前不可用的；
+    备用列表为空时只返回主模型（= 旧行为，零风险）。
+    """
+    known = {str(item) for item in (available or []) if str(item)}
+    chain = []
+
+    def push(candidate):
+        value = str(candidate or "").strip()
+        if not value or value in chain or (known and value not in known):
+            return
+        chain.append(value)
+
+    push(choose_provider_id(configured, session_default, available))
+    for item in fallbacks or []:
+        push(str(item))
+    push(session_default)
+    return chain
 
 
 def choose_provider_id(

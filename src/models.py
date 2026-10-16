@@ -113,6 +113,7 @@ JOIN_GROUP_OVERRIDABLE_KEYS: tuple[str, ...] = (
     "join_answer_action",
     "join_answer_case_sensitive",
     "join_llm_provider_id",
+    "join_llm_fallback_provider_ids",
 )
 
 #: 全局唯一、不分群的入群相关配置（5 个）：
@@ -122,6 +123,7 @@ JOIN_GLOBAL_ONLY_KEYS: tuple[str, ...] = (
     "join_review_mode",
     "join_poll_interval",
     "join_profile_cache_days",
+    "join_pending_expire_days",
     "join_profile_qpm",
     "join_profile_concurrency",
 )
@@ -548,6 +550,7 @@ def default_settings() -> dict[str, Any]:
         "join_avatar_review": "off",
         "join_avatar_only_below": 0.95,
         "join_profile_cache_days": 7,
+        "join_pending_expire_days": 7,
         "join_profile_qpm": 30,
         "join_profile_concurrency": 2,
         # 入群答案校验（三项全空 = 不校验，行为与旧版一致）
@@ -574,11 +577,17 @@ def default_settings() -> dict[str, Any]:
         "flood_threshold": 8,
         "menu_image": True,
         "probe_full_msg_interval": 1800,
-        "capability_log_dedupe_window": 1800,
     # 审核动作地板（0.15.3）：review 至少 warn/report；默认关（空列表=不启用）
     "review_floor_actions": [],
     # 空列表 = 对全部 stage=judged 的 review 生效（模型常把 category 写成"无"，按品类过滤会形同虚设）
     "review_floor_categories": [],
+    "review_floor_by_category": {},
+    "review_floor_cooldown_seconds": 0,
+    "review_floor_daily_limit": 0,
+    # 备用模型（用户自定义、按序回退）：候选来自使用者自己 AstrBot 里已配置的 provider 列表；
+    # 默认空 = 关闭（零升级风险）。插件不预设任何 provider id，也不做密钥管理。
+    "llm_fallback_provider_ids": [],
+    "join_llm_fallback_provider_ids": [],
     }
 
 
@@ -619,5 +628,7 @@ NUMERIC_BOUNDS: dict[str, tuple[float, float]] = {
     "spam_flood_window": (10, 600),
     "spam_flood_cooldown": (0, 3600),
     "probe_full_msg_interval": (300, 86400),
-    "capability_log_dedupe_window": (0, 86400),
+    "review_floor_cooldown_seconds": (0, 86400),
+    "review_floor_daily_limit": (0, 1000),
+    "join_pending_expire_days": (0, 90),
 }

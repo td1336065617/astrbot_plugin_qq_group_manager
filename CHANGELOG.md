@@ -7,6 +7,50 @@
 
 ---
 
+## [0.15.4] - 2026-10-16
+
+> ✨ 备用模型回退与可用性 · ⚙️ review 处置策略可配 · 🐛 安全拒绝被熔断后静默回退（高危修复）
+
+### ✨ 新增
+- **备用模型链**：`llm_fallback_provider_ids` / `join_llm_fallback_provider_ids`（勾选顺序即优先级，0-8 个）。
+  主模型调用失败时按「主 → 备用 1..n → 会话默认」逐跳尝试；含图消息优先走支持图片输入的候选；
+  备用为空时行为与旧版完全一致（零风险）。面板多选并显示回退顺序。
+- **按 provider 熔断与记账**：连续失败达 `circuit_break_threshold` 的 provider 单独熔断 300s，备用成功不会误熔断主模型。
+- **失败分类**：`classify_failure` 把异常压平成超时/限流/服务端/网络/安全拒绝/客户端错误/候选不存在等稳定错误码，
+  并写入 `capability_log(capability=llm_judge, err_code=...)`，失败不再是一个笼统的 TimeoutError。
+- **review 处置策略可配**：`review_floor_by_category`（品类差异化动作）、`review_floor_cooldown_seconds`（同成员冷却）、
+  `review_floor_daily_limit`（单群当日上限）；三个闸只作用于「地板动作」，不影响矩阵与硬规则动作。
+- **规则本体可视化**：只读接口 `GET /<plugin>/rules` + 面板「规则本体」视图 + CLI `tools/export_rules.py`。
+- **入群申请积压清理**：`join_pending_expire_days`（默认 7 天，0=关）+ 每日任务把超期 `pending` 标记为 `expired`。
+- 验收工具：`tools/latency_report.py`（可用性/延迟门禁）、`tools/regression_score.py`（回放评分）、
+  `tools/gen_image_manifest.py` + `tools/replay_prompt.py`（图片回归清单与 prompt 回放）。
+
+### 🐛 修复
+- **高危：安全拒绝会被熔断后静默回退成 allow**。原先每次尝试都计失败、且不计错误码，
+  平台内容安全拒绝攒够阈值就把主模型熔断，后续请求被换到备用模型继续问，等于把违规放进来。
+  现在只有「整跳失败且属于可回退错误」才计一次失败，安全拒绝与客户端错误会直接抛出、永不参与熔断。
+- **熔断阈值被超时重试加速一倍**：同一 provider 的超时重试不再重复计数（一次逻辑调用只记一次）。
+- **地板冷却/日限存在并发漏洞**：检查与占位之间隔着 await，同一成员并发两条消息都能拿到地板动作；
+  改为检查通过即当场占位（dry-run 不占额度）。
+- **地板被抑制时无痕迹**：现在写 `capability_log(capability=review_floor_suppressed, err_code=cooldown|daily_limit)`，
+  可区分「被冷却/日限拦住」与「本来无需动作」。
+- **地板当日上限的跨天点跟主机时区走**：改为与插件统一口径的北京日期（`floor_day_key`）。
+- **候选模型已删除时整条链直接失败**：SDK 抛的 `ProviderNotFoundError` 现在归类为可回退（`provider_not_found`）。
+- **禁言台账缺事件关联**：`mutes.event_id` 现由处置链路完整透传（原先全为空）。
+- **平台调用的失败码全为 NULL**：新增合成错误码（超时 -1 / 服务端 -2 / 传输 -3 / 限流 -4 / 未知 -9），平台 retcode 原样保留。
+- **审计统计口径**：`summary()` 新增 `stages` 与 `degraded_total`，把「真判定」与「没审成」分开。
+- **`sender_role` 大面积为空**：平台载荷缺角色时回落到角色缓存。
+
+### ⚙️ 变更
+- 面板「动作地板」由 8 个并列复选框改为分组卡（执行动作 / 生效品类 / 防刷屏 / 品类差异化），新增冷却与上限输入框；
+  总览新增「判定构成（近 1 天）」卡（与 `degraded_total` 同口径）。
+- 删除死配置 `capability_log_dedupe_window`（从未被读取；给能力日志去重反而削弱可观测性）。
+- CI 增加两道护栏：`ruff check --select F`、非同名目录回归（防止再出现「目录名当插件名」的脆弱）。
+
+### ⚠️ 升级注意
+- 新增设置项均有安全默认值（备用列表为空、地板冷却与上限为 0 = 关），升级后行为与 0.15.3 一致，需显式开启。
+- 地板三个闸只影响地板动作；已配置的矩阵动作与硬规则动作不受影响。
+
 ## [0.15.3] - 2026-10-16
 
 > ⚙️ 审核链路优化（批次 1）：判定阶段可观测、解析容错、判词按轨道拆分、review 动作地板。

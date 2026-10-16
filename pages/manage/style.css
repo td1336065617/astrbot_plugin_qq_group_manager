@@ -185,3 +185,45 @@ pre.guide {
 input:disabled, select:disabled, textarea:disabled {
   opacity: .6; cursor: not-allowed; background: rgba(148, 163, 184, .12);
 }
+
+/* 备用模型多选：勾选顺序 = 回退优先级（数字越小越先用），候选来自使用者自己配好的 provider 列表 */
+.provider-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+}
+.provider-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.04);
+  cursor: pointer;
+}
+.provider-item:hover { background: rgba(255, 255, 255, 0.09); }
+.provider-item .prio {
+  min-width: 22px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.provider-item .prio.muted { opacity: 0.35; font-weight: 400; }
+.provider-item .provider-name { flex: 1; }
+
+/* 分组块：把同类控件收在一张有标题的小卡里，避免复选框与文字混在一起 */
+.field-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  margin: 8px 0;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+}
+.group-title { font-weight: 600; }
+.group-label { min-width: 72px; opacity: 0.75; }
+.inline-field { display: inline-flex; align-items: center; gap: 6px; margin-right: 10px; }
+.field-group .row { flex-wrap: wrap; align-items: center; gap: 10px; }

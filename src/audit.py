@@ -18,6 +18,10 @@ from typing import Any
 
 from .utils import now_ts, safe_json_dumps, to_iso, truncate
 
+#: 真判定（模型/规则/刷屏/人工真的得过结论）；其余 stage 一律算「没审成（降级）」。
+#: 面板「判定构成」卡、验收手册附录 C 的 SQL 与本常量必须同源。
+REAL_STAGES: tuple[str, ...] = ("judged", "judged_kv", "rule", "flood", "manual")
+
 SCHEMA_VERSION = 2
 
 DDL_STATEMENTS: tuple[str, ...] = (
@@ -609,7 +613,7 @@ class AuditStore:
         method: str,
         path: str,
         ok: bool,
-        err_code: int | None = None,
+        err_code: int | str | None = None,
         trace_id: str = "",
         duration_ms: int = 0,
         retries: int = 0,
@@ -638,7 +642,7 @@ class AuditStore:
         group_id: str | None,
         capability: str,
         ok: bool,
-        err_code: int | None = None,
+        err_code: int | str | None = None,
         trace_id: str = "",
         note: str = "",
     ) -> bool:
@@ -653,6 +657,25 @@ class AuditStore:
                 "note": note,
             },
         )
+
+    async def expire_pending_joins(self, days: int = 7) -> int:
+        "把超过 N 天仍 pending 的入群申请标记 expired（days<=0 = 关闭）。"
+        days = int(days or 0)
+        if days <= 0:
+            return 0
+        cutoff = now_ts() - days * 86400
+        async with self._lock:
+            conn = self._conn
+            if conn is None:
+                return 0
+            cursor = await asyncio.to_thread(
+                conn.execute,
+                "UPDATE join_requests SET decision = ?, decided_by = ?, reason = ? WHERE decision = ? AND ts_unix < ?",
+                ("expired", "system", f"超过 {days} 天未处理，自动标记过期", "pending", cutoff),
+            )
+            await asyncio.to_thread(conn.commit)
+        return int(getattr(cursor, "rowcount", 0) or 0)
+
 
     async def insert_event(self, **payload: Any) -> int | None:
         """同步写入一条审核事件并返回自增 id（动作表需要它做外键）。
@@ -1225,7 +1248,16 @@ class AuditStore:
             "ORDER BY n DESC LIMIT 10",
             (since,),
         )
+        stages = await self._fetch_all(
+            "SELECT ifnull(stage, " + chr(39) + chr(39) + ") AS stage, COUNT(*) AS n "
+            "FROM mod_events WHERE ts_unix >= ?" + AI_EVENT_EXCLUDE + " GROUP BY 1 ORDER BY n DESC",
+            (since,),
+        )
         by_verdict = {str(row["verdict"]): int(row["n"]) for row in events}
+        by_stage = {str(row["stage"]): int(row["n"]) for row in stages}
+        # review 语义拆分：真判定（judged/judged_kv）与规则/刷屏/人工 vs 降级（没审成）
+        real_stages = REAL_STAGES
+        degraded_total = sum(n for key, n in by_stage.items() if key not in real_stages)
         by_action: dict[str, dict[str, int]] = {}
         for row in actions:
             bucket = by_action.setdefault(str(row["action"]), {"ok": 0, "fail": 0})
@@ -1235,6 +1267,8 @@ class AuditStore:
             "days": days,
             "since": to_iso(since),
             "verdicts": by_verdict,
+            "stages": by_stage,
+            "degraded_total": degraded_total,
             "events_total": sum(by_verdict.values()),
             "actions": by_action,
             "api_errors": [

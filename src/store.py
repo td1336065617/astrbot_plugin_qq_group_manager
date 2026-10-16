@@ -76,6 +76,22 @@ class AstrBotKVBackend:
         await self._star.put_kv_data(key, value)
 
 
+def normalize_provider_chain(raw, fallback=None):
+    """备用模型链归一化：只收字符串、去空、保序去重、上限 8 个。"""
+    source = raw if isinstance(raw, (list, tuple)) else (fallback or [])
+    chain = []
+    for item in source:
+        if not isinstance(item, str):
+            continue
+        value = item.strip()
+        if not value or value in chain:
+            continue
+        chain.append(value)
+        if len(chain) >= 8:
+            break
+    return chain
+
+
 def normalize_settings(raw: Any) -> dict[str, Any]:
     """把任意来源的配置归一化：补默认值、钳制数值、校验枚举。"""
     settings = default_settings()
@@ -174,6 +190,24 @@ def normalize_settings(raw: Any) -> dict[str, Any]:
     settings["review_floor_categories"] = [
         str(item) for item in floor_categories if str(item) in B_TRACK_CATEGORIES
     ]
+    by_category = settings.get("review_floor_by_category")
+    if not isinstance(by_category, dict):
+        by_category = {}
+    normalized_floor: dict[str, list[str]] = {}
+    for cat, acts in (by_category or {}).items():
+        if str(cat) not in B_TRACK_CATEGORIES:
+            continue
+        picked = [
+            str(action)
+            for action in (acts if isinstance(acts, (list, tuple)) else [])
+            if str(action) in ("warn", "report")
+        ]
+        if picked:  # 空列表视为脏数据：丢弃该品类，回落到全局地板动作
+            normalized_floor[str(cat)] = picked
+    settings["review_floor_by_category"] = normalized_floor
+    for key in ("llm_fallback_provider_ids", "join_llm_fallback_provider_ids"):
+        # 备用模型链：只收字符串、去空、保序去重、上限 8 个（脏数据不能把回退链拉爆）
+        settings[key] = normalize_provider_chain(settings.get(key), defaults.get(key) or [])
     if not isinstance(settings.get("mute_steps"), dict):
         settings["mute_steps"] = {"3": 600, "4": 3600, "5": 86400}
     if not isinstance(settings.get("action_matrix"), dict):

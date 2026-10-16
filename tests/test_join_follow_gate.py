@@ -336,8 +336,8 @@ def test_whitelist_partition_covers_all_join_settings():
     join_keys = {key for key in default_settings() if key.startswith("join_")}
     assert set(JOIN_GROUP_OVERRIDABLE_KEYS) & set(JOIN_GLOBAL_ONLY_KEYS) == set()
     assert join_keys == set(JOIN_GROUP_OVERRIDABLE_KEYS) | set(JOIN_GLOBAL_ONLY_KEYS)
-    assert len(JOIN_GROUP_OVERRIDABLE_KEYS) == 17
-    assert len(JOIN_GLOBAL_ONLY_KEYS) == 5
+    assert len(JOIN_GROUP_OVERRIDABLE_KEYS) == 18
+    assert len(JOIN_GLOBAL_ONLY_KEYS) == 6
 
 
 def test_group_config_from_dict_tolerates_dirty_shapes():

@@ -173,6 +173,7 @@ class WebApi:
             (f"/{PLUGIN_NAME}/config", self.config_get, ["GET"], "读取插件配置"),
             (f"/{PLUGIN_NAME}/config", self.config_set, ["POST"], "保存插件配置"),
             (f"/{PLUGIN_NAME}/summary", self.summary, ["GET"], "总览统计"),
+            (f"/{PLUGIN_NAME}/rules", self.rules_get, ["GET"], "内置规则本体（只读）"),
             (f"/{PLUGIN_NAME}/groups", self.groups, ["GET"], "群列表与能力矩阵"),
             (f"/{PLUGIN_NAME}/groups/probe", self.group_probe, ["POST"], "能力探测"),
             (
@@ -409,6 +410,16 @@ class WebApi:
     # ------------------------------------------------------------------
     # 总览 / 群
     # ------------------------------------------------------------------
+    async def rules_get(self):
+        "内置规则本体（只读）：硬规则/软规则/模板/评分/条件。"
+        from .rules import export_inventory
+        inventory = export_inventory()
+        counts = {name: len(value) for name, value in inventory.items()}
+        return json_response(
+            {"counts": counts, "total": sum(counts.values()), "inventory": inventory}
+        )
+
+
     async def summary(self):
         """总览统计（今日/近 N 天）+ 任务状态 + 运行态。"""
         if not self._service_ready():
