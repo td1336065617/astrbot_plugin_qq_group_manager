@@ -90,3 +90,75 @@ def test_min_samples_fails_on_empty_window(tmp_path, capsys):
     out = capsys.readouterr().out
     assert code == 2
     assert "WARN" in out and "样本不足" in out
+
+
+def _acc_db(tmp_path, name, rows, mutes=None, api=None, cap=None):
+    import sqlite3
+
+    db = tmp_path / name
+    conn = sqlite3.connect(db)
+    conn.execute("create table mod_events (ts text, stage text, verdict text, fallback_index int, latency_ms int)")
+    conn.execute("create table mutes (event_id int, updated_unix int)")
+    conn.execute("create table api_calls (ok int, err_code int, ts_unix int)")
+    conn.execute("create table capability_log (capability text, ok int, err_code int, ts_unix int)")
+    conn.execute("create table join_requests (decision text)")
+    for row in rows:
+        conn.execute("insert into mod_events values (?,?,?,?,?)", row)
+    for row in mutes or []:
+        conn.execute("insert into mutes values (?,?)", row)
+    for row in api or []:
+        conn.execute("insert into api_calls values (?,?,?)", row)
+    for row in cap or []:
+        conn.execute("insert into capability_log values (?,?,?,?)", row)
+    conn.execute("insert into join_requests values (?)", ("pending",))
+    conn.commit()
+    conn.close()
+    return db
+
+
+DEPLOY = "2026-10-16T20:41:00+08:00"
+#: 部署后 10 分钟（必须晚于 DEPLOY，否则会被窗口正确排除——这正是工具的设计）
+import datetime as _dt
+POST_TS = int(_dt.datetime.fromisoformat(DEPLOY).timestamp()) + 600
+
+
+def test_acceptance_report_passes_on_clean_data(tmp_path):
+    from tools.acceptance_report import build_report
+
+    db = _acc_db(
+        tmp_path,
+        "ok.db",
+        [("2026-10-16T21:00:00+08:00", "judged", "allow", 0, 9000)],
+        mutes=[(7, POST_TS)],
+        api=[(1, 0, POST_TS)],
+    )
+    report = build_report(db, DEPLOY)
+    assert report["passed"] is True
+    assert report["post"]["events"] == 1
+
+
+def test_acceptance_report_flags_missing_err_code_and_event_id(tmp_path):
+    "部署后仍出现 NULL 错误码 / 禁言缺 event_id 时必须判失败（N1/N2/N4 的机器化护栏）。"
+    from tools.acceptance_report import build_report
+
+    db = _acc_db(
+        tmp_path,
+        "bad.db",
+        [("2026-10-16T21:00:00+08:00", "judged", "allow", 0, 9000)],
+        mutes=[(None, POST_TS)],
+        api=[(0, None, POST_TS)],
+        cap=[("llm_judge", 0, None, POST_TS)],
+    )
+    report = build_report(db, DEPLOY)
+    assert report["passed"] is False
+    failed = {item["id"] for item in report["checks"] if not item["ok"]}
+    assert failed == {"A", "B", "C"}, failed
+
+
+def test_acceptance_report_flags_unknown_stage(tmp_path):
+    from tools.acceptance_report import build_report
+
+    db = _acc_db(tmp_path, "stage.db", [("2026-10-16T21:00:00+08:00", "judeged", "allow", 0, 1)])
+    report = build_report(db, DEPLOY)
+    assert report["passed"] is False
+    assert any(item["id"] == "D" and not item["ok"] for item in report["checks"])
