@@ -57,3 +57,36 @@ def test_cohen_kappa_boundaries():
     assert cohen_kappa([("allow", "violation"), ("violation", "allow")]) < 0
     mid = cohen_kappa([("allow", "allow"), ("allow", "violation"), ("violation", "violation"), ("violation", "violation")])
     assert 0.0 < mid < 1.0
+
+
+def test_resolve_since_accepts_shorthand():
+    "运维最容易踩的坑：把 --since 24 当 ISO 传，窗口空掉却静默判 OK。"
+    from datetime import datetime, timedelta, timezone
+
+    from tools.latency_report import _resolve_since
+
+    cn = timezone(timedelta(hours=8))
+    resolved = datetime.fromisoformat(_resolve_since("24h"))
+    delta = datetime.now(cn) - resolved
+    assert timedelta(hours=23, minutes=30) < delta < timedelta(hours=24, minutes=30), delta
+    assert datetime.fromisoformat(_resolve_since("7d")) < datetime.now(cn) - timedelta(days=6)
+    iso = "2026-10-15T20:41:00+08:00"
+    assert _resolve_since(iso) == iso
+
+
+def test_min_samples_fails_on_empty_window(tmp_path, capsys):
+    "空窗口必须判失败，而不是打印一堆 OK。"
+    import sqlite3
+
+    from tools.latency_report import main
+
+    db = tmp_path / "empty.db"
+    conn = sqlite3.connect(db)
+    conn.execute("create table mod_events (ts text, verdict text, reason text, latency_ms integer)")
+    conn.commit()
+    conn.close()
+
+    code = main(["--db", str(db), "--since", "24h", "--min-samples", "1"])
+    out = capsys.readouterr().out
+    assert code == 2
+    assert "WARN" in out and "样本不足" in out

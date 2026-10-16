@@ -2,9 +2,9 @@
 """判定延迟与可用性报表（只读）。
 
 用法：
-  python tools/latency_report.py --db <moderation.db> [--since ISO] [--json]
+  python tools/latency_report.py --db <moderation.db> [--since 24h|7d|<ISO>] [--min-samples N] [--json]
 阈值默认：超时率 <= 5%；判定成功率 >= 95%；成功判定 p95 延迟 <= 20000ms。
-退出码：0 = 阈值全过；1 = 有阈值未过（便于定时任务告警）。
+退出码：0 = 阈值全过；1 = 有阈值未过；2 = 样本不足（--min-samples），便于定时任务告警。
 """
 
 from __future__ import annotations
@@ -13,8 +13,10 @@ import argparse
 import json
 import pathlib
 import sqlite3
+from datetime import datetime, timedelta, timezone
 import sys
 
+CN_TZ = timezone(timedelta(hours=8))
 FAIL_PREFIX = "模型调用失败"
 EMPTY_SQL = chr(39) + chr(39)
 
@@ -60,6 +62,16 @@ def summarize(rows: list[tuple], max_timeout_rate: float = 0.05, max_p95_ms: int
     }
 
 
+def _resolve_since(value: str) -> str:
+    """把 24h / 7d / 90m 这类简写换算成北京时间的 ISO 串；ISO 原样返回。"""
+    text = str(value or "").strip()
+    unit = text[-1:].lower()
+    if unit in ("h", "d", "m") and text[:-1].isdigit():
+        minutes = int(text[:-1]) * {"h": 60, "d": 1440, "m": 1}[unit]
+        moment = datetime.now(CN_TZ) - timedelta(minutes=minutes)
+        return moment.isoformat(timespec="seconds")
+    return text
+
 def hourly(db: pathlib.Path, since: str) -> list[tuple]:
     conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
     try:
@@ -77,6 +89,7 @@ def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="判定延迟与可用性报表（只读）")
     parser.add_argument("--db", required=True)
     parser.add_argument("--since", default="1970-01-01T00:00:00+08:00")
+    parser.add_argument("--min-samples", type=int, default=0, help="样本少于此数直接判失败（0=不检查），避免空窗口静默判 OK")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--max-timeout-rate", type=float, default=0.05)
     parser.add_argument("--max-p95-ms", type=int, default=20000)
@@ -87,7 +100,7 @@ def main(argv: list[str]) -> int:
     try:
         rows = conn.execute(
             "select verdict, ifnull(reason, " + EMPTY_SQL + "), ifnull(latency_ms, 0) from mod_events where ts >= ?",
-            (args.since,),
+            (_resolve_since(args.since),),
         ).fetchall()
     finally:
         conn.close()
@@ -98,6 +111,11 @@ def main(argv: list[str]) -> int:
         return 0 if report["passed"] else 1
 
     total, judged, failed = report["total"], report["judged"], report["failed"]
+    if total == 0:
+        print("  [WARN] 本窗口没有任何判定样本：门禁没有实际生效，请检查 --since 口径。")
+    if args.min_samples and total < args.min_samples:
+        print(f"  [FAIL] 样本不足：{total} < {args.min_samples}")
+        return 2
     success, timeout = report["success_rate"] * 100, report["timeout_rate"] * 100
     p50, p95, p99 = report["p50_ms"], report["p95_ms"], report["p99_ms"]
     print(f"样本 {total} 条：判定成功 {judged} / 失败 {failed}")
@@ -107,7 +125,7 @@ def main(argv: list[str]) -> int:
         flag = "OK  " if item["ok"] else "FAIL"
         print(f"  [{flag}] {key}: {item[chr(118)+chr(97)+chr(108)+chr(117)+chr(101)]} (限 {item[chr(108)+chr(105)+chr(109)+chr(105)+chr(116)]})")
     print("逐小时（时 / 总数 / 失败 / 最大延迟ms）：")
-    for row in hourly(db, args.since):
+    for row in hourly(db, _resolve_since(args.since)):
         print("  ", row)
     return 0 if report["passed"] else 1
 
