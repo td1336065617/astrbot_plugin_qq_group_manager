@@ -75,11 +75,6 @@ def build_report(db: pathlib.Path, since_deploy: str, days: int = 1) -> dict:
             (since_deploy,),
         )[0]
         join_states = _rows(conn, "select decision, count(*) from join_requests group by 1 order by 2 desc")
-        floor_suppressed = _rows(
-            conn,
-            "select ifnull(err_code, " + chr(39) + "-" + chr(39) + "), count(*) from capability_log "
-            "where capability = " + chr(39) + "review_floor_suppressed" + chr(39) + " group by 1",
-        )
     finally:
         conn.close()
 
@@ -128,7 +123,6 @@ def build_report(db: pathlib.Path, since_deploy: str, days: int = 1) -> dict:
         },
         "pre_top_stages": [[str(r[0]), int(r[1])] for r in pre_events],
         "join_states": [[str(r[0]), int(r[1])] for r in join_states],
-        "floor_suppressed": [[str(r[0]), int(r[1])] for r in floor_suppressed],
         "checks": checks,
         "warnings": warnings,
         "passed": all(bool(item["ok"]) for item in checks),
@@ -153,7 +147,6 @@ def main(argv: list[str]) -> int:
     print(f"  备用模型生效次数 {post['fallback_used']}；最大延迟 {post['latency_max_ms']}ms；stage {post['stages']}")
     print(f"  部署前对照 stage top：{report['pre_top_stages']}")
     print(f"  入群申请：{report['join_states']}")
-    print(f"  地板抑制：{report['floor_suppressed'] or '无'}")
     for item in report['checks']:
         flag = "OK  " if item['ok'] else "FAIL"
         print(f"  [{flag}] {item['id']}. {item['name']}：{item['detail']}")

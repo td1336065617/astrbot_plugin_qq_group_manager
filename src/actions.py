@@ -25,8 +25,7 @@ from .models import (
     GroupConfig,
     Verdict,
 )
-from datetime import datetime
-from .utils import CN_TZ, now_ts, safe_json_dumps, to_iso, truncate
+from .utils import now_ts, safe_json_dumps, to_iso, truncate
 
 #: AI/显式入口允许的动作（撤回/拉黑/移除**不给** AI，见需求 QG-09）
 MANUAL_ACTIONS: tuple[str, ...] = ("mute", "unmute", "warn")
@@ -52,11 +51,6 @@ WARN_TEMPLATE = (
 )
 
 
-def floor_day_key(ts: float | None = None) -> str:
-    "地板当日上限的日期键：与插件统一口径（CN_TZ），避免 UTC 主机跨天点错位。"
-    moment = datetime.fromtimestamp(float(ts), tz=CN_TZ) if ts is not None else datetime.now(CN_TZ)
-    return moment.strftime("%Y-%m-%d")
-
 class ActionExecutor:
     """执行处置动作并写审计。"""
 
@@ -75,10 +69,6 @@ class ActionExecutor:
         self.logger = logger
         self._clock = clock
         self._done: dict[tuple[str, str, str, int], float] = {}
-        #: 地板冷却（进程内；重启重置，只用于防刷屏）
-        self._floor_seen: dict[tuple[str, str], float] = {}
-        #: 地板当日计数（进程内；键为 群x日期）
-        self._floor_daily: dict[tuple[str, str], int] = {}
         self._violations: dict[tuple[str, str], list[tuple[float, str]]] = {}
         self.notifier: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None
         self.stats: dict[str, int] = {
@@ -123,55 +113,6 @@ class ActionExecutor:
         key = (group_id, msg_id or "-", action, int(severity))
         self._done[key] = self._clock()
 
-    def _floor_allowed(
-        self,
-        group_id: str,
-        member_openid: str,
-        planned: list[str],
-        settings: dict[str, Any],
-        *,
-        claim: bool = True,
-    ) -> str:
-        """地板防刷屏：同一成员冷却期内不重复；单群当日不超过上限。
-
-        返回空串=放行；返回 cooldown / daily_limit 表示被抑制。claim=True 时在检查通过的
-        同时当场占位：检查与占位之间没有 await，并发进来的第二条会直接看到占位而被抑制
-        （否则同一成员的两条消息都能拿到地板动作，冷却形同虚设）。
-        """
-        if not planned:
-            return ""
-        cooldown = int(settings.get("review_floor_cooldown_seconds", 0) or 0)
-        member_key = (group_id, member_openid or "-")
-        if cooldown > 0:
-            stamp = self._floor_seen.get(member_key)
-            if stamp is not None and self._clock() - stamp < cooldown:
-                return "cooldown"
-        limit = int(settings.get("review_floor_daily_limit", 0) or 0)
-        daily_key = (group_id, floor_day_key())
-        if limit > 0 and self._floor_daily.get(daily_key, 0) >= limit:
-            return "daily_limit"
-        if claim:
-            if cooldown > 0:
-                self._floor_seen[member_key] = self._clock()
-            if limit > 0:
-                self._floor_daily[daily_key] = self._floor_daily.get(daily_key, 0) + 1
-        return ""
-
-
-    def _multiplier_for(
-        self,
-        verdict: Verdict,
-        actions: list[str],
-        group_id: str,
-        sender_openid: str,
-        msg_id: str = "",
-        floor_driven: bool = False,
-    ) -> int:
-        """重复违规倍率：地板产生的 review 动作不计（其余与 0.15.2 完全一致）。"""
-        if floor_driven or not actions:
-            return 1
-        return self._repeat_multiplier(group_id, sender_openid, msg_id)
-
     def _repeat_multiplier(self, group_id: str, member_openid: str, msg_id: str = "") -> int:
         """24 小时内重复违规次数 → 时长倍数（1~3）。
 
@@ -206,19 +147,6 @@ class ActionExecutor:
         if verdict.stage == "judged_kv" and verdict.is_violation and not hard:
             # KV 兜底无法区分「模型判定」与「用户正文被复述」：宁可只留审计，不产生动作
             return []
-        # 动作地板（0.15.3）：judged 的 review 且无硬规则动作时，按配置给最小动作（只允许 warn/report）
-        if not hard and verdict.verdict == "review" and verdict.stage == "judged":
-            per_category = settings.get("review_floor_by_category")
-            override = per_category.get(verdict.category) if isinstance(per_category, dict) else None
-            configured_actions = (
-                override if override is not None else (settings.get("review_floor_actions") or [])
-            )
-            floor_actions = [
-                action for action in configured_actions if action in ("warn", "report")
-            ]
-            floor_categories = [str(item) for item in (settings.get("review_floor_categories") or [])]
-            if floor_actions and (not floor_categories or verdict.category in floor_categories):
-                actions.extend(floor_actions)
         if hard:
             actions.extend(hard)
             if verdict.verdict == "review" and "report" not in actions:
@@ -279,28 +207,6 @@ class ActionExecutor:
         mode = str(config.mode or settings.get("mode") or "standard")
         actions = self.plan_actions(verdict=verdict, settings=settings, hard_actions=hard_actions)
         planned = list(actions)
-        floor_driven = bool(planned) and not hard_actions and verdict.verdict == "review"
-        if floor_driven:
-            floor_reason = self._floor_allowed(
-                group_id, sender_openid, planned, settings, claim=not bool(settings.get("dry_run"))
-            )
-            if floor_reason:
-                floor_driven = False
-                actions = [
-                    action for action in actions if action not in ("warn", "report")
-                ]
-                planned = list(actions)
-                self.stats["floor_suppressed"] = self.stats.get("floor_suppressed", 0) + 1
-                if self.audit is not None:
-                    try:  # 被抑制也要留痕：否则事后无法区分「被冷却/日限拦住」与「本来无需动作」
-                        self.audit.record_capability(
-                            group_id=group_id,
-                            capability="review_floor_suppressed",
-                            ok=False,
-                            err_code=floor_reason,
-                        )
-                    except Exception:  # pragma: no cover - 留痕失败不影响审核
-                        pass
         if mode == "log_only":
             actions = []
         elif mode == "lenient":
@@ -387,7 +293,7 @@ class ActionExecutor:
 
         results: list[ActionResult] = []
         multiplier = (
-            self._multiplier_for(verdict, actions, group_id, sender_openid, msg_id, floor_driven)
+            self._repeat_multiplier(group_id, sender_openid, msg_id) if actions else 1
         )
         for action in actions:
             result = await self._execute(

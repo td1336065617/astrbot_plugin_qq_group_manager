@@ -13,7 +13,6 @@ from collections.abc import Mapping
 from typing import Any, Protocol, runtime_checkable
 
 from .models import (
-    B_TRACK_CATEGORIES,
     IMAGE_REVIEW_MODES,
     JOIN_ANSWER_ACTIONS,
     JOIN_AVATAR_REVIEW_MODES,
@@ -178,33 +177,6 @@ def normalize_settings(raw: Any) -> dict[str, Any]:
     settings["domain_allowlist"] = [
         str(item).strip() for item in domains if str(item).strip()
     ]
-    floor_actions = settings.get("review_floor_actions")
-    if not isinstance(floor_actions, list):
-        floor_actions = defaults.get("review_floor_actions") or []
-    settings["review_floor_actions"] = [
-        str(item) for item in floor_actions if str(item) in ("warn", "report")
-    ]
-    floor_categories = settings.get("review_floor_categories")
-    if not isinstance(floor_categories, list):
-        floor_categories = defaults.get("review_floor_categories") or []
-    settings["review_floor_categories"] = [
-        str(item) for item in floor_categories if str(item) in B_TRACK_CATEGORIES
-    ]
-    by_category = settings.get("review_floor_by_category")
-    if not isinstance(by_category, dict):
-        by_category = {}
-    normalized_floor: dict[str, list[str]] = {}
-    for cat, acts in (by_category or {}).items():
-        if str(cat) not in B_TRACK_CATEGORIES:
-            continue
-        picked = [
-            str(action)
-            for action in (acts if isinstance(acts, (list, tuple)) else [])
-            if str(action) in ("warn", "report")
-        ]
-        if picked:  # 空列表视为脏数据：丢弃该品类，回落到全局地板动作
-            normalized_floor[str(cat)] = picked
-    settings["review_floor_by_category"] = normalized_floor
     for key in ("llm_fallback_provider_ids", "join_llm_fallback_provider_ids"):
         # 备用模型链：只收字符串、去空、保序去重、上限 8 个（脏数据不能把回退链拉爆）
         settings[key] = normalize_provider_chain(settings.get(key), defaults.get(key) or [])

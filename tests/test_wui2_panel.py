@@ -1,7 +1,7 @@
-"""WUI-2 护栏：面板可读性返工（兜底处置文案 + 备用模型选择器 + 纯逻辑可测）。
+"""WUI-2 护栏：面板可读性返工（备用模型选择器 + 纯逻辑可测）。
 
 教训：面板文案与交互此前没有任何自动化检查，三轮后端审计也覆盖不到，
-于是「动作地板」这种内部术语直接暴露给用户、备用模型把 provider 平铺成一长串复选框。
+于是「已移除的旧机制」这种内部术语直接暴露给用户、备用模型把 provider 平铺成一长串复选框。
 本文件把面板逻辑第一次纳入可执行测试（node 真跑纯函数）。
 """
 
@@ -40,7 +40,6 @@ def test_panel_logic_selfcheck_runs_in_node():
 
 def test_panel_logic_module_is_pure():
     text = PANEL_LOGIC.read_text(encoding="utf-8")
-    assert "export function floorSentence(" in text
     for banned in ("document.", "window.", "innerHTML"):
         assert banned not in text, "纯逻辑模块不得碰 DOM：" + banned
 
@@ -48,24 +47,7 @@ def test_panel_logic_module_is_pure():
 def test_app_imports_panel_logic():
     text = app_js()
     assert re.search(r"import\s*\{[^}]*\}\s*from\s*'\./panel_logic\.js';", text), "app.js 必须 import panel_logic.js"
-    assert "floorSentence(" in text and "selectionLabel(" in text
-
-
-def test_floor_section_speaks_human():
-    text = app_js()
-    for piece in (
-        "兜底处置（默认关闭）",
-        "启用兜底处置",
-        "什么叫「需要人工复核」",
-        "① 什么时候兜底",
-        "② 兜底做什么",
-        "③ 防刷屏（可选）",
-    ):
-        assert piece in text, piece
-    titles = re.findall(r"group-title', text: '([^']+)'", text)
-    assert titles, "解析不到分组标题"
-    bad = [item for item in titles if "动作地板" in item]
-    assert not bad, "分组标题不得再出现内部术语：" + str(bad)
+    assert "selectionLabel(" in text
 
 
 def test_fallback_picker_is_not_a_checkbox_wall():

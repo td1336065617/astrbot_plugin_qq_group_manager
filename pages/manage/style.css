@@ -212,39 +212,12 @@ input:disabled, select:disabled, textarea:disabled {
 .provider-item .prio.muted { opacity: 0.35; font-weight: 400; }
 .provider-item .provider-name { flex: 1; }
 
-/* 分组块：把同类控件收在一张有标题的小卡里，避免复选框与文字混在一起 */
-.field-group {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 10px 12px;
-  margin: 8px 0;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.03);
-}
-.group-title { font-weight: 600; }
-.group-label { min-width: 72px; opacity: 0.75; }
-.inline-field { display: inline-flex; align-items: center; gap: 6px; margin-right: 10px; }
-.field-group .row { flex-wrap: wrap; align-items: center; gap: 10px; }
 
 /* —— WUI-2 面板可读性：字段标签 / 优先级芯片 / 选择弹窗 / 分层 —— */
 .field-block { display: flex; flex-direction: column; gap: 6px; margin: 6px 0; }
 .field-label { font-weight: 600; }
 .field-inline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .field-help { margin: 2px 0 0; color: var(--muted); font-size: 12px; line-height: 1.7; }
-.field-help.strong {
-  color: var(--text); font-size: 13px; background: var(--brand-soft);
-  border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px;
-}
-.group-hint { color: var(--muted); font-size: 12px; line-height: 1.7; margin: 2px 0 6px; }
-.group-sub { font-weight: 600; font-size: 13px; margin-top: 6px; }
-.row-label { min-width: 84px; color: var(--muted); font-size: 13px; }
-.field-group-body {
-  display: flex; flex-direction: column; gap: 8px; margin-top: 8px;
-  padding-left: 10px; border-left: 2px solid var(--line);
-}
-.field-group-body[hidden] { display: none; }
 .chip-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .chip {
   display: inline-flex; align-items: center; gap: 6px;
@@ -281,10 +254,4 @@ input:disabled, select:disabled, textarea:disabled {
 .picker-sub { color: var(--muted); font-size: 12px; word-break: break-all; }
 .picker-tag { color: var(--muted); font-size: 12px; white-space: nowrap; }
 
-/* 分组/行内的紧凑选项：文字必须紧贴方框，不能被 .row > * 的 180px 拉伸 */
-label.field.compact { flex-direction: row; align-items: center; gap: 6px; }
-label.field.compact > span { color: var(--text); font-size: 13px; white-space: nowrap; }
-label.field.compact input[type='checkbox'] { margin: 0; }
-.row > .switch, .row > label.field.compact { flex: 0 0 auto; }
-.field-group .row > label.field { flex: 0 0 auto; }
-.inline-field { white-space: nowrap; }
+.row > .switch { flex: 0 0 auto; }

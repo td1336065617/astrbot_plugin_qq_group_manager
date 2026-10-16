@@ -194,3 +194,45 @@ def test_log_only_mode_skips_all_actions():
     )
     assert result["actions"] == []
     assert audit.events  # 仍然记录事件
+
+# —— 迁移自已删除的旧机制测试文件：仍需守住的两条批次1行为（H1）——
+
+def executor() -> ActionExecutor:
+    return ActionExecutor(api=None, store=None)
+
+def review_verdict(stage: str = "judged", category: str = "色情低俗") -> Verdict:
+    return Verdict(verdict="review", category=category, severity=2, confidence=0.9, stage=stage)
+
+def test_default_settings_never_produce_actions_for_review_or_allow():
+    """默认关时的等价性：review/allow 不产生任何动作（含 judged_kv 的 violation）。"""
+    settings = dict(default_settings())
+    ex = executor()
+    assert ex.plan_actions(verdict=review_verdict(), settings=settings) == []
+    assert ex.plan_actions(verdict=review_verdict(stage="judged_kv"), settings=settings) == []
+    assert ex.plan_actions(verdict=Verdict(verdict="allow", category="无"), settings=settings) == []
+    kv_violation = Verdict(verdict="violation", category="色情低俗", severity=4, confidence=0.99, stage="judged_kv")
+    assert ex.plan_actions(verdict=kv_violation, settings=settings) == []
+
+def test_lenient_mode_does_not_act_on_judged_kv_violation():
+    """lenient 会给 violation 补 warn，但 judged_kv（KV 兜底）必须例外。"""
+    sent: list[str] = []
+
+    async def send(text: str) -> None:
+        sent.append(text)
+
+    class _Api:
+        def dry_run(self) -> bool:
+            return False
+
+    settings = dict(default_settings())
+    settings.update({"mode": "lenient", "action_matrix": {"violation": {"4": ["warn", "recall"]}}})
+    config = GroupConfig(group_id="g1", name="测试群", mode="lenient")
+    ex = ActionExecutor(api=_Api(), store=None)
+
+    kv_violation = Verdict(verdict="violation", category="色情低俗", severity=4, confidence=0.99, stage="judged_kv")
+    run(ex.handle(group_id="g1", config=config, verdict=kv_violation, settings=settings, send=send))
+    assert sent == []
+
+    judged_violation = Verdict(verdict="violation", category="色情低俗", severity=4, confidence=0.99, stage="judged")
+    run(ex.handle(group_id="g1", config=config, verdict=judged_violation, settings=settings, send=send))
+    assert sent, "正常 judged 的 violation 在 lenient 下仍应补一条 warn"

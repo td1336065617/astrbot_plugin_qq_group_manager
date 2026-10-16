@@ -42,31 +42,5 @@ eq("merged_ids", merged.map((i) => i.id), ["x", "gone"]);
 eq("search", L.matchProviders([{ id: "a", model: "qq" }, { id: "b", model: "zz" }], "qq").map((i) => i.id), ["a"]);
 eq("search_all", L.matchProviders([{ id: "a" }], "   ").length, 1);
 
-// 兜底处置：面向用户的一句话必须是人话，且不出现内部术语「地板」
-const off = L.floorSentence({ review_floor_actions: [] });
-if (off.indexOf("当前关闭") < 0 || off.indexOf("需要人工复核") < 0) {
-  throw new Error("floor_off 文案不对：" + off);
-}
-if (off.indexOf("地板") >= 0) throw new Error("面向用户的文案里出现了内部术语「地板」");
-const on = L.floorSentence({
-  review_floor_actions: ["warn", "report"],
-  review_floor_categories: ["辱骂攻击"],
-  review_floor_cooldown_seconds: 600,
-  review_floor_daily_limit: 20,
-});
-["当前开启", "警告 + 上报", "辱骂攻击", "600 秒", "20 次"].forEach((piece) => {
-  if (on.indexOf(piece) < 0) throw new Error("floor_on 缺少『" + piece + "』：" + on);
-});
 
-// 品类差异化只列与总动作不同的
-eq("overrides", L.floorOverrides({
-  review_floor_actions: ["warn"],
-  review_floor_by_category: { "色情低俗": ["warn", "report"], "辱骂攻击": ["warn"] },
-}), ["色情低俗：警告 + 上报"]);
-
-// 多选下拉的选项文案：第一项是跟随
-eq("choices", L.FLOOR_ACTION_CHOICES.length, 4);
-eq("choices_first", L.FLOOR_ACTION_CHOICES[0][0], "");
-eq("categories", L.FLOOR_CATEGORIES.length, 4);
-
-console.log("panel_logic 自检通过（" + "17 项断言）");
+console.log("panel_logic 自检通过（" + "16 项断言）");

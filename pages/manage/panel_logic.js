@@ -6,24 +6,6 @@
  * 不需要浏览器、不需要打包工具。
  */
 
-export const FLOOR_CATEGORIES = [
-  '色情低俗',
-  '辱骂攻击',
-  '政治敏感',
-  '违法违规',
-];
-
-export const FLOOR_ACTION_LABELS = { warn: '警告', report: '上报' };
-
-/** 品类差异化的下拉选项：第一项表示「跟随上面的执行动作」 */
-export const FLOOR_ACTION_CHOICES = [
-  ['', '跟随上面的执行动作'],
-  ['warn', '只警告'],
-  ['report', '只上报'],
-  ['warn,report', '警告 + 上报'],
-];
-
-/** 勾选/取消一个备用模型；勾选时追加到末尾（末尾=优先级最低） */
 export function toggleProvider(order, id, checked) {
   const list = Array.isArray(order) ? order.slice() : [];
   const key = String(id || '');
@@ -114,44 +96,4 @@ export function matchProviders(items, keyword) {
     ).toLowerCase();
     return hay.indexOf(text) >= 0;
   });
-}
-
-/** 兜底处置当前是什么状态，用一句大白话说出来（面板里实时显示） */
-export function floorSentence(settings) {
-  const s = settings || {};
-  const actions = Array.isArray(s.review_floor_actions) ? s.review_floor_actions : [];
-  const picked = actions.filter(function (a) { return FLOOR_ACTION_LABELS[a]; }).map(function (a) {
-    return FLOOR_ACTION_LABELS[a];
-  });
-  if (!picked.length) {
-    return '当前关闭：AI 只判出「需要人工复核」、又没命中任何硬规则时，插件只记一条日志，不在群里做任何动作。';
-  }
-  const cats = (Array.isArray(s.review_floor_categories) ? s.review_floor_categories : []).filter(Boolean);
-  const scope = cats.length ? cats.join('、') : '所有品类';
-  let text = '当前开启：' + scope + ' 里出现「需要人工复核」时，至少执行 ' + picked.join(' + ') + '。';
-  const limits = [];
-  const cooldown = Number(s.review_floor_cooldown_seconds || 0);
-  const daily = Number(s.review_floor_daily_limit || 0);
-  if (cooldown > 0) limits.push('同一成员 ' + cooldown + ' 秒内只兜底一次');
-  if (daily > 0) limits.push('单群每天最多兜底 ' + daily + ' 次');
-  if (limits.length) text += '防刷屏：' + limits.join('；') + '。';
-  return text;
-}
-
-/** 品类差异化里「与总动作不同」的项，列出来给用户看 */
-export function floorOverrides(settings) {
-  const s = settings || {};
-  const map = s.review_floor_by_category || {};
-  const base = (Array.isArray(s.review_floor_actions) ? s.review_floor_actions : [])
-    .filter(function (a) { return FLOOR_ACTION_LABELS[a]; })
-    .map(function (a) { return FLOOR_ACTION_LABELS[a]; })
-    .join(' + ');
-  const out = [];
-  FLOOR_CATEGORIES.forEach(function (cat) {
-    const picked = map[cat];
-    if (!Array.isArray(picked) || !picked.length) return;
-    const text = picked.map(function (a) { return FLOOR_ACTION_LABELS[a] || a; }).join(' + ');
-    if (text !== base) out.push(cat + '：' + text);
-  });
-  return out;
 }

@@ -453,9 +453,6 @@ class Verdict:
         )
 
 
-#: B 轨道（内容本体）品类：动作地板只允许在这些品类收窄（空列表=全部品类）
-B_TRACK_CATEGORIES: tuple[str, ...] = ("色情低俗", "辱骂攻击", "政治敏感", "违法违规")
-
 def default_settings() -> dict[str, Any]:
     """首次安装时的默认配置（dry_run + lenient：只记录、只警告）。"""
     return {
@@ -577,13 +574,6 @@ def default_settings() -> dict[str, Any]:
         "flood_threshold": 8,
         "menu_image": True,
         "probe_full_msg_interval": 1800,
-    # 审核动作地板（0.15.3）：review 至少 warn/report；默认关（空列表=不启用）
-    "review_floor_actions": [],
-    # 空列表 = 对全部 stage=judged 的 review 生效（模型常把 category 写成"无"，按品类过滤会形同虚设）
-    "review_floor_categories": [],
-    "review_floor_by_category": {},
-    "review_floor_cooldown_seconds": 0,
-    "review_floor_daily_limit": 0,
     # 备用模型（用户自定义、按序回退）：候选来自使用者自己 AstrBot 里已配置的 provider 列表；
     # 默认空 = 关闭（零升级风险）。插件不预设任何 provider id，也不做密钥管理。
     "llm_fallback_provider_ids": [],
@@ -628,7 +618,5 @@ NUMERIC_BOUNDS: dict[str, tuple[float, float]] = {
     "spam_flood_window": (10, 600),
     "spam_flood_cooldown": (0, 3600),
     "probe_full_msg_interval": (300, 86400),
-    "review_floor_cooldown_seconds": (0, 86400),
-    "review_floor_daily_limit": (0, 1000),
     "join_pending_expire_days": (0, 90),
 }

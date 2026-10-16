@@ -10,10 +10,6 @@
  */
 
 import {
-  FLOOR_ACTION_CHOICES,
-  floorOverrides,
-  floorSentence,
-  FLOOR_CATEGORIES,
   decorateProviders,
   matchProviders,
   mergeProviders,
@@ -874,11 +870,10 @@ function numField(label, value, min, max, step) {
   return { node: el('label', { class: 'field' }, [el('span', { text: label }), input]), input };
 }
 
-function checkField(label, value, compact) {
+function checkField(label, value) {
   const input = el('input', { type: 'checkbox' });
   input.checked = !!value;
-  const klass = compact ? 'field compact' : 'field';
-  return { node: el('label', { class: klass }, [el('span', { text: label }), input]), input };
+  return { node: el('label', { class: 'field' }, [el('span', { text: label }), input]), input };
 }
 
 async function viewPolicy(root) {
@@ -894,89 +889,6 @@ async function viewPolicy(root) {
   const blockLlm = checkField('违规消息阻断后续 LLM 对话', settings.block_llm_on_violation);
   const repeatMul = checkField('重复违规时长累加（≤3 倍）', settings.repeat_offense_multiplier);
   const autoBlacklist = checkField('自动拉黑（内邀能力）', settings.auto_blacklist);
-  /* —— 兜底处置（原「动作地板」）：主开关 + 三层 —— */
-  const floorOn = checkField('启用兜底处置', (settings.review_floor_actions || []).length > 0);
-  const floorWarn = checkField('警告（在群里发一条提醒）', (settings.review_floor_actions || []).includes('warn'), true);
-  const floorReport = checkField('上报（通知管理员）', (settings.review_floor_actions || []).includes('report'), true);
-  const floorCatFields = FLOOR_CATEGORIES.map((category) => ({
-    category: category,
-    field: checkField(category, (settings.review_floor_categories || []).includes(category), true),
-  }));
-  const floorCooldown = numField('同一成员冷却（秒，0=不限制）', settings.review_floor_cooldown_seconds || 0, 0, 86400, 1);
-  const floorDaily = numField('单群每日上限（次，0=不限制）', settings.review_floor_daily_limit || 0, 0, 1000, 1);
-  const floorPerCategory = FLOOR_CATEGORIES.map((category) => {
-    const current = (settings.review_floor_by_category || {})[category] || null;
-    const select = el('select');
-    const value = current === null ? '' : current.join(',');
-    FLOOR_ACTION_CHOICES.forEach((pair) => {
-      select.appendChild(el('option', { value: pair[0], text: pair[1], selected: pair[0] === value ? 'selected' : null }));
-    });
-    return { category: category, select: select };
-  });
-  const floorSummary = el('p', { class: 'field-help strong' });
-  let floorBody = null;
-  const readFloor = () => ({
-    review_floor_actions: floorOn.input.checked
-      ? [].concat(floorWarn.input.checked ? ['warn'] : [], floorReport.input.checked ? ['report'] : [])
-      : [],
-    review_floor_categories: floorCatFields.filter((item) => item.field.input.checked).map((item) => item.category),
-    review_floor_cooldown_seconds: Number(floorCooldown.input.value || 0),
-    review_floor_daily_limit: Number(floorDaily.input.value || 0),
-    review_floor_by_category: Object.fromEntries(
-      floorPerCategory
-        .filter((item) => item.select.value)
-        .map((item) => [item.category, item.select.value.split(',')]),
-    ),
-  });
-  const renderFloor = () => {
-    if (floorBody) floorBody.hidden = !floorOn.input.checked;
-    const draft = readFloor();
-    const actions = draft.review_floor_actions.length ? draft.review_floor_actions : ['warn'];
-    let text = floorSentence(draft);
-    const overrides = floorOverrides(Object.assign({}, draft, { review_floor_actions: actions }));
-    if (overrides.length) text += '品类差异化：' + overrides.join('；') + '。';
-    floorSummary.textContent = text;
-  };
-  const floorInputs = [floorOn, floorWarn, floorReport].concat(floorCatFields.map((item) => item.field));
-  floorInputs.forEach((field) => field.input.addEventListener('change', () => {
-    if (field === floorOn && floorOn.input.checked && !floorWarn.input.checked && !floorReport.input.checked) {
-      floorWarn.input.checked = true;   // 开启后必须至少有一个动作，否则等于没开
-    }
-    renderFloor();
-  }));
-  [floorCooldown, floorDaily].forEach((field) => field.input.addEventListener('input', renderFloor));
-  floorPerCategory.forEach((item) => item.select.addEventListener('change', renderFloor));
-
-  const floorGroup = el('div', { class: 'field-group' }, [
-    el('div', { class: 'group-title', text: '兜底处置（默认关闭）' }),
-    el('div', { class: 'group-hint', text: '什么叫「需要人工复核」：AI 拿不准，只回了 review 结论，而且没有任何硬规则给出动作；不兜底的话，这条消息就只剩一条日志，群里看不到任何反应。' }),
-    floorOn.node,
-    floorSummary,
-    (floorBody = el('div', { class: 'field-group-body' }, [
-      el('div', { class: 'group-sub', text: '① 什么时候兜底' }),
-      el('div', { class: 'row' }, [
-        el('span', { class: 'row-label', text: '生效品类' }),
-        ...floorCatFields.map((item) => item.field.node),
-        el('span', { class: 'hint', text: '一个都不勾 = 所有品类' }),
-      ]),
-      el('div', { class: 'group-sub', text: '② 兜底做什么' }),
-      el('div', { class: 'row' }, [
-        el('span', { class: 'row-label', text: '动作' }),
-        floorWarn.node,
-        floorReport.node,
-      ]),
-      el('div', { class: 'row' }, [
-        el('span', { class: 'row-label', text: '按品类微调' }),
-        ...floorPerCategory.map((item) => el('label', { class: 'inline-field' }, [
-          el('span', { text: item.category }),
-          item.select,
-        ])),
-      ]),
-      el('div', { class: 'group-sub', text: '③ 防刷屏（可选）' }),
-      el('div', { class: 'row' }, [floorCooldown.node, floorDaily.node]),
-    ])),
-  ]);
-  renderFloor();
   const autoRemove = checkField('自动移除成员（内邀能力，风险高）', settings.auto_remove);
   /* AI 能力（工具） */
   const aiToolsOn = checkField('开启 AI 工具（只读：群信息 / 审核状态 / 统计 / 日志）', settings.qqgm_ai_tools_enabled !== false);
@@ -1180,7 +1092,6 @@ async function viewPolicy(root) {
       qqgm_ai_throttle_window: Number(aiThrottleWindow.input.value),
       prompt_system: systemPrompt.value,
       prompt_user: userPrompt.value,
-      ...readFloor(),
     };
     try {
       await bridge.apiPost('config', { section: 'settings', data: payload });
@@ -1252,7 +1163,6 @@ async function viewPolicy(root) {
     (systemPrompt.value.trim() || userPrompt.value.trim())
       ? el('div', { class: 'hint' }, ['当前使用自定义提示词，本次判词更新（PROMPT_VERSION）不会生效；清空下面两个输入框即可恢复默认。'])
       : null,
-    floorGroup,
     el('label', { class: 'field' }, [el('span', { text: '管理员通知会话（umo）' }), notifySession]),
     el('div', { class: 'field-actions' }, [el('span', { class: 'muted', text: '送审条件：' })]),
     conditions,
