@@ -300,7 +300,10 @@ class QQGroupManager(Star):
         self.scheduler.add(TaskSpec("probe_capabilities", self._task_probe_capabilities, interval))
         self.scheduler.add(TaskSpec("maintenance", self._task_maintenance, MAINTENANCE_INTERVAL))
         self.scheduler.add(TaskSpec("join_poll", self._task_join_poll, self._join_interval()))
-        self.scheduler.add(TaskSpec("join_pending_sweep", self._task_join_pending_sweep, 86400))
+        # run_immediately=True：86400s 的任务若等一整轮才跑，在「插件比一天更频繁重启」的环境里可能永远不执行
+        self.scheduler.add(
+            TaskSpec("join_pending_sweep", self._task_join_pending_sweep, 86400, run_immediately=True)
+        )
         self.scheduler.add(TaskSpec("mute_sync", self._task_mute_sync, MUTE_SYNC_INTERVAL))
 
     async def _task_join_pending_sweep(self) -> None:
