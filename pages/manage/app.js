@@ -843,6 +843,12 @@ async function viewPolicy(root) {
   const blockLlm = checkField('违规消息阻断后续 LLM 对话', settings.block_llm_on_violation);
   const repeatMul = checkField('重复违规时长累加（≤3 倍）', settings.repeat_offense_multiplier);
   const autoBlacklist = checkField('自动拉黑（内邀能力）', settings.auto_blacklist);
+  const floorWarn = checkField('review 动作地板：警告（warn）', (settings.review_floor_actions || []).includes('warn'));
+  const floorReport = checkField('review 动作地板：上报（report）', (settings.review_floor_actions || []).includes('report'));
+  const floorCatPorn = checkField('地板品类：色情低俗', (settings.review_floor_categories || []).includes('色情低俗'));
+  const floorCatAbuse = checkField('地板品类：辱骂攻击', (settings.review_floor_categories || []).includes('辱骂攻击'));
+  const floorCatPolitics = checkField('地板品类：政治敏感', (settings.review_floor_categories || []).includes('政治敏感'));
+  const floorCatIllegal = checkField('地板品类：违法违规', (settings.review_floor_categories || []).includes('违法违规'));
   const autoRemove = checkField('自动移除成员（内邀能力，风险高）', settings.auto_remove);
   /* AI 能力（工具） */
   const aiToolsOn = checkField('开启 AI 工具（只读：群信息 / 审核状态 / 统计 / 日志）', settings.qqgm_ai_tools_enabled !== false);
@@ -1040,6 +1046,16 @@ async function viewPolicy(root) {
       qqgm_ai_throttle_window: Number(aiThrottleWindow.input.value),
       prompt_system: systemPrompt.value,
       prompt_user: userPrompt.value,
+      review_floor_actions: [
+        ...(floorWarn.input.checked ? ['warn'] : []),
+        ...(floorReport.input.checked ? ['report'] : []),
+      ],
+      review_floor_categories: [
+        ...(floorCatPorn.input.checked ? ['色情低俗'] : []),
+        ...(floorCatAbuse.input.checked ? ['辱骂攻击'] : []),
+        ...(floorCatPolitics.input.checked ? ['政治敏感'] : []),
+        ...(floorCatIllegal.input.checked ? ['违法违规'] : []),
+      ],
     };
     try {
       await bridge.apiPost('config', { section: 'settings', data: payload });
@@ -1097,6 +1113,12 @@ async function viewPolicy(root) {
     imageHint,
     el('div', { class: 'row' }, [qpmField.node, concurrency.node, budget.node, cacheTtl.node, breaker.node]),
     el('div', { class: 'row' }, [maxMuteDays.node, repeatMul.node, autoBlacklist.node, autoRemove.node]),
+    (systemPrompt.value.trim() || userPrompt.value.trim())
+      ? el('div', { class: 'hint' }, ['当前使用自定义提示词，本次判词更新（PROMPT_VERSION）不会生效；清空下面两个输入框即可恢复默认。'])
+      : null,
+    el('div', { class: 'hint' }, ['动作地板：默认关闭。开启后，判定为 review 且没有硬规则动作的消息至少给所选动作（只允许警告/上报）；品类留空表示对全部品类生效。']),
+    el('div', { class: 'row' }, [floorWarn.node, floorReport.node]),
+    el('div', { class: 'row' }, [floorCatPorn.node, floorCatAbuse.node, floorCatPolitics.node, floorCatIllegal.node]),
     providerHint,
     el('label', { class: 'field' }, [el('span', { text: '管理员通知会话（umo）' }), notifySession]),
     el('div', { class: 'field-actions' }, [el('span', { class: 'muted', text: '送审条件：' })]),

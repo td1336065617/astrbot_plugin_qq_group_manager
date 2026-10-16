@@ -92,7 +92,12 @@ from .src.models import (
     CapabilityResult,
     Verdict,
 )
-from .src.moderator import LLMModerator, ModerationRequest, choose_provider_id
+from .src.moderator import (
+    LLMModerator,
+    ModerationRequest,
+    choose_provider_id,
+    resolve_prompt_version,
+)
 from .src.normalize import skeleton_text
 from .src.platforms.router import ChannelRouter
 from .src.policy import ApprovalPolicyService
@@ -128,7 +133,7 @@ from .src.utils import (
 from .src.web_api import EventBus, WebApi
 
 PLUGIN_NAME = "astrbot_plugin_qq_group_manager"
-VERSION = "0.15.2"
+VERSION = "0.15.3"
 
 STATE_FLUSH_INTERVAL = 30.0
 MAINTENANCE_INTERVAL = 3600.0
@@ -1229,6 +1234,7 @@ class QQGroupManager(Star):
         return Verdict(
             verdict="violation",
             category="刷屏灌水",
+            stage="flood",
             severity=3 if stat.count >= escalate else 2,
             confidence=1.0,
             reason=(
@@ -1444,6 +1450,7 @@ class QQGroupManager(Star):
         latency_ms = 0
         sampled = False
         used_provider_id = ""  # 本次实际使用的审核模型（仅 LLM 送审时回填；BUG-02）
+        prompt_version = ""  # 本次判定使用的提示词版本（非 LLM 路径留空）
 
         if hard_actions:
             hit = evaluation.hard_hits[0]
@@ -1455,6 +1462,7 @@ class QQGroupManager(Star):
                 reason=f"命中本地硬规则：{hit.pattern}",
                 suggested_action="mute_and_recall",
                 source="rule",
+                stage="rule",
             )
             hard_actions = list(hard_actions)
         elif whitelisted:
@@ -1467,6 +1475,7 @@ class QQGroupManager(Star):
                 reason="命中申诉白名单",
                 suggested_action="none",
                 source="rule",
+                stage="rule",
             )
             self.logger.info(
                 "命中申诉白名单，跳过 LLM 送审（score=%s 信号=%s）",
@@ -1550,6 +1559,7 @@ class QQGroupManager(Star):
             }
             started = time.monotonic()
             verdict = await self.moderator.judge(request, templates=templates)
+            prompt_version = resolve_prompt_version(templates)
             latency_ms = int((time.monotonic() - started) * 1000)
             sampled = verdict.source == "llm"
             used_provider_id = request.provider_id
@@ -1592,6 +1602,8 @@ class QQGroupManager(Star):
             source=verdict.source,
             umo=event.unified_msg_origin,
             provider_id=used_provider_id,
+            stage=verdict.stage,
+            prompt_version=prompt_version,
             latency_ms=latency_ms,
             sampled=sampled,
             send=_send,

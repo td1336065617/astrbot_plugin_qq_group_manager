@@ -274,7 +274,9 @@ def test_low_confidence_downgrade_keeps_analysis():
     verdict = run(moderator.judge(ModerationRequest(group_id="g1", text="加群")))
     assert verdict.verdict == "review"
     assert "置信度不足" in verdict.reason
-    assert verdict.analysis == "像广告但缺可触达渠道"
+    # 0.15.3：降级重建不再覆盖模型自己的理由（前缀进入 analysis），原文必须保留
+    assert verdict.analysis.startswith("原判定理由：")
+    assert "像广告但缺可触达渠道" in verdict.analysis
     assert verdict.evidence == "加群"
 
 

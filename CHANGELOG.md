@@ -7,6 +7,36 @@
 
 ---
 
+## [0.15.3] - 2026-10-16
+
+> ⚙️ 审核链路优化（批次 1）：判定阶段可观测、解析容错、判词按轨道拆分、review 动作地板。
+
+### ✨ 新增
+- `mod_events` 新增 `stage` / `prompt_version` / `fallback_index` 三列（旧库自动补列；旧行取默认 judged / 空 / 0）。
+  `stage` 取值：judged / judged_kv / parse_error / low_confidence / api_error / circuit_open / no_provider / budget /
+  sampled_out / throttled / illegal_value / rule / flood / manual（后三者为非 LLM 路径，便于统计时排除）。
+- 设置项 `review_floor_actions`（warn / report，默认空=关）与 `review_floor_categories`（默认空=全部品类）：
+  judged 的 review 且无硬规则动作时至少给出所选动作；面板新增 6 个复选框与说明文字。
+- 提示词版本 `PROMPT_VERSION`（用户自定义提示词时记 custom），随事件落库用于统计归因。
+
+### 🐛 修复
+- 降级重建不再抹掉 `parse_error` 与 `qr_text`，也不再覆盖模型自己的判定理由（前缀进 analysis）。
+- 解析失败文案区分「模型未按 JSON 输出（已降级）」与「置信度不足」；失败日志只记长度 / 摘要 / provider，不记正文。
+- 模型输出为逐行 key: value 时新增兜底解析（白名单键、拒绝重复键、需 verdict 与 confidence），命中记 `judged_kv`。
+- 审计库补列失败改为 fail-fast 并新增启动自检（缺列即中止），避免「动作照做、审计静默丢事件」；
+  并发初始化拿到 duplicate column name 视为成功（否则会导致整个插件被卸载）。
+
+### ⚙️ 变更
+- 判词：把「缺渠道 -> 降级」限定在推广 / 诈骗类；新增内容本体轨道（色情低俗含涉未成年 / 辱骂攻击 / 违法违规 / 政治敏感）
+  并给出各品类 violation 阈值；对照示例补 B 轨道正负例。**提示词变长（+621 字，+40.7%）**，部署后需盯超时率。
+- `judged_kv` 的 violation 不产生任何动作（含 lenient 模式），防止用户正文被复述时误处置。
+- 缓存键纳入 prompt_version：改判词后不再命中旧结论（provider 维度留后续批次）。
+- 重复违规倍率只对真实 violation 生效（动作地板产生的 review 动作不计）。
+
+### ✅ 测试
+- 新增 51 条用例（T1 7 / T2 14 / T3 11 / T4a 5 / T4b 11 / T5 3）；全量 579 passed / 1 skipped；变异检验逐项转红。
+- 新增工具：`tools/replay_prompt.py`（离线回放）、`tools/gen_image_manifest.py` + `tests/regression/`（图片回归集清单与标注规范）。
+
 ## [0.15.2] - 2026-10-16
 
 > 🐛 修复：把成员 openid 当 target 时被"不在本群成员列表"挡住的错觉（工具说明与失败提示加固）。

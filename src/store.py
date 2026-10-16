@@ -13,6 +13,7 @@ from collections.abc import Mapping
 from typing import Any, Protocol, runtime_checkable
 
 from .models import (
+    B_TRACK_CATEGORIES,
     IMAGE_REVIEW_MODES,
     JOIN_ANSWER_ACTIONS,
     JOIN_AVATAR_REVIEW_MODES,
@@ -160,6 +161,18 @@ def normalize_settings(raw: Any) -> dict[str, Any]:
         domains = defaults.get("domain_allowlist") or []
     settings["domain_allowlist"] = [
         str(item).strip() for item in domains if str(item).strip()
+    ]
+    floor_actions = settings.get("review_floor_actions")
+    if not isinstance(floor_actions, list):
+        floor_actions = defaults.get("review_floor_actions") or []
+    settings["review_floor_actions"] = [
+        str(item) for item in floor_actions if str(item) in ("warn", "report")
+    ]
+    floor_categories = settings.get("review_floor_categories")
+    if not isinstance(floor_categories, list):
+        floor_categories = defaults.get("review_floor_categories") or []
+    settings["review_floor_categories"] = [
+        str(item) for item in floor_categories if str(item) in B_TRACK_CATEGORIES
     ]
     if not isinstance(settings.get("mute_steps"), dict):
         settings["mute_steps"] = {"3": 600, "4": 3600, "5": 86400}

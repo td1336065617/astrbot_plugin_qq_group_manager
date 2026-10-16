@@ -18,7 +18,7 @@ from typing import Any
 
 from .utils import now_ts, safe_json_dumps, to_iso, truncate
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 DDL_STATEMENTS: tuple[str, ...] = (
     """
@@ -245,6 +245,9 @@ WRITE_COLUMNS: dict[str, tuple[str, ...]] = {
         "appeal_by",
         "appeal_at",
         "appeal_note",
+        "stage",
+        "prompt_version",
+        "fallback_index",
     ),
     "actions": (
         "ts_unix",
@@ -290,6 +293,13 @@ EVENT_EXTRA_COLUMNS: dict[str, str] = {
     "appeal_by": "TEXT",
     "appeal_at": "REAL",
     "appeal_note": "TEXT",
+    #: 审核判定阶段（0.15.3）：judged / judged_kv / parse_error / low_confidence / api_error /
+    #: circuit_open / no_provider / budget / sampled_out / throttled / illegal_value
+    "stage": "TEXT DEFAULT 'judged'",
+    #: 本次判定使用的提示词版本（默认=PROMPT_VERSION，自定义=custom）
+    "prompt_version": "TEXT DEFAULT ''",
+    #: 备用 provider 链下标（0=主模型；批次 2 才写入）
+    "fallback_index": "INTEGER DEFAULT 0",
 }
 
 #: 入群申请画像相关补列（申请人画像增强，0.12.0）
@@ -324,6 +334,9 @@ COLUMN_DEFAULTS: dict[str, Any] = {
     "verdict": "review",
     "action": "",
     "capability": "",
+    "stage": "judged",
+    "prompt_version": "",
+    "fallback_index": 0,
 }
 
 #: 带时间戳的表（用于保留期裁剪）
@@ -387,13 +400,27 @@ class AuditStore:
         conn.execute("PRAGMA foreign_keys=ON")
         for statement in DDL_STATEMENTS:
             conn.execute(statement)
-        # 老库补列（幂等）：失败只记 warning，不阻塞启动
+        # 老库补列（幂等）。mod_events 的补列失败必须 fail-fast：否则新代码的
+        # WRITE_COLUMNS["events"] 已含新列，insert_event 会每次报 no such column，
+        # 异常被吞后表现为「动作照做、审计静默丢事件」。
         try:
             self._ensure_columns_sync(conn, "mod_events", EVENT_EXTRA_COLUMNS)
+        except Exception as exc:
+            raise RuntimeError(
+                f"审计库补列失败（mod_events），为避免静默丢审计事件已中止启动：{exc}"
+            ) from exc
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(mod_events)")}
+        missing = [name for name in WRITE_COLUMNS["events"] if name not in existing]
+        if missing:
+            raise RuntimeError(
+                f"审计库 mod_events 缺少必需列 {missing}，为避免静默丢审计事件已中止启动"
+            )
+        # join_requests 补列失败只影响入群画像，保持原行为（warning，不阻塞）
+        try:
             self._ensure_columns_sync(conn, "join_requests", JOIN_EXTRA_COLUMNS)
-        except Exception as exc:  # pragma: no cover - 迁移失败不应阻塞启动
+        except Exception as exc:  # pragma: no cover - 入群画像补列失败不阻塞启动
             if self.logger is not None:
-                self.logger.warning("审计库补列失败（申诉/画像功能可能不可用）：%s", exc)
+                self.logger.warning("入群画像补列失败（画像功能可能不可用）：%s", exc)
         conn.execute(
             "INSERT INTO meta(k, v) VALUES('schema_version', ?) "
             "ON CONFLICT(k) DO UPDATE SET v=excluded.v",
@@ -416,7 +443,13 @@ class AuditStore:
         existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
         for name, ddl in columns.items():
             if name not in existing:
-                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+                try:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+                except sqlite3.OperationalError as exc:
+                    # 并发初始化（热重载/双实例）下后到者会拿到 duplicate column name：
+                    # 该列已存在即视为成功，不能因此让整个插件加载失败。
+                    if "duplicate column name" not in str(exc).lower():
+                        raise
 
     async def close(self, timeout: float = 3.0) -> None:
         """停止写协程、落盘剩余记录、关闭连接。

@@ -113,6 +113,20 @@ class ActionExecutor:
         key = (group_id, msg_id or "-", action, int(severity))
         self._done[key] = self._clock()
 
+    def _multiplier_for(
+        self,
+        verdict: Verdict,
+        actions: list[str],
+        group_id: str,
+        sender_openid: str,
+        msg_id: str = "",
+        floor_driven: bool = False,
+    ) -> int:
+        """重复违规倍率：地板产生的 review 动作不计（其余与 0.15.2 完全一致）。"""
+        if floor_driven or not actions:
+            return 1
+        return self._repeat_multiplier(group_id, sender_openid, msg_id)
+
     def _repeat_multiplier(self, group_id: str, member_openid: str, msg_id: str = "") -> int:
         """24 小时内重复违规次数 → 时长倍数（1~3）。
 
@@ -144,6 +158,19 @@ class ActionExecutor:
         """计算本次要执行的动作列表。"""
         actions: list[str] = []
         hard = [action for action in (hard_actions or []) if action in MATRIX_ACTIONS]
+        if verdict.stage == "judged_kv" and verdict.is_violation and not hard:
+            # KV 兜底无法区分「模型判定」与「用户正文被复述」：宁可只留审计，不产生动作
+            return []
+        # 动作地板（0.15.3）：judged 的 review 且无硬规则动作时，按配置给最小动作（只允许 warn/report）
+        if not hard and verdict.verdict == "review" and verdict.stage == "judged":
+            floor_actions = [
+                action
+                for action in (settings.get("review_floor_actions") or [])
+                if action in ("warn", "report")
+            ]
+            floor_categories = [str(item) for item in (settings.get("review_floor_categories") or [])]
+            if floor_actions and (not floor_categories or verdict.category in floor_categories):
+                actions.extend(floor_actions)
         if hard:
             actions.extend(hard)
             if verdict.verdict == "review" and "report" not in actions:
@@ -194,6 +221,9 @@ class ActionExecutor:
         umo: str = "",
         provider_id: str = "",
         latency_ms: int = 0,
+        stage: str = "judged",
+        prompt_version: str = "",
+        fallback_index: int = 0,
         sampled: bool = False,
         send: Callable[[str], Awaitable[None]] | None = None,
     ) -> dict[str, Any]:
@@ -201,13 +231,18 @@ class ActionExecutor:
         mode = str(config.mode or settings.get("mode") or "standard")
         actions = self.plan_actions(verdict=verdict, settings=settings, hard_actions=hard_actions)
         planned = list(actions)
+        floor_driven = bool(planned) and not hard_actions and verdict.verdict == "review"
         if mode == "log_only":
             actions = []
         elif mode == "lenient":
             filtered = [action for action in actions if action in LENIENT_ACTIONS]
-            # lenient 的语义是"只警告"：矩阵里若只有 recall/mute，也要补一条警告，
-            # 否则成员完全收不到反馈。
-            if verdict.is_violation and "warn" not in filtered:
+            # lenient 的语义是"只警告"：矩阵里若只有 recall/mute，也要补一条警告。
+            # judged_kv 例外：KV 兜底无法区分模型判定与正文复述，任何模式都不得产生动作。
+            if (
+                verdict.is_violation
+                and verdict.stage != "judged_kv"
+                and "warn" not in filtered
+            ):
                 filtered.insert(0, "warn")
             actions = filtered
         if verdict.verdict == "allow":
@@ -273,6 +308,9 @@ class ActionExecutor:
                 raw_verdict=verdict.raw,
                 latency_ms=latency_ms,
                 provider_id=provider_id,
+                stage=stage,
+                prompt_version=prompt_version,
+                fallback_index=fallback_index,
                 dry_run=self.api.dry_run() if self.api is not None else False,
                 sampled=sampled,
                 parse_error=verdict.parse_error,
@@ -280,7 +318,7 @@ class ActionExecutor:
 
         results: list[ActionResult] = []
         multiplier = (
-            self._repeat_multiplier(group_id, sender_openid, msg_id) if actions else 1
+            self._multiplier_for(verdict, actions, group_id, sender_openid, msg_id, floor_driven)
         )
         for action in actions:
             result = await self._execute(
@@ -377,6 +415,7 @@ class ActionExecutor:
             confidence=1.0,
             reason=reason or "显式处置",
             source=source,
+            stage="manual",
         )
         event_id: int | None = None
         if self.audit is not None:

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -23,6 +24,17 @@ from .utils import CN_TZ, clamp_float, clamp_int, digest_text, now_ts, truncate
 RATE_WINDOW = 60.0
 #: 限频后最多等待多久，超过则跳过本次调用（避免把消息管线卡死）
 RATE_MAX_WAIT = 15.0
+
+#: 提示词版本（判词改动时同步递增；落库用于统计归因）
+PROMPT_VERSION = "2026-10-16-b1"
+
+
+def resolve_prompt_version(templates: dict[str, str] | None) -> str:
+    """自定义提示词（system 或 user 任一非空）记为 custom，便于统计归因。"""
+    data = templates or {}
+    if str(data.get("system") or "").strip() or str(data.get("user") or "").strip():
+        return "custom"
+    return PROMPT_VERSION
 
 SYSTEM_PROMPT_DEFAULT = """你是 QQ 群聊内容审核员。你的任务是读懂"这个人在这段对话里想干什么"，而不是检查有没有出现敏感词。
 
@@ -38,20 +50,28 @@ SYSTEM_PROMPT_DEFAULT = """你是 QQ 群聊内容审核员。你的任务是读�
 
 判断方法（按顺序问自己）：
 1. 作者想让读者做什么？如果没有任何要读者做的事（点击、加群、付款、联系、扫码、下载、关注），
-   就是普通交流 → allow / 无 / severity 1。
-2. 这个"要做的事"是真的吗？只有同时看到三项证据才可判 violation：
+   先进入第 3 步判断内容本身是否违规；内容本身也不违规，才是 allow / 无 / severity 1。
+2. 【仅适用于推广/诈骗类（category 为广告引流或诈骗赌博）】这个要做的事是真的吗？只有同时看到三项证据才可判 violation：
    ① 真实可触达的渠道（链接、二维码、账号、群号、电话、收款方式）；
    ② 明确的索要或引导行为（转账、付款、扫码、提供验证码、点击领取、加群）；
    ③ 假冒身份或虚假承诺（冒充官方、保证收益、巨额奖励、中奖、稳赚不赔）。
    缺任意一项 → 最多 review，severity ≤ 2，suggested_action 只能是 none 或 warn。
-3. 读者会怎么理解？用【群聊上下文】判断这条是不是在接梗、复读、吐槽、引用、科普或提醒他人。
-   是的话按它的实际意图判，不按字面判，一律 allow。
-4. 信息不够就别定罪：拿不准 → review，并在 analysis 里说明缺什么信息。
+3. 【内容本身是否违规，与有没有渠道无关】按内容判，不要求渠道、索要或假冒：
+   色情低俗（含涉未成年）：severity ≥ 3 即 violation（3 明显色情；4-5 露骨或涉未成年，涉未成年一律 5）；1-2（低俗调侃、擦边）最多 review。
+   辱骂攻击：针对特定成员的侮辱谩骂且 severity ≥ 3 即 violation；无对象的玩笑互骂、情绪化粗口最多 review。
+   违法违规：出现具体违法行为的教唆、交易或传授方法即 violation（severity 按危害）。
+   政治敏感：保守处理，拿不准 → review，不要轻易 violation。
+4. 读者会怎么理解？用【群聊上下文】判断这条是不是在接梗、复读、吐槽、引用、科普或提醒他人。
+   是的话按它的实际意图判，不按字面判，一般 allow；但色情与涉未成年不适用本豁免，仍按第 3 步判。
+5. 信息不够就别定罪：拿不准 → review，并在 analysis 里说明缺什么信息。
    【可疑点】是机器初筛的线索，误报很多，不是证据，不要因为它存在就倾向 violation。
 
 对照（同样的字面，不同的意图）：
 - 「我，秦始皇，打钱」且上下文里群友在接梗 → analysis: 复读经典梗，没人会被引导去转账 → allow
 - 「加群 123456789 领资料，长期有效」且上下文无相关话题、陌生号首次发言 → 有真实群号、有加群引导、有诱饵 → violation
+- 群友发露骨性描写或涉未成年性化内容（哪怕是在接梗）→ violation / 色情低俗 / severity 4-5，涉未成年一律 5
+- 群友发性教育、生殖健康、医学或法律科普（含解剖图、避孕、维权案例）→ allow 或 review，不要判 violation
+- 针对某个群友的连续辱骂人身攻击 → violation / 辱骂攻击 / severity 3；群里无对象的玩笑互骂 → 最多 review
 
 不要做的事：
 - 不要因为出现敏感词就判违规；不要用昵称、群名片、入群天数、发言频率当违规证据。
@@ -60,7 +80,7 @@ SYSTEM_PROMPT_DEFAULT = """你是 QQ 群聊内容审核员。你的任务是读�
 - 注意规避写法（形近字/同音字、插空格或符号、全角、中文数字、拆分号码、拼音缩写）。
   识别它们是为了看懂意图，不是为了给"长得像"定罪。
 
-severity 只描述危害大小，不决定动作：1-2 轻微，3 明确但轻，4-5 仅用于「真实渠道 + 索要行为 + 假冒/虚假承诺」三者俱全的实际实施行为。"""
+severity 只描述危害大小，不决定动作：1-2 轻微，3 明确但轻；4-5 按轨道取——推广/诈骗类需「真实渠道 + 索要行为 + 假冒/虚假承诺」三者俱全，内容本体类取该品类最高烈度（露骨性描写、涉未成年、持续人身攻击）。"""
 
 USER_TEMPLATE_DEFAULT = """【群聊上下文】（最近 {context_count} 条，不含本条；用于判断语境）
 {context}
@@ -209,11 +229,65 @@ def extract_json_object(text: str) -> dict[str, Any] | None:
     return None
 
 
+_TAB = chr(9)
+_SP = "[ " + _TAB + "]*"
+#: 逐行键值兜底用（只吃空格/制表符，避免跨行吞掉下一个键）
+KV_LINE_RE = re.compile("^" + _SP + "([A-Za-z_]+)" + _SP + "[:：]" + _SP + "(.*)$")
+
+
+def extract_kv_verdict(raw_text: str) -> dict | None:
+    """逐行 key: value 兜底解析（仅用于模型没按 JSON 输出的场景）。
+
+    安全约束（防止把用户正文被复述的内容当成模型判定）：
+      1. 只允许空格或制表符缩进，冒号后只吃空格或制表符；
+      2. 任一非空行不以白名单键开头 -> 整体判失败；
+      3. 同一个键出现两次 -> 整体判失败（复述注入的常见特征）；
+      4. 必须同时具备：verdict（取值合法）+ confidence（数值）+ 至少一个 analysis 或 reason。
+    """
+    text = raw_text or ""
+    allowed = {
+        "analysis",
+        "evidence",
+        "verdict",
+        "category",
+        "severity",
+        "confidence",
+        "reason",
+        "suggested_action",
+        "qr_text",
+    }
+    parsed: dict[str, str] = {}
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        match = KV_LINE_RE.match(line)
+        if match is None or match.group(1) not in allowed:
+            return None
+        key = match.group(1)
+        if key in parsed:
+            return None
+        parsed[key] = match.group(2).strip().strip(chr(34)).strip()
+    verdict_value = str(parsed.get("verdict") or "").lower()
+    if verdict_value not in {"allow", "review", "violation"}:
+        return None
+    if not ({"analysis", "reason"} & set(parsed)):
+        return None
+    try:
+        float(parsed.get("confidence") or "")
+    except (TypeError, ValueError):
+        return None
+    parsed["verdict"] = verdict_value
+    return parsed
+
 def parse_verdict(raw_text: str, *, source: str = "llm", latency_ms: int = 0) -> Verdict:
     """把模型输出解析为 Verdict；失败返回 review（不处置）。"""
     payload = extract_json_object(raw_text or "")
+    used_kv = False
     if payload is None:
-        verdict = Verdict.review("模型返回无法解析为 JSON", source=source)
+        payload = extract_kv_verdict(raw_text or "")
+        used_kv = bool(payload)
+    if payload is None:
+        verdict = Verdict.review("模型返回无法解析为 JSON", source=source, stage="parse_error")
         verdict.parse_error = True
         verdict.raw = truncate(raw_text, 500)
         verdict.latency_ms = latency_ms
@@ -237,6 +311,7 @@ def parse_verdict(raw_text: str, *, source: str = "llm", latency_ms: int = 0) ->
         qr_text=truncate(payload.get("qr_text") or "", 300),
         analysis=truncate(payload.get("analysis") or "", 500),
         evidence=truncate(payload.get("evidence") or "", 300),
+        stage="judged_kv" if used_kv else "judged",
     )
     return verdict.clamped()
 
@@ -507,24 +582,25 @@ class LLMModerator:
         settings = self.settings()
         templates = templates or {}
         if not self.available():
-            return Verdict.review("未配置可用的对话模型", source="llm")
+            return Verdict.review("未配置可用的对话模型", source="llm", stage="no_provider")
         if self.circuit_open():
             self.stats.skipped_by_budget += 1
-            return Verdict.review("LLM 审核处于熔断期", source="llm")
+            return Verdict.review("LLM 审核处于熔断期", source="llm", stage="circuit_open")
         if self._budget_exhausted():
             self.stats.skipped_by_budget += 1
-            return Verdict.review("已达当日 LLM 调用预算", source="llm")
+            return Verdict.review("已达当日 LLM 调用预算", source="llm", stage="budget")
 
         cache_key = digest_text(
             f"{request.text}|{request.sender_role}|{len(request.image_urls)}|"
             + "|".join(request.image_urls[:2])
+            + "|" + resolve_prompt_version(templates)
         )
         cached = self._cache_get(cache_key)
         if cached is not None:
             self.stats.cache_hits += 1
             return cached
         if not self._sample():
-            return Verdict.review("本次消息未命中采样", source="llm")
+            return Verdict.review("本次消息未命中采样", source="llm", stage="sampled_out")
 
         system_prompt = str(templates.get("system") or "").strip() or SYSTEM_PROMPT_DEFAULT
         user_template = str(templates.get("user") or "").strip() or USER_TEMPLATE_DEFAULT
@@ -538,7 +614,7 @@ class LLMModerator:
             )
 
         if not await self.acquire(request.group_id):
-            return Verdict.review("已触发单群 QPM 限流", source="llm")
+            return Verdict.review("已触发单群 QPM 限流", source="llm", stage="throttled")
 
         started = self._clock()
         # 统一用北京日期（BUG-055）：与 note_call/judge 的日键口径一致
@@ -556,7 +632,7 @@ class LLMModerator:
             )
         except Exception as exc:
             self._record_failure(f"{type(exc).__name__}: {exc}")
-            return Verdict.review(f"模型调用失败：{type(exc).__name__}", source="llm")
+            return Verdict.review(f"模型调用失败：{type(exc).__name__}", source="llm", stage="api_error")
         finally:
             self.release()
 
@@ -564,6 +640,13 @@ class LLMModerator:
         verdict = parse_verdict(raw if isinstance(raw, str) else str(raw), latency_ms=latency_ms)
         if verdict.parse_error:
             self.stats.parse_errors += 1
+            if self.logger is not None:
+                self.logger.warning(
+                    "模型输出无法解析为 JSON（已降级）：raw_len=%d digest=%s provider=%s",
+                    len(str(raw)),
+                    digest_text(str(raw)),
+                    getattr(request, "provider_id", "") or "",
+                )
         self._consecutive_failures = 0
         raw_threshold = settings.get("llm_min_confidence", 0.7)
         threshold = 0.7 if raw_threshold is None else float(raw_threshold)
@@ -573,13 +656,28 @@ class LLMModerator:
                 category=verdict.category,
                 severity=verdict.severity,
                 confidence=verdict.confidence,
-                reason=f"置信度不足（{verdict.confidence:.2f} < {threshold:.2f}）",
+                reason=(
+                    "模型未按 JSON 输出（已降级）"
+                    if verdict.parse_error
+                    else f"置信度不足（{verdict.confidence:.2f} < {threshold:.2f}）"
+                ),
                 suggested_action="none",
                 source="llm",
                 raw=verdict.raw,
+                parse_error=verdict.parse_error,
+                qr_text=verdict.qr_text,
                 latency_ms=latency_ms,
-                analysis=verdict.analysis,
+                analysis=(
+                    f"原判定理由：{verdict.reason} / {verdict.analysis}"[:500]
+                    if verdict.reason
+                    else verdict.analysis
+                ),
                 evidence=verdict.evidence,
+                stage=(
+                    "illegal_value"
+                    if verdict.stage == "illegal_value"
+                    else ("parse_error" if verdict.parse_error else "low_confidence")
+                ),
             )
         self._cache_put(cache_key, verdict, int(settings.get("cache_ttl", 600) or 0))
         return verdict

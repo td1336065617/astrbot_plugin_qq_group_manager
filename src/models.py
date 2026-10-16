@@ -412,19 +412,25 @@ class Verdict:
     analysis: str = ""
     #: 模型逐字摘录的判断依据（找不到可执行渠道时为空）
     evidence: str = ""
+    #: 判定阶段（0.15.3）：judged / judged_kv / parse_error / low_confidence / api_error /
+    #: circuit_open / no_provider / budget / sampled_out / throttled / illegal_value
+    stage: str = "judged"
 
     @property
     def is_violation(self) -> bool:
         return self.verdict == "violation"
 
     @classmethod
-    def review(cls, reason: str, *, source: str = "llm") -> Verdict:
+    def review(cls, reason: str, *, source: str = "llm", stage: str = "judged") -> Verdict:
         """构造"需要人工复核"的安全默认值。"""
-        return cls(verdict="review", reason=reason, source=source, confidence=0.0)
+        return cls(verdict="review", reason=reason, source=source, confidence=0.0, stage=stage)
 
     def clamped(self) -> Verdict:
         """把 LLM 返回的不合法字段钳制回合法范围。"""
-        verdict = self.verdict if self.verdict in {"allow", "review", "violation"} else "review"
+        legal = self.verdict in {"allow", "review", "violation"}
+        verdict = self.verdict if legal else "review"
+        #: 非法取值必须留痕（否则会被下游说成别的阶段）
+        stage = self.stage if legal else "illegal_value"
         severity = clamp_int(self.severity, 1, 1, 5)
         confidence = clamp_float(self.confidence, 0.0, 0.0, 1.0)
         return Verdict(
@@ -439,10 +445,14 @@ class Verdict:
             parse_error=self.parse_error,
             latency_ms=self.latency_ms,
             qr_text=self.qr_text[:300],
+            stage=stage,
             analysis=self.analysis[:500],
             evidence=self.evidence[:300],
         )
 
+
+#: B 轨道（内容本体）品类：动作地板只允许在这些品类收窄（空列表=全部品类）
+B_TRACK_CATEGORIES: tuple[str, ...] = ("色情低俗", "辱骂攻击", "政治敏感", "违法违规")
 
 def default_settings() -> dict[str, Any]:
     """首次安装时的默认配置（dry_run + lenient：只记录、只警告）。"""
@@ -565,6 +575,10 @@ def default_settings() -> dict[str, Any]:
         "menu_image": True,
         "probe_full_msg_interval": 1800,
         "capability_log_dedupe_window": 1800,
+    # 审核动作地板（0.15.3）：review 至少 warn/report；默认关（空列表=不启用）
+    "review_floor_actions": [],
+    # 空列表 = 对全部 stage=judged 的 review 生效（模型常把 category 写成"无"，按品类过滤会形同虚设）
+    "review_floor_categories": [],
     }
 
 
