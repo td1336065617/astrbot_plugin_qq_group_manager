@@ -97,3 +97,31 @@ def test_event_row_carries_fallback_index(tmp_path):
         return row
 
     assert run(scenario()) == ("judged", "2026-10-16-b1", 2)
+
+
+def test_manual_tool_mute_links_event_id():
+    "AI 工具（handle_manual）路径也必须把 event_id 写进禁言台账："
+    "生产上 27/27 禁言 source=llm_tool 且 event_id 为空，就是这条链路漏的。"
+    store, _api, audit, actions, config = make_env(capabilities=(CAP_RECALL, CAP_MUTE), dry_run=False)
+    settings = dict(store.settings())
+    # AI 工具在宽松模式下会把禁言降级成警告（无显式授权）；这里按生产实际的 standard 模式验证真禁言
+    settings["mode"] = "standard"
+    run(
+        actions.handle_manual(
+            action="mute",
+            group_id="g1",
+            config=config,
+            settings=settings,
+            sender_openid="u1",
+            sender_name="某人",
+            seconds=600,
+            umo="",
+            source="llm_tool",
+            reason="AI 工具请求禁言",
+            dedupe_key="ai:mute:u1",
+        )
+    )
+    row = audit.mutes.get(("g1", "u1"))
+    assert row, "工具路径必须写禁言台账"
+    assert row.get("event_id"), "工具路径必须带 event_id"
+    assert row.get("source") == "llm_tool"
