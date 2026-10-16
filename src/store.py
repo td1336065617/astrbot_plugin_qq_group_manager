@@ -809,6 +809,17 @@ class PluginStore:
             return ""
         return str(entry.get("role") or "")
 
+    def member_names(self, group_id: str, limit: int = 10) -> list[str]:
+        """本群在册成员的显示名（供工具在"找不到人"时回列，帮助模型纠正）。"""
+        names: list[str] = []
+        for entry in self._member_cache.get(group_id, {}).values():
+            name = str(entry.get("name") or "").strip()
+            if name and name not in names:
+                names.append(name)
+            if len(names) >= max(1, int(limit)):
+                break
+        return names
+
     def find_member_by_name(self, group_id: str, keyword: str) -> list[tuple[str, str]]:
         """按昵称关键字查本地缓存，返回 [(openid, name)]。"""
         needle = (keyword or "").strip().lstrip("@")

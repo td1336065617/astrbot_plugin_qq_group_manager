@@ -33,6 +33,19 @@ class FakeStore:
     def settings(self) -> dict:
         return dict(self._settings)
 
+    def find_member_by_name(self, group_id: str, keyword: str) -> list:
+        # 与真实 store 同契约：按昵称关键字查在册成员
+        needle = (keyword or '').strip().lstrip('@')
+        hits = [(k, v) for k, v in getattr(self, "member_cache_pairs", {}).items() if needle and needle in str(v)]
+        return hits
+
+    def member_name(self, group_id: str, openid: str) -> str:
+        return str(getattr(self, "member_cache_pairs", {}).get(openid, ""))
+
+    def member_names(self, group_id: str, limit: int = 10) -> list:
+        # 与真实 store 同契约：找不到人时工具会回列在册成员
+        return list(getattr(self, "member_cache_names", []))[:limit]
+
     def is_group_admin(self, group_id: str, openid: str) -> bool:
         return self._group_admin
 
@@ -61,6 +74,13 @@ class FakeEvent:
 
     def get_sender_id(self) -> str:
         return "u1"
+
+    def get_messages(self) -> list:
+        return []
+
+    # 真实事件都有这两个属性（_at_targets 会读）
+    message_str = ""
+    message_obj = None
 
     def is_admin(self) -> bool:
         return self._is_admin
@@ -252,3 +272,39 @@ def test_unmute_not_found_has_recovery_hint(monkeypatch) -> None:
     data = payload(run(bot.qqgm_unmute_user(FakeEvent(), target="查无此人")))
     assert data["ok"] is False and data["error"]["code"] == "not_found"
     assert data["error"].get("hint"), data
+
+
+def test_mute_accepts_raw_openid_without_member_cache(monkeypatch) -> None:
+    """生产实案：模型直接把成员 openid 当 target 传进来时必须能执行。
+
+    这条路径**不依赖**本插件的成员缓存（qq_official 的 openid 是群内唯一标识），
+    因此不允许出现"这人不在本群成员列表里"这种拒绝。
+    """
+    bot = make_bot({"qqgm_ai_tools_write_enabled": True}, group_admin=True)
+    openid = "DE50381AB242B0C2ACD020DA10DD72AD"
+    data = payload(run(bot.qqgm_mute_user(FakeEvent(), target=openid, minutes=10)))
+    assert data["ok"] is True, data
+    call = bot.actions.calls[0]
+    assert call["sender_openid"] == openid, call
+    assert call["seconds"] == 600, call
+
+
+def test_mute_not_found_lists_cached_members(monkeypatch) -> None:
+    """找不到人时要把在册成员回列出来，模型才能自己纠正（而不是去问别的插件）。"""
+    bot = make_bot({"qqgm_ai_tools_write_enabled": True}, group_admin=True)
+    monkeypatch.setattr(bot.store, "member_names", lambda group_id, limit=10: ["紫藤沙喵", "道"])
+    data = payload(run(bot.qqgm_mute_user(FakeEvent(), target="查无此人", minutes=10)))
+    assert data["ok"] is False and data["error"]["code"] == "not_found"
+    hint = str(data["error"].get("hint") or "")
+    assert "紫藤沙喵" in hint and "openid" in hint, data
+
+def test_mute_dedupe_key_contains_target() -> None:
+    """幂等键必须含目标：否则同群第二个不同目标会被误判成重复推送。"""
+    bot = make_bot({"qqgm_ai_tools_write_enabled": True}, group_admin=True)
+    first = "DE50381AB242B0C2ACD020DA10DD72AD"
+    second = "C6ED0C4158B81A7FA3A322E248E6DAD1"
+    payload(run(bot.qqgm_mute_user(FakeEvent(), target=first, minutes=5)))
+    payload(run(bot.qqgm_mute_user(FakeEvent(), target=second, minutes=5)))
+    keys = [call["dedupe_key"] for call in bot.actions.calls]
+    assert keys[0].endswith(first) and keys[1].endswith(second), keys
+    assert keys[0] != keys[1], keys

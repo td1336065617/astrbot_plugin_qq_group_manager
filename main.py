@@ -123,11 +123,12 @@ from .src.utils import (
     safe_json_dumps,
     strip_mention_tokens,
     to_iso,
+    QQ_RE,
 )
 from .src.web_api import EventBus, WebApi
 
 PLUGIN_NAME = "astrbot_plugin_qq_group_manager"
-VERSION = "0.15.1"
+VERSION = "0.15.2"
 
 STATE_FLUSH_INTERVAL = 30.0
 MAINTENANCE_INTERVAL = 3600.0
@@ -1729,6 +1730,9 @@ class QQGroupManager(Star):
                 continue
             if cleaned.startswith("u_") or OPENID_RE.fullmatch(cleaned):
                 return cleaned, self.store.member_name(group_id, cleaned)
+            if QQ_RE.fullmatch(cleaned) and not self.store.find_member_by_name(group_id, cleaned):
+                # OneBot 平台成员标识就是数字 QQ 号；若缓存里正好有人叫这个数字则优先按昵称
+                return cleaned, self.store.member_name(group_id, cleaned)
             matches = self.store.find_member_by_name(group_id, cleaned)
             if matches:
                 return matches[0]
@@ -2004,7 +2008,11 @@ class QQGroupManager(Star):
         何时别用：只是想警告时不要禁言；拿不准就先用只读工具确认身份。
 
         Args:
-            target(string): 必填，成员昵称或 @昵称（群里已绑定/在册的成员）。
+            target(string): 必填。三种写法都可以：① 群里 @ 提及（最稳）；
+                ② 成员 openid/QQ号（形如 DE50381AB242B0C2ACD020DA10DD72AD 或 u_xxx）；
+                ③ 成员群名片/昵称（按本插件缓存的在册成员匹配）。
+                注意：**不要**为了判断“这人还在不在群里”去调用其它插件的成员查询工具——
+                本工具收到 @ 或 openid 会直接执行，只有传昵称时才会查本插件缓存。
             minutes(number): 必填，禁言分钟数，1~43200（1 分钟 ~ 30 天）。
             reason(string): 可选，处置理由（会写进审计）。
         """
@@ -2018,7 +2026,11 @@ class QQGroupManager(Star):
         何时别用：禁言用 qqgm_mute_user。
 
         Args:
-            target(string): 必填，成员昵称或 @昵称。
+            target(string): 必填。三种写法都可以：① 群里 @ 提及（最稳）；
+                ② 成员 openid/QQ号（形如 DE50381AB242B0C2ACD020DA10DD72AD、u_xxx 或纯数字 QQ 号）；
+                ③ 成员群名片/昵称（按本插件缓存的在册成员匹配）。
+                注意：**不要**为了判断“这人还在不在群里”去调用其它插件的成员查询工具——
+                本工具收到 @ 或 openid/QQ号 会直接执行，只有传昵称时才会查本插件缓存。
         """
         return await self._ai_tool_unmute(event, kwargs)
 
@@ -2043,7 +2055,11 @@ class QQGroupManager(Star):
             return ai_common.fail(
                 "not_found",
                 "本群没有找到叫「%s」的成员" % target,
-                hint="可以让他先在群里发一条消息，或改用 @ 提及",
+                hint="本群在册成员：%s；也可以直接传 @提及 或成员 openid（形如 DE50381A…）"
+                % (
+                    ai_common.sanitize("、".join(self.store.member_names(group_id) or []), 200)
+                    or "（暂无缓存，可让他先发一条消息）"
+                ),
             )
         settings = dict(self.store.settings())
         if not settings.get("qqgm_ai_respect_lenient", True):
@@ -2102,7 +2118,11 @@ class QQGroupManager(Star):
             return ai_common.fail(
                 "not_found",
                 "本群没有找到叫「%s」的成员" % target,
-                hint="可以让他先在群里发一条消息，或改用 @ 提及",
+                hint="本群在册成员：%s；也可以直接传 @提及 或成员 openid（形如 DE50381A…）"
+                % (
+                    ai_common.sanitize("、".join(self.store.member_names(group_id) or []), 200)
+                    or "（暂无缓存，可让他先发一条消息）"
+                ),
             )
         settings = dict(self.store.settings())
         if not settings.get("qqgm_ai_respect_lenient", True):

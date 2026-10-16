@@ -152,6 +152,8 @@ MENTION_PLACEHOLDERS = frozenset({"qq_official", "unknown_selfid", "all", "every
 
 #: 官方族 openid 形态（32 位十六进制），用于「显式给出 ID」的判定
 OPENID_RE = re.compile(r"[0-9a-fA-F]{32}")
+#: 纯数字 QQ 号（aiocqhttp 平台的成员标识）
+QQ_RE = re.compile(r"\d{5,12}")
 
 
 def strip_mention_tokens(text: Any) -> str:

@@ -180,3 +180,16 @@ def test_prompt_settings_roundtrip_through_store():
         assert updated["flood_threshold"] == 5
 
     asyncio.run(scenario())
+
+def test_member_names_contract():
+    """member_names：按群过滤、去重、limit 生效（工具在找不到人时用它回列）。"""
+    store = PluginStore(FakeKV())
+    run(store.remember_member("gA", "id1", name="紫藤沙喵"))
+    run(store.remember_member("gA", "id2", name="道"))
+    run(store.remember_member("gA", "id3", name="道"))
+    run(store.remember_member("gB", "id9", name="另一个群的人"))
+    assert store.member_names("gA") == ["紫藤沙喵", "道"]
+    assert store.member_names("gA", limit=1) == ["紫藤沙喵"]
+    assert store.member_names("gB") == ["另一个群的人"]
+    assert store.member_names("gC") == []
+    assert isinstance(store.member_names("gA", limit=0), list)
