@@ -49,7 +49,7 @@ def score(manifest: list[dict], results: dict[str, str]) -> dict:
     scored = []
     for row in manifest:
         truth = str(row.get("human_label") or "").strip().lower()
-        sample_id = str(row.get("sample_id") or "").strip()
+        sample_id = str((row.get("sample_id") or row.get("id")) or "").strip()
         predicted = str(results.get(sample_id) or "").strip().lower()
         if truth not in LABELS or not predicted:
             continue
@@ -83,13 +83,18 @@ def main(argv: list[str]) -> int:
     rows = read_tsv(pathlib.Path(args.results))
     results = {}
     for row in rows:
-        sample_id = str(row.get("sample_id") or "").strip()
+        sample_id = str((row.get("sample_id") or row.get("id")) or "").strip()
         verdict = str(row.get("new_verdict") or "").strip().lower()
         if sample_id:
             results[sample_id] = verdict
 
     report = score(manifest, results)
     kappa = cohen_kappa([(str(r.get("human_label") or ""), str(r.get("human_label_2") or "")) for r in manifest])
+    if not report.get("scored"):
+        print("  [FAIL] 没有可评分的样本：manifest 需要 human_label（人工标注），"
+              "results 需要 sample_id/new_verdict 两列。少任何一列都会得到「全 0」的假结论。")
+        return 2
+
     print(f"已评分 {report[chr(115)+chr(99)+chr(111)+chr(114)+chr(101)+chr(100)]} 条（负例 {report[chr(110)+chr(101)+chr(103)+chr(97)+chr(116)+chr(105)+chr(118)+chr(101)+chr(115)]} / 正例 {report[chr(112)+chr(111)+chr(115)+chr(105)+chr(116)+chr(105)+chr(118)+chr(101)+chr(115)]}）")
     print(f"误杀率 {report[chr(102)+chr(97)+chr(108)+chr(115)+chr(101)+chr(95)+chr(112)+chr(111)+chr(115)+chr(105)+chr(116)+chr(105)+chr(118)+chr(101)+chr(95)+chr(114)+chr(97)+chr(116)+chr(101)]:.2%}；漏杀率 {report[chr(102)+chr(97)+chr(108)+chr(115)+chr(101)+chr(95)+chr(110)+chr(101)+chr(103)+chr(97)+chr(116)+chr(105)+chr(118)+chr(101)+chr(95)+chr(114)+chr(97)+chr(116)+chr(101)]:.2%}；一致率 {report[chr(97)+chr(103)+chr(114)+chr(101)+chr(101)+chr(109)+chr(101)+chr(110)+chr(116)]:.2%}")
     print(f"两标注人 kappa = {kappa:.3f}（清单里没有 human_label_2 时不可信）")

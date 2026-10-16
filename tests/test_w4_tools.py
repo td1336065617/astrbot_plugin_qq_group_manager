@@ -162,3 +162,37 @@ def test_acceptance_report_flags_unknown_stage(tmp_path):
     report = build_report(db, DEPLOY)
     assert report["passed"] is False
     assert any(item["id"] == "D" and not item["ok"] for item in report["checks"])
+
+
+def _write(path, text):
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_regression_score_fails_loudly_when_unlabelled(tmp_path, capsys):
+    "未标注的清单（回放导出的原始产物）不得给出「全 0」的假结论，必须判失败。"
+    from tools.regression_score import main
+
+    manifest = _write(tmp_path / "m.tsv", "id\tverdict\n1\tallow\n")
+    results = _write(tmp_path / "r.tsv", "sample_id\tnew_verdict\n1\tallow\n")
+    code = main(["--manifest", str(manifest), "--results", str(results)])
+    out = capsys.readouterr().out
+    assert code == 2, out
+    assert "FAIL" in out
+
+
+def test_regression_score_accepts_id_keyed_results(tmp_path, capsys):
+    "回放导出用 id；评分器必须能直接串起来用（这是两个交付件之间的真实集成点）。"
+    from tools.regression_score import main
+
+    manifest = _write(
+        tmp_path / "m2.tsv",
+        "id\thuman_label\n1\tallow\n2\tviolation\n3\tallow\n",
+    )
+    results = _write(tmp_path / "r2.tsv", "id\tnew_verdict\n1\tallow\n2\tallow\n3\tallow\n")
+    code = main(["--manifest", str(manifest), "--results", str(results)])
+    out = capsys.readouterr().out
+    assert "已评分 3 条" in out, out
+    # 评分器只对「误杀率」设退出码门槛（误杀优先），漏杀只报告 —— 这里断言漏杀被正确算出来
+    assert code == 0, out
+    assert "漏杀率 100.00%" in out, out
