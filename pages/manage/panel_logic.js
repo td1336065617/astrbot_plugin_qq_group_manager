@@ -6,6 +6,7 @@
  * 不需要浏览器、不需要打包工具。
  */
 
+/** 勾选/取消一个备用模型；勾选时追加到末尾（末尾=优先级最低） */
 export function toggleProvider(order, id, checked) {
   const list = Array.isArray(order) ? order.slice() : [];
   const key = String(id || '');

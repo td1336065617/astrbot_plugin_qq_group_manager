@@ -236,3 +236,10 @@ def test_lenient_mode_does_not_act_on_judged_kv_violation():
     judged_violation = Verdict(verdict="violation", category="色情低俗", severity=4, confidence=0.99, stage="judged")
     run(ex.handle(group_id="g1", config=config, verdict=judged_violation, settings=settings, send=send))
     assert sent, "正常 judged 的 violation 在 lenient 下仍应补一条 warn"
+
+def test_review_with_hard_actions_still_reports():
+    """review 命中硬规则时，除硬动作外必须补一条上报（地板移除后仍需守住）。"""
+    settings = dict(default_settings())
+    verdict = Verdict(verdict="review", category="广告引流", severity=2, confidence=0.9, stage="judged")
+    actions = executor().plan_actions(verdict=verdict, settings=settings, hard_actions=["warn"])
+    assert actions == ["warn", "report"]
