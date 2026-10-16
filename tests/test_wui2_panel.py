@@ -66,3 +66,11 @@ def test_fields_do_not_nest_labels():
     text = app_js()
     assert "text: '审核模型' }), providerSelect, fallbackList.node]" not in text, "嵌套 label 必须拆开"
     assert "card('模型'," in text, "模型与备用模型要独立成组"
+
+def test_join_provider_list_field_cannot_break_rendering():
+    """P0 回归锁：入群卡的 provider_list 没有原生 input，循环里必须 guard，否则整页渲染中断（0.15.4 起存在）。"""
+    text = app_js()
+    assert "input: null" in text, "provider_list 必须显式声明没有 input"
+    assert "subscribe:" in text, "provider_list 必须提供 subscribe 供群级 dirty 记账"
+    assert "if (built.input) built.input.disabled" in text, "入群卡循环必须先判空再设 disabled"
+    assert "if (built.input) {   // provider_list 走 subscribe" in text, "input 事件监听同样要判空"

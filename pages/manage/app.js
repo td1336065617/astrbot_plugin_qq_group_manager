@@ -917,6 +917,7 @@ async function viewPolicy(root) {
   });
   const providerInfo = config.providers || {};
   const providerSelect = el('select');
+  providerSelect.setAttribute('aria-label', '主模型（发言审核）');
   providerSelect.appendChild(el('option', { value: '', text: '跟随会话默认模型' }));
   // BUG-06：当前配置的模型不在候选里时补占位项，避免保存时被静默清空
   const configuredId = settings.llm_provider_id || '';
@@ -1785,9 +1786,10 @@ async function openProviderPicker(items, order, onDone) {
 }
 
 /** 备用模型字段：返回 { node, read }，read 按优先级顺序返回 id 数组 */
-function buildProviderList(label, value, providerInfo) {
+function buildProviderList(label, value, providerInfo, onChange) {
   const items = mergeProviders(value, ((providerInfo || {}).items) || []);
   let order = (Array.isArray(value) ? value : []).map(String).filter(Boolean);
+  let notify = () => { if (typeof onChange == 'function') onChange(order.slice()); };
   const chipRow = el('div', { class: 'chip-row' });
   const summary = el('p', { class: 'field-help' });
   const button = el('button', { class: 'btn ghost small', type: 'button' });
@@ -1800,15 +1802,16 @@ function buildProviderList(label, value, providerInfo) {
     chips.forEach((chip, index) => {
       const up = el('button', { class: 'chip-btn', type: 'button', title: '上移（更优先）', text: '↑' });
       up.disabled = index === 0;
-      up.addEventListener('click', () => { order = moveProvider(order, chip.id, -1); render(); });
+      up.addEventListener('click', () => { order = moveProvider(order, chip.id, -1); render(); notify(); });
       const down = el('button', { class: 'chip-btn', type: 'button', title: '下移', text: '↓' });
       down.disabled = index === chips.length - 1;
-      down.addEventListener('click', () => { order = moveProvider(order, chip.id, 1); render(); });
+      down.addEventListener('click', () => { order = moveProvider(order, chip.id, 1); render(); notify(); });
       const drop = el('button', { class: 'chip-btn', type: 'button', title: '移除', text: '✕' });
-      drop.addEventListener('click', () => { order = toggleProvider(order, chip.id, false); render(); });
+      drop.addEventListener('click', () => { order = toggleProvider(order, chip.id, false); render(); notify(); });
       chipRow.appendChild(el('span', { class: 'chip' + (chip.missing ? ' missing' : '') }, [
         el('span', { class: 'chip-prio', text: String(chip.priority) }),
         el('span', { class: 'chip-name', text: chip.title }),
+        chip.subtitle ? el('span', { class: 'chip-sub', text: chip.subtitle }) : null,
         chip.missing ? el('span', { class: 'chip-sub', text: '当前不可用' }) : null,
         up,
         down,
@@ -1817,11 +1820,11 @@ function buildProviderList(label, value, providerInfo) {
     });
     button.textContent = order.length ? selectionLabel(order.length) + ' · 修改' : '选择备用模型…';
     summary.textContent = order.length
-      ? '主模型失败时按编号顺序依次换模型重试（先 1，再 2…），全部失败才记为「没审成」。'
-      : '留空即可：主模型失败时不做回退，按现状记为「没审成」。';
+      ? '主模型失败时按编号顺序依次换模型重试（先 1，再 2…），全部失败才记为「没审成」。最多 8 个，超出会被忽略。'
+      : '留空 = 只用上面选的模型；主模型失败后仍会再试一次「会话默认模型」，全部失败才记为「没审成」。';
   };
   button.addEventListener('click', () => {
-    openProviderPicker(items, order, (next) => { order = next; render(); });
+    openProviderPicker(items, order, (next) => { order = next; render(); notify(); });
   });
   render();
   return {
@@ -1832,16 +1835,19 @@ function buildProviderList(label, value, providerInfo) {
       summary,
     ]),
     read: () => order.slice(),
+    input: null,   // provider_list 没有原生 input：改由 subscribe 通知外层（否则群级编辑永远不脏）
+    subscribe: (cb) => { notify = typeof cb == 'function' ? cb : () => {}; },
   };
 }
 
 
 /* 按规格构建一个字段控件；返回 { node, input, read }（read 返回**解析后**的提交值） */
-function buildJoinField(key, spec, value, providerInfo) {
+function buildJoinField(key, spec, value, providerInfo, onChange) {
   const display = Array.isArray(value) ? value.join('\n') : (value === undefined || value === null ? '' : value);
   let node = null;
   let input = null;
   let read = () => '';
+  let subscribe = null;
   if (spec.kind === 'check') {
     const built = checkField(spec.label, value);
     node = built.node;
@@ -1875,9 +1881,10 @@ function buildJoinField(key, spec, value, providerInfo) {
     node = el('label', { class: 'field' }, [el('span', { text: spec.label }), input]);
     read = () => input.value;
   } else if (spec.kind === 'provider_list') {
-    const built = buildProviderList(spec.label, value, providerInfo);
+    const built = buildProviderList(spec.label, value, providerInfo, onChange);
     node = built.node;
     read = built.read;
+    subscribe = built.subscribe;
   } else if (spec.kind === 'provider') {
     input = el('select');
     input.appendChild(el('option', { value: '', text: '跟随发言审核模型' }));
@@ -1902,7 +1909,7 @@ function buildJoinField(key, spec, value, providerInfo) {
     const baseRead = read;
     read = () => spec.parse(baseRead());
   }
-  return { node, input, read };
+  return { node, input, read, subscribe };
 }
 
 /* ------------------------------------------------------- 入群审批视图 */
@@ -2055,8 +2062,16 @@ async function viewJoins(root) {
       ? settings[key]
       : (isOwn ? (scope.overrides || {})[key] : settings[key]);
     const initialValue = (!scope.follow_global && joinEdit && key in joinEdit.dirty) ? joinEdit.dirty[key] : serverValue;
-    const built = buildJoinField(key, spec, initialValue, joinProviderInfo);
-    built.input.disabled = !!scope.follow_global;   // 开态：只读取全局值
+    const built = buildJoinField(key, spec, initialValue, joinProviderInfo, (next) => {
+      if (scope.follow_global) return;
+      const entry = ensureEdit();
+      entry.reset = entry.reset.filter((item) => item !== key);
+      entry.dirty[key] = next;
+      badgeEl.className = 'scope-badge own pending';
+      badgeEl.textContent = '本群·待保存';
+      if (discardBtnNode) discardBtnNode.style.display = '';
+    });
+    if (built.input) built.input.disabled = !!scope.follow_global;   // 开态：只读取全局值（provider_list 没有 input）
     let badgeClass = 'follow';
     let badgeText = '跟随';
     if (scope.follow_global) {
@@ -2099,8 +2114,10 @@ async function viewJoins(root) {
         badgeEl.textContent = '本群·待保存';
         if (discardBtnNode) discardBtnNode.style.display = '';
       };
-      built.input.addEventListener('input', onInput);
-      built.input.addEventListener('change', onInput);
+      if (built.input) {   // provider_list 走 subscribe，不在这里
+        built.input.addEventListener('input', onInput);
+        built.input.addEventListener('change', onInput);
+      }
     }
     (groupRows[spec.row] = groupRows[spec.row] || []).push(built.node);
   });

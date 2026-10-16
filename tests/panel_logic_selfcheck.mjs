@@ -5,6 +5,8 @@
  * import 用相对路径，node 按文件位置解析，所以从任何 cwd 跑都一样。
  */
 
+import { readFileSync } from "node:fs";
+const __src = readFileSync(new URL(import.meta.url), "utf8");
 import * as L from "../pages/manage/panel_logic.js";
 
 function eq(name, got, want) {
@@ -43,4 +45,10 @@ eq("search", L.matchProviders([{ id: "a", model: "qq" }, { id: "b", model: "zz" 
 eq("search_all", L.matchProviders([{ id: "a" }], "   ").length, 1);
 
 
-console.log("panel_logic 自检通过（" + "16 项断言）");
+const __n = (__src.match(/eq\(/g) || []).length;
+console.log("panel_logic 自检通过（" + __n + " 项断言）");
+// 复合用法（buildProviderList 的真实调用）：先 merge 再 decorate 也必须保留「当前不可用」
+const cfg = ["gone/stale"];
+const items = L.mergeProviders(cfg, [{ id: "x", model: "m1" }]);
+const dec = L.decorateProviders(cfg, items);
+eq("decorate_missing", dec.map((i) => i.missing), [true]);

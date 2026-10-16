@@ -36,7 +36,8 @@ export function mergeProviders(configured, items) {
   const list = (Array.isArray(items) ? items : []).filter(function (item) {
     return item && item.id;
   }).map(function (item) {
-    return { id: String(item.id), model: String(item.model || ''), type: String(item.type || ''), missing: false };
+    // 保留入参已有的 missing 标记：复合用法（先 merge 再 decorate）曾经把标记丢掉，导致「当前不可用」永不显示
+    return { id: String(item.id), model: String(item.model || ''), type: String(item.type || ''), missing: Boolean(item.missing) };
   });
   const known = {};
   list.forEach(function (item) { known[item.id] = true; });
@@ -75,7 +76,7 @@ export function decorateProviders(order, items) {
       subtitle: info.subtitle,
       type: info.type,
       priority: index + 1,
-      missing: !pool[id],
+      missing: !pool[id] || Boolean(pool[id] && pool[id].missing),   // 入参 items 已被 mergeProviders 补过缺失项，不能只看 pool
     };
   });
 }
