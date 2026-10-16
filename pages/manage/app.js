@@ -9,6 +9,20 @@
  * 注意：不使用模板字符串与任何 CDN 依赖，保持零构建。
  */
 
+import {
+  FLOOR_ACTION_CHOICES,
+  floorOverrides,
+  floorSentence,
+  FLOOR_CATEGORIES,
+  decorateProviders,
+  matchProviders,
+  mergeProviders,
+  moveProvider,
+  providerDisplay,
+  selectionLabel,
+  toggleProvider,
+} from './panel_logic.js';
+
 const bridge = window.AstrBotPluginPage;
 const PLUGIN = 'astrbot_plugin_qq_group_manager';
 
@@ -58,7 +72,13 @@ function uiModal(options) {
     const overlay = el('div', { class: 'modal-overlay' });
     const box = el('div', { class: 'modal-box' });
     box.appendChild(el('h3', { text: opts.title || '请确认' }));
-    if (opts.body) box.appendChild(el('div', { class: 'modal-body', text: opts.body }));
+    if (opts.content) {
+      const wrap = el('div', { class: 'modal-body' });
+      wrap.appendChild(opts.content);
+      box.appendChild(wrap);
+    } else if (opts.body) {
+      box.appendChild(el('div', { class: 'modal-body', text: opts.body }));
+    }
     let input = null;
     if (opts.input) {
       input = el('input', { type: 'text', value: opts.defaultValue || '' });
@@ -854,10 +874,11 @@ function numField(label, value, min, max, step) {
   return { node: el('label', { class: 'field' }, [el('span', { text: label }), input]), input };
 }
 
-function checkField(label, value) {
+function checkField(label, value, compact) {
   const input = el('input', { type: 'checkbox' });
   input.checked = !!value;
-  return { node: el('label', { class: 'field' }, [el('span', { text: label }), input]), input };
+  const klass = compact ? 'field compact' : 'field';
+  return { node: el('label', { class: klass }, [el('span', { text: label }), input]), input };
 }
 
 async function viewPolicy(root) {
@@ -873,29 +894,89 @@ async function viewPolicy(root) {
   const blockLlm = checkField('违规消息阻断后续 LLM 对话', settings.block_llm_on_violation);
   const repeatMul = checkField('重复违规时长累加（≤3 倍）', settings.repeat_offense_multiplier);
   const autoBlacklist = checkField('自动拉黑（内邀能力）', settings.auto_blacklist);
-  const floorWarn = checkField('警告', (settings.review_floor_actions || []).includes('warn'));
-  const floorReport = checkField('上报', (settings.review_floor_actions || []).includes('report'));
-  const floorCatPorn = checkField('色情低俗', (settings.review_floor_categories || []).includes('色情低俗'));
-  const floorCatAbuse = checkField('辱骂攻击', (settings.review_floor_categories || []).includes('辱骂攻击'));
-  const floorCatPolitics = checkField('政治敏感', (settings.review_floor_categories || []).includes('政治敏感'));
-  const floorCatIllegal = checkField('违法违规', (settings.review_floor_categories || []).includes('违法违规'));
-  const floorCooldown = numField('同成员冷却（秒，0=关）', settings.review_floor_cooldown_seconds || 0, 0, 86400, 1);
-  const floorDaily = numField('单群每日上限（次，0=关）', settings.review_floor_daily_limit || 0, 0, 1000, 1);
-  const FLOOR_CATEGORIES = ['色情低俗', '辱骂攻击', '政治敏感', '违法违规'];
+  /* —— 兜底处置（原「动作地板」）：主开关 + 三层 —— */
+  const floorOn = checkField('启用兜底处置', (settings.review_floor_actions || []).length > 0);
+  const floorWarn = checkField('警告（在群里发一条提醒）', (settings.review_floor_actions || []).includes('warn'), true);
+  const floorReport = checkField('上报（通知管理员）', (settings.review_floor_actions || []).includes('report'), true);
+  const floorCatFields = FLOOR_CATEGORIES.map((category) => ({
+    category: category,
+    field: checkField(category, (settings.review_floor_categories || []).includes(category), true),
+  }));
+  const floorCooldown = numField('同一成员冷却（秒，0=不限制）', settings.review_floor_cooldown_seconds || 0, 0, 86400, 1);
+  const floorDaily = numField('单群每日上限（次，0=不限制）', settings.review_floor_daily_limit || 0, 0, 1000, 1);
   const floorPerCategory = FLOOR_CATEGORIES.map((category) => {
     const current = (settings.review_floor_by_category || {})[category] || null;
     const select = el('select');
-    [
-      ['', '跟随上面的动作'],
-      ['warn', '仅警告'],
-      ['report', '仅上报'],
-      ['warn,report', '警告 + 上报'],
-    ].forEach((pair) => {
-      const value = current === null ? '' : current.join(',');
+    const value = current === null ? '' : current.join(',');
+    FLOOR_ACTION_CHOICES.forEach((pair) => {
       select.appendChild(el('option', { value: pair[0], text: pair[1], selected: pair[0] === value ? 'selected' : null }));
     });
     return { category: category, select: select };
   });
+  const floorSummary = el('p', { class: 'field-help strong' });
+  let floorBody = null;
+  const readFloor = () => ({
+    review_floor_actions: floorOn.input.checked
+      ? [].concat(floorWarn.input.checked ? ['warn'] : [], floorReport.input.checked ? ['report'] : [])
+      : [],
+    review_floor_categories: floorCatFields.filter((item) => item.field.input.checked).map((item) => item.category),
+    review_floor_cooldown_seconds: Number(floorCooldown.input.value || 0),
+    review_floor_daily_limit: Number(floorDaily.input.value || 0),
+    review_floor_by_category: Object.fromEntries(
+      floorPerCategory
+        .filter((item) => item.select.value)
+        .map((item) => [item.category, item.select.value.split(',')]),
+    ),
+  });
+  const renderFloor = () => {
+    if (floorBody) floorBody.hidden = !floorOn.input.checked;
+    const draft = readFloor();
+    const actions = draft.review_floor_actions.length ? draft.review_floor_actions : ['warn'];
+    let text = floorSentence(draft);
+    const overrides = floorOverrides(Object.assign({}, draft, { review_floor_actions: actions }));
+    if (overrides.length) text += '品类差异化：' + overrides.join('；') + '。';
+    floorSummary.textContent = text;
+  };
+  const floorInputs = [floorOn, floorWarn, floorReport].concat(floorCatFields.map((item) => item.field));
+  floorInputs.forEach((field) => field.input.addEventListener('change', () => {
+    if (field === floorOn && floorOn.input.checked && !floorWarn.input.checked && !floorReport.input.checked) {
+      floorWarn.input.checked = true;   // 开启后必须至少有一个动作，否则等于没开
+    }
+    renderFloor();
+  }));
+  [floorCooldown, floorDaily].forEach((field) => field.input.addEventListener('input', renderFloor));
+  floorPerCategory.forEach((item) => item.select.addEventListener('change', renderFloor));
+
+  const floorGroup = el('div', { class: 'field-group' }, [
+    el('div', { class: 'group-title', text: '兜底处置（默认关闭）' }),
+    el('div', { class: 'group-hint', text: '什么叫「需要人工复核」：AI 拿不准，只回了 review 结论，而且没有任何硬规则给出动作；不兜底的话，这条消息就只剩一条日志，群里看不到任何反应。' }),
+    floorOn.node,
+    floorSummary,
+    (floorBody = el('div', { class: 'field-group-body' }, [
+      el('div', { class: 'group-sub', text: '① 什么时候兜底' }),
+      el('div', { class: 'row' }, [
+        el('span', { class: 'row-label', text: '生效品类' }),
+        ...floorCatFields.map((item) => item.field.node),
+        el('span', { class: 'hint', text: '一个都不勾 = 所有品类' }),
+      ]),
+      el('div', { class: 'group-sub', text: '② 兜底做什么' }),
+      el('div', { class: 'row' }, [
+        el('span', { class: 'row-label', text: '动作' }),
+        floorWarn.node,
+        floorReport.node,
+      ]),
+      el('div', { class: 'row' }, [
+        el('span', { class: 'row-label', text: '按品类微调' }),
+        ...floorPerCategory.map((item) => el('label', { class: 'inline-field' }, [
+          el('span', { text: item.category }),
+          item.select,
+        ])),
+      ]),
+      el('div', { class: 'group-sub', text: '③ 防刷屏（可选）' }),
+      el('div', { class: 'row' }, [floorCooldown.node, floorDaily.node]),
+    ])),
+  ]);
+  renderFloor();
   const autoRemove = checkField('自动移除成员（内邀能力，风险高）', settings.auto_remove);
   /* AI 能力（工具） */
   const aiToolsOn = checkField('开启 AI 工具（只读：群信息 / 审核状态 / 统计 / 日志）', settings.qqgm_ai_tools_enabled !== false);
@@ -1099,23 +1180,7 @@ async function viewPolicy(root) {
       qqgm_ai_throttle_window: Number(aiThrottleWindow.input.value),
       prompt_system: systemPrompt.value,
       prompt_user: userPrompt.value,
-      review_floor_actions: [
-        ...(floorWarn.input.checked ? ['warn'] : []),
-        ...(floorReport.input.checked ? ['report'] : []),
-      ],
-      review_floor_categories: [
-        ...(floorCatPorn.input.checked ? ['色情低俗'] : []),
-        ...(floorCatAbuse.input.checked ? ['辱骂攻击'] : []),
-        ...(floorCatPolitics.input.checked ? ['政治敏感'] : []),
-        ...(floorCatIllegal.input.checked ? ['违法违规'] : []),
-      ],
-      review_floor_cooldown_seconds: Number(floorCooldown.input.value),
-      review_floor_daily_limit: Number(floorDaily.input.value),
-      review_floor_by_category: Object.fromEntries(
-        floorPerCategory
-          .filter((item) => item.select.value)
-          .map((item) => [item.category, item.select.value.split(',')]),
-      ),
+      ...readFloor(),
     };
     try {
       await bridge.apiPost('config', { section: 'settings', data: payload });
@@ -1161,11 +1226,22 @@ async function viewPolicy(root) {
     el('p', { class: 'card-desc', text: '申诉通过会自动解禁（若该事件产生过禁言）并追加 appeal_accepted 动作留痕，不删除原审核事件。' }),
   ]));
 
+  root.appendChild(card('模型', '审核用哪个对话模型；主模型超时或失败时，按下面的顺序自动换备用模型继续判。',
+    [
+    el('div', { class: 'row' }, [
+      el('div', { class: 'field-block' }, [
+        el('span', { class: 'field-label', text: '主模型（发言审核）' }),
+        providerSelect,
+      ]),
+      ]),
+      providerHint,
+      fallbackList.node,
+    ]));
+
   root.appendChild(card('运行参数', '首次安装默认 dry-run + lenient；确认判定质量后再关闭 dry-run 并切到标准档。', [
     el('div', { class: 'row' }, [dryRun.node, dryRunWarn.node, allowNoFull.node, blockLlm.node]),
     el('div', { class: 'row' }, [
       el('label', { class: 'field' }, [el('span', { text: '默认模式' }), modeSelect]),
-      el('label', { class: 'field' }, [el('span', { text: '审核模型' }), providerSelect, fallbackList.node]),
       el('label', { class: 'field' }, [el('span', { text: '图片审核' }), imageReview]),
       minConf.node, sampleRate.node, timeoutField.node,
     ]),
@@ -1176,37 +1252,7 @@ async function viewPolicy(root) {
     (systemPrompt.value.trim() || userPrompt.value.trim())
       ? el('div', { class: 'hint' }, ['当前使用自定义提示词，本次判词更新（PROMPT_VERSION）不会生效；清空下面两个输入框即可恢复默认。'])
       : null,
-    el('div', { class: 'field-group' }, [
-      el('div', { class: 'group-title', text: '动作地板（默认关闭）' }),
-      el('div', { class: 'hint', text: '触发条件：判定为 review 且没有硬规则动作时，至少给出下面勾选的动作。' }),
-      el('div', { class: 'row' }, [
-        el('span', { class: 'group-label', text: '执行动作' }),
-        floorWarn.node,
-        floorReport.node,
-      ]),
-      el('div', { class: 'row' }, [
-        el('span', { class: 'group-label', text: '生效品类' }),
-        floorCatPorn.node,
-        floorCatAbuse.node,
-        floorCatPolitics.node,
-        floorCatIllegal.node,
-        el('span', { class: 'hint', text: '不勾=全部品类' }),
-      ]),
-      el('div', { class: 'row' }, [
-        el('span', { class: 'group-label', text: '防刷屏' }),
-        floorCooldown.node,
-        floorDaily.node,
-      ]),
-      el('div', { class: 'row' }, [
-        el('span', { class: 'group-label', text: '品类差异化' }),
-        ...floorPerCategory.map((item) => el('label', { class: 'inline-field' }, [
-          el('span', { text: item.category }),
-          item.select,
-        ])),
-        el('span', { class: 'hint', text: '留空=用上面的执行动作' }),
-      ]),
-    ]),
-    providerHint,
+    floorGroup,
     el('label', { class: 'field' }, [el('span', { text: '管理员通知会话（umo）' }), notifySession]),
     el('div', { class: 'field-actions' }, [el('span', { class: 'muted', text: '送审条件：' })]),
     conditions,
@@ -1743,7 +1789,7 @@ const JOIN_FIELD_SPECS = {
   join_answer_action: { kind: 'select', row: 6, label: '答案校验未通过时', options: [['manual', '转人工（推荐）'], ['decline', '自动拒绝'], ['pass', '放行']] },
   join_answer_case_sensitive: { kind: 'check', row: 6, label: '答案校验区分大小写' },
   join_llm_provider_id: { kind: 'provider', row: 5, label: '审核模型' },
-  join_llm_fallback_provider_ids: { kind: 'provider_list', row: 5, label: '备用模型（勾选顺序即优先级，留空=关闭）' },
+  join_llm_fallback_provider_ids: { kind: 'provider_list', row: 5, label: '备用模型（入群审批；主模型失败时按顺序回退）' },
   /* —— 全局独有（不分群），只在全局卡出现 —— */
   join_poll_interval: { kind: 'number', row: 2, label: '轮询间隔（秒，仅官方通道）', min: 30, max: 600, step: 5, globalOnly: true },
   join_profile_cache_days: { kind: 'number', row: 3, label: '画像缓存（天）', min: 0, max: 90, step: 1, globalOnly: true },
@@ -1763,45 +1809,118 @@ function fmtJoinScope(scope) {
 
 /* 备用模型多选：勾选顺序 = 回退优先级（数字越小越先用）；候选来自使用者自己配好的 provider 列表。
    入群链路与发言审核链路共用。返回 { node, read }。 */
-function buildProviderList(label, value, providerInfo) {
-  const items = (((providerInfo || {}).items) || []).slice();
-  const current = Array.isArray(value) ? value.map(String).filter(Boolean) : [];
-  const known = new Set(items.map((item) => item.id));
-  current.filter((id) => !known.has(id)).forEach((id) => items.push({ id: id, model: id, type: '当前不可用' }));
-  const order = current.slice();
-  const box = el('div', { class: 'provider-list' });
-  const render = () => {
-    clear(box);
-    if (!items.length) {
-      box.appendChild(el('p', { class: 'hint', text: '还没有可选的模型：先到「服务提供商」里配置至少一个对话模型。' }));
+/* ------------------------------------------------- 备用模型选择器（AstrBot 风格） */
+
+/**
+ * 备用模型选择：按钮 + 弹窗多选 + 搜索，已选项在按钮下方以「带优先级的芯片」呈现。
+ * 参考 AstrBot 自身的 ProviderSelectMenu（multiple=true）与文案键
+ * core.shared.providerSelector.selectProviderPool / selectedCount。
+ * 不复用其 Vue 组件的原因：插件页只能拿到 bridge 的 apiGet/apiPost，没有组件注入能力。
+ */
+async function openProviderPicker(items, order, onDone) {
+  let draft = (Array.isArray(order) ? order : []).slice();
+  const listBox = el('div', { class: 'picker-list' });
+  const search = el('input', {
+    type: 'search',
+    class: 'picker-search',
+    placeholder: '搜索模型名或 id',
+  });
+  const countLine = el('p', { class: 'field-help' });
+  const renderCount = () => {
+    countLine.textContent = selectionLabel(draft.length)
+      + (draft.length ? '：按勾选先后决定优先级，可在面板上用 ↑ ↓ 调整。' : '（留空表示不使用备用模型）');
+  };
+  const renderList = () => {
+    clear(listBox);
+    const shown = matchProviders(items, search.value);
+    if (!shown.length) {
+      listBox.appendChild(el('p', { class: 'muted', text: items.length ? '没有匹配的模型。' : '还没有可选的模型。请先在 AstrBot「服务提供商」里添加对话模型。' }));
     }
-    items.forEach((item) => {
-      const pos = order.indexOf(item.id);
-      const checked = pos >= 0;
+    shown.forEach((item) => {
+      const pos = draft.indexOf(item.id);
       const input = el('input', { type: 'checkbox' });
-      input.checked = checked;
+      input.checked = pos >= 0;
       input.addEventListener('change', () => {
-        if (input.checked) {
-          if (order.indexOf(item.id) < 0) order.push(item.id);
-        } else {
-          const at = order.indexOf(item.id);
-          if (at >= 0) order.splice(at, 1);
-        }
-        render();
+        draft = toggleProvider(draft, item.id, input.checked);
+        renderList();
+        renderCount();
       });
-      box.appendChild(el('label', { class: 'provider-item' }, [
+      const info = providerDisplay(item);
+      const tail = (pos >= 0 ? '第 ' + (pos + 1) + ' 顺位' : '')
+        + (info.type ? (pos >= 0 ? ' · ' : '') + info.type : '');
+      listBox.appendChild(el('label', { class: 'picker-item' }, [
         input,
-        el('span', { class: checked ? 'prio' : 'prio muted', text: checked ? String(pos + 1) : '—' }),
-        el('span', { class: 'provider-name', text: (item.model || item.id) + (item.type ? '（' + item.type + '）' : '') }),
+        el('span', { class: 'picker-main' }, [
+          el('span', { class: 'picker-name', text: info.title }),
+          info.subtitle ? el('span', { class: 'picker-sub', text: info.subtitle }) : null,
+        ]),
+        tail ? el('span', { class: 'picker-tag', text: tail }) : null,
       ]));
     });
-    box.appendChild(el('p', { class: 'hint', text: order.length
-      ? '回退顺序（数字越小越先用）：' + order.map((id, i) => (i + 1) + '. ' + id).join(' → ')
-      : '未选择备用模型：主模型失败时按现状判 review（此功能关闭）。' }));
   };
-  render();
-  return { node: el('label', { class: 'field' }, [el('span', { text: label }), box]), read: () => order.slice() };
+  search.addEventListener('input', renderList);
+  renderList();
+  renderCount();
+  const body = el('div', { class: 'picker' }, [search, listBox, countLine]);
+  const ok = await uiModal({
+    title: '选择备用模型',
+    content: body,
+    confirmText: '确定',
+  });
+  if (ok === true) onDone(draft.slice());
 }
+
+/** 备用模型字段：返回 { node, read }，read 按优先级顺序返回 id 数组 */
+function buildProviderList(label, value, providerInfo) {
+  const items = mergeProviders(value, ((providerInfo || {}).items) || []);
+  let order = (Array.isArray(value) ? value : []).map(String).filter(Boolean);
+  const chipRow = el('div', { class: 'chip-row' });
+  const summary = el('p', { class: 'field-help' });
+  const button = el('button', { class: 'btn ghost small', type: 'button' });
+  const render = () => {
+    clear(chipRow);
+    const chips = decorateProviders(order, items);
+    if (!chips.length) {
+      chipRow.appendChild(el('span', { class: 'muted', text: '未选择' }));
+    }
+    chips.forEach((chip, index) => {
+      const up = el('button', { class: 'chip-btn', type: 'button', title: '上移（更优先）', text: '↑' });
+      up.disabled = index === 0;
+      up.addEventListener('click', () => { order = moveProvider(order, chip.id, -1); render(); });
+      const down = el('button', { class: 'chip-btn', type: 'button', title: '下移', text: '↓' });
+      down.disabled = index === chips.length - 1;
+      down.addEventListener('click', () => { order = moveProvider(order, chip.id, 1); render(); });
+      const drop = el('button', { class: 'chip-btn', type: 'button', title: '移除', text: '✕' });
+      drop.addEventListener('click', () => { order = toggleProvider(order, chip.id, false); render(); });
+      chipRow.appendChild(el('span', { class: 'chip' + (chip.missing ? ' missing' : '') }, [
+        el('span', { class: 'chip-prio', text: String(chip.priority) }),
+        el('span', { class: 'chip-name', text: chip.title }),
+        chip.missing ? el('span', { class: 'chip-sub', text: '当前不可用' }) : null,
+        up,
+        down,
+        drop,
+      ]));
+    });
+    button.textContent = order.length ? selectionLabel(order.length) + ' · 修改' : '选择备用模型…';
+    summary.textContent = order.length
+      ? '主模型失败时按编号顺序依次换模型重试（先 1，再 2…），全部失败才记为「没审成」。'
+      : '留空即可：主模型失败时不做回退，按现状记为「没审成」。';
+  };
+  button.addEventListener('click', () => {
+    openProviderPicker(items, order, (next) => { order = next; render(); });
+  });
+  render();
+  return {
+    node: el('div', { class: 'field-block' }, [
+      el('span', { class: 'field-label', text: label }),
+      el('div', { class: 'field-inline' }, [button]),
+      chipRow,
+      summary,
+    ]),
+    read: () => order.slice(),
+  };
+}
+
 
 /* 按规格构建一个字段控件；返回 { node, input, read }（read 返回**解析后**的提交值） */
 function buildJoinField(key, spec, value, providerInfo) {

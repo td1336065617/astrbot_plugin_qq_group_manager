@@ -28,8 +28,16 @@ def _main_panel_payload_keys() -> set[str]:
     return set(re.findall(r"^\s{6}([a-z_]+):", block, re.M))
 
 
+def _read_floor_keys() -> set[str]:
+    """floor 键现在由 readFloor() 统一产出（面板显示与 payload 单一来源），契约要一并覆盖。"""
+    text = APP_JS.read_text(encoding="utf-8")
+    start = text.index("const readFloor = () => ({")
+    end = text.index(chr(10) + "  });", start)
+    return set(re.findall(r"^\s{4}([a-z_]+):", text[start:end], re.M))
+
+
 def test_main_panel_payload_keys_are_known_settings():
-    keys = _main_panel_payload_keys()
+    keys = _main_panel_payload_keys() | _read_floor_keys()
     assert keys, "主面板 payload 解析为空"
     known = set(default_settings())
     unknown = sorted(keys - known)
@@ -37,7 +45,7 @@ def test_main_panel_payload_keys_are_known_settings():
 
 
 def test_main_panel_sends_new_fallback_and_floor_keys():
-    keys = _main_panel_payload_keys()
+    keys = _main_panel_payload_keys() | _read_floor_keys()
     for key in (
         "llm_fallback_provider_ids",
         "review_floor_actions",
