@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QQ群管理（离线预览）</title>
+<script src="./errhook.js"></script>
+<script src="./bridge_stub.js"></script>
+<link rel="stylesheet" href="./style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><span class="logo">🛡️</span><span class="title">QQ群管理</span><span class="muted" id="version"></span></div>
+  <div class="badges" id="badges"></div>
+  <div class="topbar-actions"><button class="btn ghost" id="btn-refresh" title="重新拉取配置与统计">刷新</button></div>
+</header>
+<main class="layout">
+  <nav class="sidebar" id="nav"></nav>
+  <section class="content" id="content"><div class="loading">正在加载…</div></section>
+</main>
+<div class="toast" id="toast" hidden></div>
+<template id="tpl-notice"><div class="notice"></div></template>
+<script type="module" src="./app.js"></script>
+</body>
+</html>

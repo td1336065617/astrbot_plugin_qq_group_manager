@@ -62,12 +62,18 @@ const LOG_TABS = [
  * 原生 window.confirm / alert / prompt 会被浏览器忽略并直接返回 false —— 这正是
  * 「点按钮没反应」的原因。这里用自绘模态框完全替代它们。
  */
+let modalSeq = 0;
 function uiModal(options) {
   const opts = options || {};
   return new Promise((resolve) => {
     const overlay = el('div', { class: 'modal-overlay' });
     const box = el('div', { class: 'modal-box' });
-    box.appendChild(el('h3', { text: opts.title || '请确认' }));
+    const titleId = 'modal-title-' + (++modalSeq);
+    box.setAttribute('role', 'dialog');
+    box.setAttribute('aria-modal', 'true');
+    box.setAttribute('aria-labelledby', titleId);
+    const opener = document.activeElement;   // 关闭后把焦点还回去
+    box.appendChild(el('h3', { id: titleId, text: opts.title || '请确认' }));
     if (opts.content) {
       const wrap = el('div', { class: 'modal-body' });
       wrap.appendChild(opts.content);
@@ -82,11 +88,22 @@ function uiModal(options) {
     }
     const onKey = (event) => {
       if (event.key === 'Escape') close(null);
+      if (event.key === 'Tab') {   // 焦点陷阱：键盘用户不该 Tab 逃出弹窗
+        const nodes = Array.from(box.querySelectorAll("button, input, select, textarea, a[href]")).filter(function (n) { return !n.disabled; });
+        if (nodes.length) {
+          const first = nodes[0];
+          const last = nodes[nodes.length - 1];
+          if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+          else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+          else if (!box.contains(document.activeElement)) { event.preventDefault(); first.focus(); }
+        }
+      }
       if (event.key === 'Enter' && input) close(input.value);
     };
     const close = (value) => {
       if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
       document.removeEventListener('keydown', onKey);
+      if (opener && opener.isConnected) { try { opener.focus(); } catch (e) { /* 忽略 */ } }
       resolve(value);
     };
     const actions = el('div', { class: 'modal-actions' });
@@ -110,6 +127,10 @@ function uiModal(options) {
     document.addEventListener('keydown', onKey);
     document.body.appendChild(overlay);
     if (input) input.focus();
+    else {
+      const firstBtn = box.querySelector(".modal-actions .btn");
+      if (firstBtn) firstBtn.focus();
+    }
   });
 }
 
@@ -252,7 +273,7 @@ function renderTopbar() {
   items.push({ text: '平台：' + (transport.platform_id || '未连接'), kind: transport.available ? 'ok' : 'bad' });
   items.push({ text: runtime.dry_run ? 'DRY-RUN：只记录不处置' : '已开启实际处置', kind: runtime.dry_run ? 'warn' : 'ok' });
   items.push({ text: '审核群：' + (runtime.groups_moderating || 0) + '/' + (runtime.groups_total || 0), kind: '' });
-  items.push({ text: '模式：' + (runtime.mode || '-'), kind: '' });
+  items.push({ text: '模式：' + (MODE_LABELS[runtime.mode] || runtime.mode || '-'), kind: '' });
   if (queue.dropped) items.push({ text: '日志丢弃：' + queue.dropped, kind: 'bad' });
   if (queue.last_error) items.push({ text: '审计写入异常', kind: 'bad' });
 
@@ -298,14 +319,14 @@ async function viewDashboard(root) {
   clear(root);
   const stages = stats.stages || {};
   const degraded = stats.degraded_total || 0;
-  root.appendChild(card('判定构成（近 1 天）', 'stage 口径：真判定 vs 没审成', [
+  root.appendChild(card('判定构成（近 1 天）', '「判定成功」= AI 给出了结论；「没审成」= 超时/熔断/解析失败等没能得出结论', [
     el('div', { class: 'grid cols-4' }, [
-      statCard('判定成功', (stages.judged || 0) + (stages.judged_kv || 0), '含 KV 兜底 ' + (stages.judged_kv || 0)),
+      statCard('判定成功', (stages.judged || 0) + (stages.judged_kv || 0), '含降级解析 ' + (stages.judged_kv || 0) + ' 条'),
       statCard('规则/刷屏/人工', (stages.rule || 0) + (stages.flood || 0) + (stages.manual || 0)),
       statCard('没审成', degraded, '超时/熔断/低置信等'),
       statCard('可用性', stats.events_total ? Math.round(((stats.events_total - degraded) / stats.events_total) * 100) + '%' : '-'),
     ]),
-    el('div', { class: 'hint', text: Object.keys(stages).map((key) => key + ' ' + stages[key]).join('  ·  ') || '暂无数据' }),
+    el('div', { class: 'hint', text: Object.keys(stages).map((key) => (STAGE_LABELS[key] || key) + ' ' + stages[key]).join('  ·  ') || '暂无数据' }),
   ]));
   root.appendChild(card('运行状态', '插件当前配置与平台连通性', [
     el('div', { class: 'grid cols-4' }, [
@@ -328,7 +349,7 @@ async function viewDashboard(root) {
   dryRun.checked = !!settings.dry_run;
   const modeSelect = el('select');
   (config.options && config.options.modes ? config.options.modes : ['lenient']).forEach((mode) => {
-    modeSelect.appendChild(el('option', { value: mode, text: mode, selected: mode === settings.mode ? 'selected' : null }));
+    modeSelect.appendChild(el('option', { value: mode, text: MODE_LABELS[mode] || mode, selected: mode === settings.mode ? 'selected' : null }));
   });
   const saveBtn = el('button', { class: 'btn', text: '保存运行开关' , onclick: async () => {
     saveBtn.disabled = true;
@@ -357,7 +378,7 @@ async function viewDashboard(root) {
     root.appendChild(notice('未检测到 qq_official 平台通道：请在 AstrBot 中启用 QQ 官方机器人适配器，并让机器人在群里收到一条消息后重试。', 'bad'));
   }
 
-  const alerts = (stats.capability_denied || []).map((item) => item.capability + '：err_code=' + item.err_code + ' ×' + item.count);
+  const alerts = (stats.capability_denied || []).map((item) => (CAPABILITY_LABELS[item.capability] || item.capability) + '受限 ' + item.count + ' 次（平台原因码 ' + item.err_code + '）');
   if (alerts.length) {
     root.appendChild(card('能力受限（近 24 小时）', '受限不代表插件异常：平台未授权或能力仍在灰度。详细建议见「工具 → 能力自检」。', [
       el('div', { class: 'grid cols-2' }, alerts.map((text) => el('div', { class: 'notice warn', text }))),
@@ -518,7 +539,7 @@ async function viewGroups(root) {
         const modeSelect = el('select');
         modeSelect.appendChild(el('option', {
           value: '',
-          text: '跟随全局（' + ((config.settings || {}).mode || '') + '）',
+          text: '跟随全局（' + (MODE_LABELS[(config.settings || {}).mode] || (config.settings || {}).mode || '') + '）',
           selected: !group.mode ? 'selected' : null,
         }));
         (config.options && config.options.modes ? config.options.modes : []).forEach((mode) => {
@@ -830,6 +851,38 @@ async function viewTools(root) {
 
 const MATRIX_ACTIONS = ['warn', 'recall', 'mute', 'report', 'blacklist', 'remove'];
 const RULE_TYPES = ['normalized', 'literal', 'regex', 'fuzzy', 'pinyin'];
+const MODE_LABELS = {
+  strict: '严格（命中即处置）',
+  standard: '标准',
+  lenient: '宽松（只警告）',
+  log_only: '只记录不处置',
+};
+const STAGE_LABELS = {
+  judged: '判定成功',
+  judged_kv: '降级解析',
+  rule: '规则命中',
+  flood: '刷屏',
+  manual: '人工/工具',
+  no_provider: '未配置模型',
+  circuit_open: '熔断中',
+  budget: '超出预算',
+  sampled_out: '未命中采样',
+  rate_limited: '限流',
+  api_error: '接口失败',
+  parse_error: '解析失败',
+  low_confidence: '置信度不足',
+  illegal_value: '模型返回非法值',
+};
+const CAPABILITY_LABELS = {
+  send_group_msg: '发送群消息',
+  recall: '撤回消息',
+  mute: '禁言',
+  blacklist: '拉黑（内邀能力）',
+  member_list: '成员列表（内邀能力）',
+  group_info: '群信息',
+  bot_state: '机器人状态',
+  join_review: '入群审批',
+};
 const ACTION_LABELS = {
   warn: '警告',
   recall: '撤回',
@@ -899,7 +952,7 @@ async function viewPolicy(root) {
   const aiThrottleWindow = numField('AI 节流：窗口秒数', settings.qqgm_ai_throttle_window, 5, 3600, 5);
   const modeSelect = el('select');
   (options.modes || []).forEach((mode) => {
-    modeSelect.appendChild(el('option', { value: mode, text: mode, selected: mode === settings.mode ? 'selected' : null }));
+    modeSelect.appendChild(el('option', { value: mode, text: MODE_LABELS[mode] || mode, selected: mode === settings.mode ? 'selected' : null }));
   });
   const imageReview = el('select');
   [['off', '图片不送审（默认）'], ['with_text', '仅图文混排时把图一起送审'], ['always', '纯图片也送审']]
@@ -1164,7 +1217,7 @@ async function viewPolicy(root) {
     (systemPrompt.value.trim() || userPrompt.value.trim())
       ? el('div', { class: 'hint' }, ['当前使用自定义提示词，本次判词更新（PROMPT_VERSION）不会生效；清空下面两个输入框即可恢复默认。'])
       : null,
-    el('label', { class: 'field' }, [el('span', { text: '管理员通知会话（umo）' }), notifySession]),
+    el('label', { class: 'field' }, [el('span', { text: '管理员通知会话（会话 ID）' }), notifySession]),
     el('div', { class: 'field-actions' }, [el('span', { class: 'muted', text: '送审条件：' })]),
     conditions,
   ]));
