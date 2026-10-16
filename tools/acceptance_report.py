@@ -9,7 +9,7 @@
 
 判定项（全部只在部署后窗口生效）：
   A. 失败的平台调用必须带非空 err_code（api_calls.ok=0 -> err_code 非 NULL）
-  B. 失败的能力调用必须带非空 err_code（capability_log.ok=0 -> err_code 非 NULL）
+  B. 失败的能力调用必须留下可解释原因（capability_log.ok=0 -> err_code 或 note 至少一个非空）
   C. 部署后新增/更新的禁言必须关联 event_id（mutes.event_id 非空）
   D. stage 必须落在已知词表内（真判定五类 + 降级九类）
   E. 部署后窗口若没有任何判定样本，打印 WARN（不判失败，避免夜里误报）
@@ -68,10 +68,15 @@ def build_report(db: pathlib.Path, since_deploy: str, days: int = 1) -> dict:
             "where ok = 0 and ts_unix >= strftime(" + chr(39) + "%s" + chr(39) + ", ?)",
             (since_deploy,),
         )[0]
+        cap_cols = {row[1] for row in conn.execute("pragma table_info(capability_log)")}
+        if "note" in cap_cols:
+            cap_missing = "ifnull(err_code, '') = '' and ifnull(note, '') = ''"
+        else:  # 老库没有 note 列：只能退回只看 err_code
+            cap_missing = "ifnull(err_code, '') = ''"
         post_cap_fail = _rows(
             conn,
-            "select count(*), sum(case when err_code is null then 1 else 0 end) from capability_log "
-            "where ok = 0 and ts_unix >= strftime(" + chr(39) + "%s" + chr(39) + ", ?)",
+            "select count(*), sum(case when " + cap_missing + " then 1 else 0 end) from capability_log "
+            "where ok = 0 and ts_unix >= strftime('%s', ?)",
             (since_deploy,),
         )[0]
         join_states = _rows(conn, "select decision, count(*) from join_requests group by 1 order by 2 desc")
@@ -92,9 +97,9 @@ def build_report(db: pathlib.Path, since_deploy: str, days: int = 1) -> dict:
         },
         {
             "id": "B",
-            "name": "部署后能力失败必须带 err_code",
+            "name": "部署后能力失败必须留下可解释原因",
             "ok": int(post_cap_fail[1] or 0) == 0,
-            "detail": f"失败 {int(post_cap_fail[0] or 0)} 条，其中 err_code 为空 {int(post_cap_fail[1] or 0)} 条",
+            "detail": f"失败 {int(post_cap_fail[0] or 0)} 条，其中 err_code 与 note 都为空 {int(post_cap_fail[1] or 0)} 条",
         },
         {
             "id": "C",

@@ -100,7 +100,7 @@ def _acc_db(tmp_path, name, rows, mutes=None, api=None, cap=None):
     conn.execute("create table mod_events (ts text, stage text, verdict text, fallback_index int, latency_ms int)")
     conn.execute("create table mutes (event_id int, updated_unix int)")
     conn.execute("create table api_calls (ok int, err_code int, ts_unix int)")
-    conn.execute("create table capability_log (capability text, ok int, err_code int, ts_unix int)")
+    conn.execute("create table capability_log (capability text, ok int, err_code int, ts_unix int, note text)")
     conn.execute("create table join_requests (decision text)")
     for row in rows:
         conn.execute("insert into mod_events values (?,?,?,?,?)", row)
@@ -109,7 +109,8 @@ def _acc_db(tmp_path, name, rows, mutes=None, api=None, cap=None):
     for row in api or []:
         conn.execute("insert into api_calls values (?,?,?)", row)
     for row in cap or []:
-        conn.execute("insert into capability_log values (?,?,?,?)", row)
+        padded = tuple(row) + (None,) * (5 - len(row))
+        conn.execute("insert into capability_log values (?,?,?,?,?)", padded)
     conn.execute("insert into join_requests values (?)", ("pending",))
     conn.commit()
     conn.close()
@@ -196,3 +197,18 @@ def test_regression_score_accepts_id_keyed_results(tmp_path, capsys):
     # 评分器只对「误杀率」设退出码门槛（误杀优先），漏杀只报告 —— 这里断言漏杀被正确算出来
     assert code == 0, out
     assert "漏杀率 100.00%" in out, out
+
+def test_acceptance_report_accepts_capability_failure_with_note(tmp_path):
+    """能力缺失类失败（接口仅白名单机器人可用等）天然没有 err_code，但有 note 说明 -> B 不应判失败。"""
+    from tools.acceptance_report import build_report
+
+    db = _acc_db(
+        tmp_path,
+        "note.db",
+        [("2026-10-16T21:00:00+08:00", "judged", "allow", 0, 9000)],
+        mutes=[(7, POST_TS)],
+        api=[(1, 0, POST_TS)],
+        cap=[("blacklist", 0, None, POST_TS, "该接口仅白名单机器人可用")],
+    )
+    report = build_report(db, DEPLOY)
+    assert report["passed"] is True, [i for i in report["checks"] if not i["ok"]]
