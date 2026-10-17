@@ -178,39 +178,15 @@ pre.guide {
   background: #f3f4f6; color: #6b7280; white-space: nowrap;
 }
 .scope-badge.own { background: rgba(37, 99, 235, .12); color: #2563eb; }
-.scope-badge.follow { background: #f3f4f6; color: #6b7280; }
+.scope-badge.follow { background: #f3f4f6; color: #4b5563; }
 .scope-badge.pending { background: rgba(217, 119, 6, .14); color: #b45309; }
-.scope-badge.dormant { background: #f3f4f6; color: #9ca3af; }
+.scope-badge.dormant { background: #f3f4f6; color: #6b7280; }
 .impact { font-size: 11px; color: var(--muted); white-space: nowrap; }
 input:disabled, select:disabled, textarea:disabled {
   opacity: .6; cursor: not-allowed; background: rgba(148, 163, 184, .12);
 }
 
-/* 备用模型多选：勾选顺序 = 回退优先级（数字越小越先用），候选来自使用者自己配好的 provider 列表 */
-.provider-list {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin-top: 6px;
-}
-.provider-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 6px;
-  border-radius: 6px;
-  background: rgba(255, 255, 255, 0.04);
-  cursor: pointer;
-}
-.provider-item:hover { background: rgba(255, 255, 255, 0.09); }
-.provider-item .prio {
-  min-width: 22px;
-  text-align: center;
-  font-variant-numeric: tabular-nums;
-  font-weight: 600;
-}
-.provider-item .prio.muted { opacity: 0.35; font-weight: 400; }
-.provider-item .provider-name { flex: 1; }
+
 
 
 /* —— WUI-2 面板可读性：字段标签 / 优先级芯片 / 选择弹窗 / 分层 —— */
@@ -222,6 +198,7 @@ input:disabled, select:disabled, textarea:disabled {
 .chip {
   display: inline-flex; align-items: center; gap: 6px;
   padding: 3px 6px 3px 4px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel);
+  max-width: 100%; min-width: 0;
 }
 .chip.missing { border-color: rgba(217, 119, 6, .5); }
 .chip-prio {
@@ -229,7 +206,7 @@ input:disabled, select:disabled, textarea:disabled {
   min-width: 18px; height: 18px; border-radius: 999px;
   background: var(--brand); color: #fff; font-size: 11px; font-weight: 600;
 }
-.chip-name { font-weight: 500; }
+.chip-name { font-weight: 500; min-width: 0; overflow-wrap: anywhere; }
 .chip-sub { color: var(--muted); font-size: 12px; }
 .chip-btn {
   border: 1px solid var(--line); background: transparent; color: var(--text);

@@ -13,8 +13,8 @@ import argparse
 import json
 import pathlib
 import sqlite3
-from datetime import datetime, timedelta, timezone
 import sys
+from datetime import datetime, timedelta, timezone
 
 CN_TZ = timezone(timedelta(hours=8))
 FAIL_PREFIX = "模型调用失败"

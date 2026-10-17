@@ -39,7 +39,7 @@ def _shaped(key: str, value: str, as_last: bool = False) -> str:
         lines.append('  "' + key + '": ' + value + '"')
         inserted = True
     assert inserted, (key, "造样失败")
-    return "\n".join(["{" ] + lines + ["}"])
+    return "\n".join(["{", *lines, "}"])
 
 
 def test_repair_fixes_each_known_key():

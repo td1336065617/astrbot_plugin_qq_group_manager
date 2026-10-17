@@ -78,9 +78,12 @@ def check_file(path: pathlib.Path) -> list[str]:
             name = getattr(func, "attr", None) or getattr(func, "id", None)
             if name in {"import_module", "__import__", "load_module", "spec_from_file_location"}:
                 for arg in node.args:
-                    if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
-                        if PATTERN.search(arg.value):
-                            problems.append(f"{path}:{node.lineno}: 动态 import {arg.value!r}")
+                    if (
+                        isinstance(arg, ast.Constant)
+                        and isinstance(arg.value, str)
+                        and PATTERN.search(arg.value)
+                    ):
+                        problems.append(f"{path}:{node.lineno}: 动态 import {arg.value!r}")
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
             text = node.value
             if PATTERN.search(text) and ("/" in text or "\\" in text or "data.plugins" in text):

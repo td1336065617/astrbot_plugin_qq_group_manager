@@ -22,7 +22,6 @@ import {
 } from './panel_logic.js';
 
 const bridge = window.AstrBotPluginPage;
-const PLUGIN = 'astrbot_plugin_qq_group_manager';
 
 const state = {
   config: null,
@@ -412,7 +411,7 @@ async function viewDashboard(root) {
   root.appendChild(card('后台任务', '任务在插件初始化时启动，重载插件会重建。', [
     el('div', { class: 'table-wrap' }, [
       el('table', {}, [
-        el('thead', {}, [el('tr', {}, ['任务', '周期', '执行次数', '状态', '最近错误'].map((text) => el('th', { text })))]),
+        el('thead', {}, [el('tr', {}, ['任务', '周期', '执行次数', '状态', '最近错误'].map((text) => el('th', { scope: 'col', text })))]),
         tbody,
       ]),
     ]),
@@ -582,7 +581,7 @@ async function viewGroups(root) {
   root.appendChild(card('群明细', '能力标签：绿色=可用，红色=受限（悬停查看 err_code 与原因），黄色=无只读探测接口。', [
     el('div', { class: 'table-wrap' }, [
       el('table', {}, [
-        el('thead', {}, [el('tr', {}, ['群', '状态', '平台能力', '模式', '最近活跃', '操作'].map((text) => el('th', { text })))]),
+        el('thead', {}, [el('tr', {}, ['群', '状态', '平台能力', '模式', '最近活跃', '操作'].map((text) => el('th', { scope: 'col', text })))]),
         tbody,
       ]),
     ]),
@@ -721,7 +720,7 @@ async function viewLogs(root) {
   root.appendChild(card('记录（共 ' + (data.total || 0) + ' 条）', null, [
     el('div', { class: 'table-wrap' }, [
       el('table', {}, [
-        el('thead', {}, [el('tr', {}, columns.map((column) => el('th', { text: LOG_COLUMN_LABELS[column] || column })))]),
+        el('thead', {}, [el('tr', {}, columns.map((column) => el('th', { scope: 'col', text: LOG_COLUMN_LABELS[column] || column })))]),
         tbody,
       ]),
     ]),
@@ -729,11 +728,11 @@ async function viewLogs(root) {
   ]));
 
   const clearLogsBtn = el('button', { class: 'btn danger', text: '清空当前类型日志', onclick: async () => {
-    if (!(await uiConfirm('将删除 ' + kind + ' 类型的全部日志，操作不可恢复。确认？'))) return;
+    if (!(await uiConfirm('将删除「' + (LOG_KIND_LABELS[kind] || kind) + '」类型的全部日志，且不可恢复。确认？'))) return;
     clearLogsBtn.disabled = true;
     try {
       const result = await bridge.apiPost('logs/clear', { scope: kind });
-      toast('已删除 ' + JSON.stringify(result.deleted || {}), 'ok');
+      toast('已清空' + (LOG_KIND_LABELS[kind] || kind), 'ok');
       loadLogs(kind, 1);
     } catch (error) { toast('清空失败：' + error.message, 'bad'); }
     finally { clearLogsBtn.disabled = false; }
@@ -906,6 +905,7 @@ const LOG_COLUMN_LABELS = {
   caller: '来源', duration_ms: '耗时(ms)', capability: '能力', note: '说明',
 };
 const VERDICT_LABELS = { allow: '合规', review: '待复核', violation: '违规' };
+const LOG_KIND_LABELS = { events: '审核事件', actions: '处置动作', api: '接口调用', capability: '能力受限' };
 
 const ACTION_LABELS = {
   warn: '警告',
@@ -989,7 +989,7 @@ async function viewPolicy(root) {
   const imageMax = numField('每条消息图片送审上限', settings.image_review_max || 1, 1, 4, 1);
   const imageHint = el('p', {
     class: 'card-desc',
-    text: '图片以多模态方式交给同一个审核模型（token 开销更高）；语音按平台转写文本审核；视频/文件只记类型。',
+    text: '图片以多模态方式送审（会优先选择支持图片的模型，token 开销更高）；语音按平台转写文本审核；视频/文件只记类型。',
   });
   const providerInfo = config.providers || {};
   const providerSelect = el('select');
@@ -1026,7 +1026,7 @@ async function viewPolicy(root) {
   const timeoutField = numField('单次超时（秒）', settings.llm_timeout, 5, 120, 1);
   const qpmField = numField('单群 QPM', settings.llm_qpm_per_group, 1, 120, 1);
   const concurrency = numField('全局并发', settings.llm_max_concurrency, 1, 16, 1);
-  const budget = numField('每日预算（0=不限）', settings.llm_daily_budget, 0, 100000, 10);
+  const budget = numField('每日预算（0=不限）', settings.llm_daily_budget, 0, 1000000, 10);
   const cacheTtl = numField('结果缓存（秒）', settings.cache_ttl, 0, 86400, 30);
   const breaker = numField('熔断阈值（连续失败）', settings.circuit_break_threshold, 1, 50, 1);
   const maxMuteDays = numField('最长禁言（天）', settings.max_mute_days, 1, 30, 1);
@@ -1389,7 +1389,7 @@ async function viewKeywords(root) {
     root.appendChild(card(bucket === 'hard' ? '硬规则' : '软规则', '共 ' + items.length + ' 条', [
       el('div', { class: 'table-wrap' }, [
         el('table', {}, [
-          el('thead', {}, [el('tr', {}, ['启用', '类型', '内容', '动作', '作用域', '操作'].map((text) => el('th', { text })))]),
+          el('thead', {}, [el('tr', {}, ['启用', '类型', '内容', '动作', '作用域', '操作'].map((text) => el('th', { scope: 'col', text })))]),
           tbody,
         ]),
       ]),
@@ -1542,7 +1542,7 @@ async function viewRulesX(root) {
         ]));
       });
       wlBox.appendChild(el('div', { class: 'table-wrap' }, [el('table', {}, [
-        el('thead', {}, [el('tr', {}, ['摘要', '骨架', '原因', '加入者', '时间', '操作'].map((t) => el('th', { text: t })))]),
+        el('thead', {}, [el('tr', {}, ['摘要', '骨架', '原因', '加入者', '时间', '操作'].map((t) => el('th', { scope: 'col', text: t })))]),
         tbody,
       ])]));
     } catch (error) { wlBox.appendChild(notice('加载失败：' + error.message, 'bad')); }
@@ -1637,7 +1637,7 @@ async function viewMembers(root) {
       });
       mutesBox.appendChild(el('div', { class: 'table-wrap' }, [
         el('table', {}, [
-          el('thead', {}, [el('tr', {}, ['成员', 'OpenID', '到期', '来源', '理由', '操作'].map((text) => el('th', { text })))]),
+          el('thead', {}, [el('tr', {}, ['成员', 'OpenID', '到期', '来源', '理由', '操作'].map((text) => el('th', { scope: 'col', text })))]),
           tbody,
         ]),
       ]));
@@ -1725,7 +1725,7 @@ async function viewMembers(root) {
       globalBlacklistBox.appendChild(el('div', { class: 'muted', text: '跨群黑名单对全插件生效：命中后任意群的入群申请都会被自动拒绝（不会自动移出已在群成员）。' }));
       globalBlacklistBox.appendChild(el('div', { class: 'table-wrap' }, [
         el('table', {}, [
-          el('thead', {}, [el('tr', {}, ['成员', '理由', '操作人', '加入时间', '操作'].map((text) => el('th', { text })))]),
+          el('thead', {}, [el('tr', {}, ['成员', '理由', '操作人', '加入时间', '操作'].map((text) => el('th', { scope: 'col', text })))]),
           tbody,
         ]),
       ]));
@@ -1887,13 +1887,13 @@ function buildProviderList(label, value, providerInfo, onChange) {
       chipRow.appendChild(el('span', { class: 'muted', text: '未选择' }));
     }
     chips.forEach((chip, index) => {
-      const up = el('button', { class: 'chip-btn', type: 'button', title: '上移（更优先）', text: '↑' });
+      const up = el('button', { class: 'chip-btn', type: 'button', title: '上移（更优先）', 'aria-label': '上移（更优先）', text: '↑' });
       up.disabled = index === 0;
       up.addEventListener('click', () => { order = moveProvider(order, chip.id, -1); render(); notify(); });
-      const down = el('button', { class: 'chip-btn', type: 'button', title: '下移', text: '↓' });
+      const down = el('button', { class: 'chip-btn', type: 'button', title: '下移', 'aria-label': '下移', text: '↓' });
       down.disabled = index === chips.length - 1;
       down.addEventListener('click', () => { order = moveProvider(order, chip.id, 1); render(); notify(); });
-      const drop = el('button', { class: 'chip-btn', type: 'button', title: '移除', text: '✕' });
+      const drop = el('button', { class: 'chip-btn', type: 'button', title: '移除', 'aria-label': '移除', text: '✕' });
       drop.addEventListener('click', () => { order = toggleProvider(order, chip.id, false); render(); notify(); });
       chipRow.appendChild(el('span', { class: 'chip' + (chip.missing ? ' missing' : '') }, [
         el('span', { class: 'chip-prio', text: String(chip.priority) }),
@@ -2363,6 +2363,7 @@ async function viewJoins(root) {
         profile.avatar_url
           ? el('img', {
             src: profile.avatar_url,
+            alt: '头像',
             style: 'width:28px;height:28px;border-radius:50%;object-fit:cover;',
             onerror: (event) => { event.target.style.visibility = 'hidden'; },
           })
@@ -2390,7 +2391,7 @@ async function viewJoins(root) {
   root.appendChild(card('待人工审批（' + pending.length + '）', '轮询 ' + (progress.polls || 0) + ' 次，累计获取 ' + (progress.fetched || 0) + ' 条申请', pending.length ? [
     el('div', { class: 'table-wrap' }, [
       el('table', {}, [
-        el('thead', {}, [el('tr', {}, ['申请人', 'QQ等级', '账号年龄', '来源', '验证消息 / 问答', '风险提示', '机器建议', '操作'].map((text) => el('th', { text })))]),
+        el('thead', {}, [el('tr', {}, ['申请人', 'QQ等级', '账号年龄', '来源', '验证消息 / 问答', '风险提示', '机器建议', '操作'].map((text) => el('th', { scope: 'col', text })))]),
         pendingBody,
       ]),
     ]),
@@ -2414,7 +2415,7 @@ async function viewJoins(root) {
   root.appendChild(card('历史记录（' + history.length + '）', null, history.length ? [
     el('div', { class: 'table-wrap' }, [
       el('table', {}, [
-        el('thead', {}, [el('tr', {}, ['时间', '申请人', 'QQ等级', '账号年龄', '决策', '决策方', '规则来源', '置信度', '原因'].map((text) => el('th', { text })))]),
+        el('thead', {}, [el('tr', {}, ['时间', '申请人', 'QQ等级', '账号年龄', '决策', '决策方', '规则来源', '置信度', '原因'].map((text) => el('th', { scope: 'col', text })))]),
         historyBody,
       ]),
     ]),
@@ -2481,7 +2482,7 @@ async function viewJoins(root) {
   root.appendChild(card('官方入群自动审批策略', policyData.error ? '读取失败：' + policyData.error : '插件默认不创建策略，只做透明化展示与白名单维护。', (policyData.strategies || []).length ? [
     el('div', { class: 'table-wrap' }, [
       el('table', {}, [
-        el('thead', {}, [el('tr', {}, ['策略 ID', '状态', '关联群', '白名单数', '到期', '操作'].map((text) => el('th', { text })))]),
+        el('thead', {}, [el('tr', {}, ['策略 ID', '状态', '关联群', '白名单数', '到期', '操作'].map((text) => el('th', { scope: 'col', text })))]),
         policyBody,
       ]),
     ]),
@@ -2557,7 +2558,7 @@ async function viewAppeals(root) {
         ]));
       });
       box.appendChild(el('div', { class: 'table-wrap' }, [el('table', {}, [
-        el('thead', {}, [el('tr', {}, ['时间', '群', '申诉人', '理由', '原判', '状态', '操作'].map((text) => el('th', { text })))]),
+        el('thead', {}, [el('tr', {}, ['时间', '群', '申诉人', '理由', '原判', '状态', '操作'].map((text) => el('th', { scope: 'col', text })))]),
         tbody,
       ])]));
     } catch (error) {

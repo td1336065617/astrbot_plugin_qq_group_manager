@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import argparse
+import http.server
 import json
 import os
 import shutil
@@ -18,7 +19,6 @@ import subprocess
 import sys
 import tempfile
 import threading
-import http.server
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,7 +27,7 @@ PREVIEW = ROOT / "tools" / "panel_preview"
 ROUTES = [
     # (视图, 名称, 必须出现的内容, 不该出现的内部术语, DOM 体积下限：整页崩了会明显变小)
     ("dashboard", "总览", ["判定构成", "运行状态", "可用性"], ["KV 兜底", "umo", "err_code=", "stage 口径", "爱莉希雅"], 2500),
-    ("policy", "策略", ["主模型（发言审核）", "备用模型", "送审条件", "重复违规时长累加", "风险分阈值（达到即送审）"], ["兜底处置", "动作地板", "爱莉希雅"], 6000),
+    ("policy", "策略", ["主模型（发言审核）", "备用模型", "送审条件", "重复违规时长累加", "风险分阈值（达到即送审）", "当前生效："], ["兜底处置", "动作地板", "爱莉希雅"], 6000),
     # 入群页断言必须落在本群规则卡内：顶栏就有"入群审批"，拿它当断言会漏掉整页崩溃
     ("joins", "入群审批", ["本群规则", "跟随全局配置（不含审批模式）", "待人工审批"], ["兜底处置", "动作地板", "爱莉希雅"], 6000),
 ]
@@ -48,7 +48,7 @@ def chrome_path(explicit: str = "") -> str:
 
 def build_config() -> dict:
     sys.path.insert(0, str(ROOT))
-    from src.models import (  # noqa: PLC0415
+    from src.models import (
         CAPABILITIES,
         CAPABILITY_LABELS,
         JOIN_GLOBAL_ONLY_KEYS,

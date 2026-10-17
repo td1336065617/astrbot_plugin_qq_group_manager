@@ -162,7 +162,7 @@ def test_failure_is_recorded_with_classified_err_code():
     assert all(row.get("capability") == "llm_judge" for row in service.audit.rows)
 
 
-class ProviderNotFoundError(Exception):  # noqa: N818 - 名字必须与 SDK 一致
+class ProviderNotFoundError(Exception):
     """名字必须与 SDK 一致：utils.classify_failure 按类型名识别。"""
 
 

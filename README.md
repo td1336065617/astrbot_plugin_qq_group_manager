@@ -175,6 +175,7 @@ QQ 官方群管理接口分三档（下表为 **QQ 官方通道**；OneBot 通�
 | `spam_flood_window` | 60 | 刷屏统计窗口（秒） |
 | `spam_flood_cooldown` | 300 | 同档刷屏动作冷却（秒，0=关闭；升档不受限） |
 | `llm_provider_id` | 空 | 审核使用的模型；留空跟随会话默认模型 |
+| `llm_fallback_provider_ids` | 空 | 备用模型列表：主模型超时/限流/服务端错误或**输出无法解析**时按顺序重试（留空=不启用回退） |
 | `join_llm_provider_id` | 空 | 入群审批使用的模型；留空跟随发言审核模型（可按群单独配置） |
 | `auto_enforce_normalized` | 关 | 变体命中是否直接处置（默认只送审，由 LLM 判定） |
 | `domain_allowlist_enabled` | 开 | 竞赛域名白名单降权（白名单内链接不计 link 分，仍送审） |

@@ -27,10 +27,10 @@ jobs:
         run: python -m pytest -q
       - name: 零耦合门禁（R-IND-02）
         run: python tools/check_no_cross_plugin_imports.py .
-      - name: 静态检查（F 类真错误：未定义名/未用导入等）
+      - name: 静态检查（全量 ruff；配置来自仓库内的 ruff.toml）
         run: |
           pip install ruff
-          ruff check --select F .
+          ruff check .
       - name: 非同名目录回归（防目录名脆弱性）
         run: |
           cd ..

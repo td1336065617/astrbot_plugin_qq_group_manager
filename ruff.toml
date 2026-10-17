@@ -1,0 +1,22 @@
+# 本插件的 ruff 配置（就近覆盖上级目录的全局配置）。
+# 目标：保持代码整洁，同时允许"防御式"代码里必要的宽泛 except。
+line-length = 100
+target-version = "py310"
+
+[lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+ignore = [
+  "E501",   # 长行由人工把控（中文注释/文档字符串较多）
+  "BLE001", # 后台任务与审计写入需要捕获所有异常，避免影响群聊
+  "S110",   # 同上：失败时只记录计数，不抛出
+  "TRY203", # SSE 生成器需要显式传播 CancelledError
+  "G201",   # 统一使用 logger.exception 的替代写法
+  "RUF001", # 中文标点在下游是正常写法
+  "RUF002",
+  "RUF003",
+  "SIM105", # 防御式代码里 try/except/pass 比 suppress 更直观
+]
+
+[lint.per-file-ignores]
+"main.py" = ["E402"]  # 插件入口需要先注入 sys.path 再导入 astrbot
+

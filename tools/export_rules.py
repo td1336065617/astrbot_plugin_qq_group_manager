@@ -15,7 +15,7 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-from src.rules import export_inventory  # noqa: E402
+from src.rules import export_inventory
 
 
 def main(argv: list[str]) -> int:

@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 
+from fakes import FakeAudit
+
 from src.actions import ActionExecutor
 from src.models import default_settings
-from fakes import FakeAudit
 
 
 class FakeApi:

@@ -55,7 +55,7 @@ def test_should_fallback_only_for_transient_codes():
 def test_normalize_provider_chain_rules():
     assert normalize_provider_chain(["a", " a ", "", "b", 3, "a"]) == ["a", "b"]
     assert normalize_provider_chain("脏数据", ["x"]) == ["x"]
-    assert len(normalize_provider_chain(["p%d" % i for i in range(20)])) == 8
+    assert len(normalize_provider_chain([f"p{i}" for i in range(20)])) == 8
 
 
 def test_default_settings_have_empty_fallback_lists():

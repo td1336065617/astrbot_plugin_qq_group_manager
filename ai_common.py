@@ -8,7 +8,8 @@ from __future__ import annotations
 import json
 import threading
 import time
-from typing import Any, Iterable, Sequence
+from collections.abc import Iterable, Sequence
+from typing import Any
 
 #: 错误码 → 默认人话（error.message 永远存在）
 ERROR_CODES: dict[str, str] = {

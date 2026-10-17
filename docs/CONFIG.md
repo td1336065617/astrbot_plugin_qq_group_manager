@@ -229,7 +229,7 @@
 
 | 类别 | 键 | 说明 |
 | --- | --- | --- |
-| 可按群固化（17） | `join_min_confidence` `join_decline_blacklist` `join_trust_inviter` `join_profile_enabled` `join_min_account_days` `join_min_qq_level` `join_require_qid` `join_gate_action` `join_profile_missing` `join_avatar_review` `join_avatar_only_below` `join_expected_answer` `join_answer_keywords` `join_answer_regex` `join_answer_action` `join_answer_case_sensitive` `join_llm_provider_id` | 门槛 / 答案校验 / 头像复核 / 置信度 / 拉黑 / 画像开关 / 入群审批模型 |
+| 可按群固化（18） | `join_min_confidence` `join_decline_blacklist` `join_trust_inviter` `join_profile_enabled` `join_min_account_days` `join_min_qq_level` `join_require_qid` `join_gate_action` `join_profile_missing` `join_avatar_review` `join_avatar_only_below` `join_expected_answer` `join_answer_keywords` `join_answer_regex` `join_answer_action` `join_answer_case_sensitive` `join_llm_provider_id` | 门槛 / 答案校验 / 头像复核 / 置信度 / 拉黑 / 画像开关 / 入群审批模型 |
 | 全局唯一（5） | `join_review_mode`（审批模式：**全局值在「全局设置」卡编辑**（0.14 补齐入口），按群可覆盖或选「跟随全局」，**不受总开关管辖**）、`join_poll_interval`、`join_profile_cache_days`、`join_profile_qpm`、`join_profile_concurrency` | 调度间隔、画像缓存与限频是全局资源闸门；缓存键跨群共享 |
 
 **存储**：`join_follow_global`（布尔，默认 true）与 `join_overrides`（稀疏键值表）存 KV 的

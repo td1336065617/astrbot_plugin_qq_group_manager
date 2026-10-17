@@ -119,7 +119,8 @@ def _acc_db(tmp_path, name, rows, mutes=None, api=None, cap=None):
 
 DEPLOY = "2026-10-16T20:41:00+08:00"
 #: 部署后 10 分钟（必须晚于 DEPLOY，否则会被窗口正确排除——这正是工具的设计）
-import datetime as _dt
+import datetime as _dt  # noqa: E402 - 需要放在窗口常量之后才可读
+
 POST_TS = int(_dt.datetime.fromisoformat(DEPLOY).timestamp()) + 600
 
 

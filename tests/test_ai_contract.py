@@ -150,7 +150,7 @@ def test_exclusions_declared_and_not_implemented() -> None:
 def _schema_digest() -> str:
     digest = hashlib.sha256()
     for func, tool_name, doc in _tool_defs():
-        digest.update(f"{func}|{tool_name}|{doc}".encode("utf-8"))
+        digest.update(f"{func}|{tool_name}|{doc}".encode())
     return digest.hexdigest()
 
 

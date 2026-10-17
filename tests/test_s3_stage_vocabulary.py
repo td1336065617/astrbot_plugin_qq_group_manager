@@ -8,9 +8,9 @@
 from __future__ import annotations
 
 import ast
+from pathlib import Path
 
 import pytest
-from pathlib import Path
 
 from src.audit import REAL_STAGES
 
@@ -64,7 +64,7 @@ def _stage_literals(node: ast.AST) -> set[str]:
 def collected_stages() -> set[str]:
     """代码里所有 stage=... 关键字实参的字面量取值。"""
     stages: set[str] = set()
-    files = [PLUGIN_ROOT / "main.py"] + sorted((PLUGIN_ROOT / "src").glob("*.py"))
+    files = [PLUGIN_ROOT / "main.py", *sorted((PLUGIN_ROOT / "src").glob("*.py"))]
     for path in files:
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):

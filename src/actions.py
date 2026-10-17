@@ -511,7 +511,7 @@ class ActionExecutor:
         scope = msg_id_override if msg_id_override is not None else msg_id
         if not scope:
             # 缺省也按目标区分，避免"同群不同人"被误判成重复
-            scope = "manual:%s:%s" % (action, sender_openid or "-")
+            scope = "manual:{}:{}".format(action, sender_openid or "-")
         if self._seen(group_id, scope, action, verdict.severity, commit=False):
             self.stats["skipped"] += 1
             return ActionResult(action=action, ok=True, message="重复推送，已跳过")

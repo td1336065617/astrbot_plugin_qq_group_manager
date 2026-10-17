@@ -12,7 +12,6 @@
 from __future__ import annotations
 
 import asyncio
-
 import json
 import sys
 import time
@@ -28,6 +27,7 @@ if _PLUGIN_ROOT not in sys.path:  # 允许 from .src... 导入与直接运行测
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 from astrbot.api.message_components import At, Plain, Reply
 from astrbot.api.star import Context, Star
+
 try:                      # AI 公共件（纯逻辑，四仓库各一份）
     from . import ai_common
 except ImportError:       # 测试里以顶层模块导入
@@ -99,9 +99,9 @@ from .src.moderator import (
     ModerationRequest,
     choose_provider_chain,
     classify_failure,
-    should_fallback,
     looks_like_refusal,
     resolve_prompt_version,
+    should_fallback,
 )
 from .src.normalize import skeleton_text
 from .src.platforms.router import ChannelRouter
@@ -120,6 +120,7 @@ from .src.utils import (
     CN_TZ,
     MENTION_PLACEHOLDERS,
     OPENID_RE,
+    QQ_RE,
     attachment_fingerprints,
     digest_text,
     extract_mention_ids,
@@ -133,7 +134,6 @@ from .src.utils import (
     safe_json_dumps,
     strip_mention_tokens,
     to_iso,
-    QQ_RE,
 )
 from .src.web_api import EventBus, WebApi
 
@@ -2003,13 +2003,13 @@ class QQGroupManager(Star):
         if throttle is None or (throttle.limit, throttle.window) != (limit, window):
             throttle = ai_common.ToolThrottle(limit=limit, window=window)
             self._ai_throttle = throttle
-        key = "%s:%s" % (
+        key = "{}:{}".format(
             getattr(event, "unified_msg_origin", "") or "unknown",
             getattr(event, "get_sender_id", lambda: "")() or "-",
         )   # 设计 §3.4：节流维度是每个调用者，不是整群
         wait = throttle.check(tool, key)
         if wait:
-            return ai_common.fail("throttled", "操作太频繁，请 %d 秒后再试" % wait, retry_after=wait)
+            return ai_common.fail("throttled", f"操作太频繁，请 {wait} 秒后再试", retry_after=wait)
         return None
 
     def _ai_group_admin(self, event: AstrMessageEvent, group_id: str) -> bool:
@@ -2217,7 +2217,7 @@ class QQGroupManager(Star):
         if not openid:
             return ai_common.fail(
                 "not_found",
-                "本群没有找到叫「%s」的成员" % target,
+                f"本群没有找到叫「{target}」的成员",
                 hint="本群在册成员：%s；也可以直接传 @提及 或成员 openid（形如 DE50381A…）"
                 % (
                     ai_common.sanitize("、".join(self.store.member_names(group_id) or []), 200)
@@ -2280,7 +2280,7 @@ class QQGroupManager(Star):
         if not openid:
             return ai_common.fail(
                 "not_found",
-                "本群没有找到叫「%s」的成员" % target,
+                f"本群没有找到叫「{target}」的成员",
                 hint="本群在册成员：%s；也可以直接传 @提及 或成员 openid（形如 DE50381A…）"
                 % (
                     ai_common.sanitize("、".join(self.store.member_names(group_id) or []), 200)
