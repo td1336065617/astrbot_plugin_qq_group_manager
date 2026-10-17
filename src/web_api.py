@@ -26,6 +26,7 @@ from .models import (
     MODERATION_MODES,
     SEND_CONDITIONS,
     default_settings,
+    notify_session_state,
     validate_join_mode_value,
 )
 from .utils import now_ts, to_iso
@@ -335,6 +336,7 @@ class WebApi:
         return json_response(
             {
                 "settings": store.settings(),
+                "notify": notify_session_state(store.settings()),
                 "groups": self.service.groups_snapshot(),
                 "keywords": store.keywords(),
                 "templates": store.templates(),

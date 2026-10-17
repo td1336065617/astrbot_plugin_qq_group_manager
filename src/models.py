@@ -453,6 +453,41 @@ class Verdict:
         )
 
 
+#: SDK 认识的会话类型（astrbot/core/platform/message_type.py），大小写敏感
+VALID_MESSAGE_TYPES = ("GroupMessage", "FriendMessage", "OtherMessage")
+
+
+def is_valid_umo(value: Any) -> bool:
+    """是否形如 platform_id:MessageType:session_id，且中段是 SDK 认识的类型。
+
+    必须与 SDK 同源：core/platform/message_session.py 用的是 split(":", 2)，
+    因此 session_id 里允许含冒号（如 a:FriendMessage:x:y）。若用 split(":") 会比 SDK 更严，
+    而调用方是拦截式预校验，会把本来发得出去的会话拦死（正是本批要防的镜像故障）。
+    """
+    parts = str(value or "").strip().split(":", 2)
+    if len(parts) != 3:
+        return False
+    if not parts[0].strip() or not parts[2].strip():
+        return False
+    return parts[1] in VALID_MESSAGE_TYPES
+
+
+def notify_session_state(settings: dict[str, Any]) -> dict[str, Any]:
+    """通知会话的派生状态（只用于回显，不写回配置）。"""
+    session = str((settings or {}).get("notify_session") or "").strip()
+    return {
+        "session": session,
+        "configured": bool(session),
+        "valid": is_valid_umo(session),
+        "hint": (
+            "✅ 格式正确"
+            if is_valid_umo(session)
+            else "⚠️ 不是合法会话 ID（应形如 平台实例ID:消息类型:会话ID，"
+            "消息类型取 GroupMessage/FriendMessage/OtherMessage）"
+        ),
+    }
+
+
 def default_settings() -> dict[str, Any]:
     """首次安装时的默认配置（dry_run + lenient：只记录、只警告）。"""
     return {

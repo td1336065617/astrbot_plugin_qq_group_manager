@@ -58,6 +58,7 @@ from .src.commands import (
     MODE_FOLLOW,
     MODE_LABELS,
     MUTE_COMMANDS,
+    NOTIFY_TEST_COMMANDS,
     RECALL_COMMANDS,
     SELFCHECK_COMMANDS,
     STATS_COMMANDS,
@@ -93,6 +94,7 @@ from .src.models import (
     MODERATION_MODES,
     CapabilityResult,
     Verdict,
+    is_valid_umo,
 )
 from .src.moderator import (
     LLMModerator,
@@ -964,18 +966,53 @@ class QQGroupManager(Star):
         except (TypeError, ValueError):
             return 0.7
 
-    async def _notify(self, kind: str, payload: dict[str, Any]) -> None:
-        """通知管理员（优先使用配置的会话，其次写日志）。"""
-        session = str(payload.get("umo") or self.store.get_setting("notify_session") or "")
+    async def _record_notify_failure(self, kind: str, err_code: str, note: str) -> None:
+        """通知失败也要留痕（否则「配了却收不到」外部看不出来）。"""
+        audit = getattr(self, "audit", None)
+        if audit is None:
+            return
+        try:
+            await audit.record_capability(
+                group_id="",
+                capability="notify",
+                ok=False,
+                err_code=err_code,
+                note=f"{kind}|{note}"[:200],
+            )
+        except Exception:  # pragma: no cover - 审计失败不影响通知
+            pass
+
+    async def _notify(self, kind: str, payload: dict[str, Any]) -> tuple[bool, str]:
+        """通知管理员（优先使用配置的会话，其次写日志）。
+
+        返回 (是否送达, 说明)；四个既有调用点都不使用返回值。
+        会话格式不合法时不盲调 send_message，而是留痕 + 明确 warning（失败可见）。
+        """
+        session = str(payload.get("umo") or self.store.get_setting("notify_session") or "").strip()
         text = self._render_notification(kind, payload)
+        if session and not is_valid_umo(session):
+            detail = (
+                "通知会话格式不合法（应形如 平台实例ID:消息类型:会话ID，"
+                "消息类型取 GroupMessage/FriendMessage/OtherMessage）：" + session[:24]
+            )
+            await self._record_notify_failure(kind, "invalid_session", session[:64])
+            self.logger.warning("%s；已退化为写日志", detail)
+            self.logger.info("[通知:%s] %s", kind, text.replace("\n", " | "))
+            return False, detail
         if session:
             try:
                 sent = await self.context.send_message(session, MessageChain([Plain(text)]))
                 if sent:
-                    return
+                    return True, ""
+                reason = "平台未匹配（send_message 返回 False）"
             except Exception as exc:  # pragma: no cover - 主动消息可能受限
-                self.logger.warning("通知发送失败：%s", exc)
+                reason = f"{type(exc).__name__}: {exc}"
+            await self._record_notify_failure(kind, "send_failed", f"{session[:48]}|{reason}"[:150])
+            self.logger.warning("通知发送失败（%s）：%s", session, reason)
         self.logger.info("[通知:%s] %s", kind, text.replace("\n", " | "))
+        if not session:
+            return False, "未配置通知会话"
+        return False, f"发送失败：{reason}"
 
     @staticmethod
     def _parse_profile_json(raw: Any) -> dict[str, Any]:
@@ -990,6 +1027,12 @@ class QQGroupManager(Star):
 
     def _render_notification(self, kind: str, payload: dict[str, Any]) -> str:
         """构造通知文本。"""
+        if kind == "notify_test":
+            return (
+                "通知通道测试\n"
+                "来自 QQ 群管插件的测试消息；收到即说明「管理员通知会话」配置可用。\n"
+                "时间：" + str(payload.get("ts") or "-")
+            )
         if kind == "moderation":
             return (
                 "内容审核告警\n"
@@ -1977,6 +2020,10 @@ class QQGroupManager(Star):
         if name in GROUP_ADMIN_COMMANDS and not (admin or group_admin):
             return ["该指令仅群主 / 群管理员或 AstrBot 管理员可用。"]
 
+        if name in NOTIFY_TEST_COMMANDS:
+            if not admin:
+                return ["仅 AstrBot 管理员可执行通知测试。"]
+            return await self._cmd_notify_test()
         if name in TOGGLE_COMMANDS:
             return await self._cmd_toggle(group_id, name, sender_openid)
         if name in MODE_COMMANDS:
@@ -2509,6 +2556,24 @@ class QQGroupManager(Star):
         await self.store.update_trusted(group_id, trusted)
         verb = "已加入" if name == "信任" else "已移出"
         return [f"{verb}审核豁免名单：{member_name or mask_openid(openid)}"]
+
+    async def _cmd_notify_test(self) -> list[str]:
+        """向配置的通知会话发一条测试消息并回显结果（仅管理员）。"""
+        session = str(self.store.get_setting("notify_session") or "").strip()
+        if not session:
+            return ["未配置「管理员通知会话（会话 ID）」，请在管理台「策略」页填写。"]
+        if not is_valid_umo(session):
+            return [
+                "通知会话格式不合法，未发送。",
+                "应形如 平台实例ID:消息类型:会话ID（消息类型取 GroupMessage / FriendMessage / OtherMessage）；",
+                f"当前值：{session[:40]}（冒号 {session.count(':')} 个）",
+            ]
+        ok, detail = await self._notify(
+            "notify_test", {"group_id": "", "ts": to_iso(now_ts())}
+        )
+        if ok:
+            return [f"已发往 {session}：成功（请查看该会话是否收到测试消息）"]
+        return [f"发送失败：{detail}", f"目标：{session}"]
 
     async def _cmd_mute(
         self,

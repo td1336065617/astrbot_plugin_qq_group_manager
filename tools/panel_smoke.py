@@ -27,7 +27,7 @@ PREVIEW = ROOT / "tools" / "panel_preview"
 ROUTES = [
     # (视图, 名称, 必须出现的内容, 不该出现的内部术语, DOM 体积下限：整页崩了会明显变小)
     ("dashboard", "总览", ["判定构成", "运行状态", "可用性"], ["KV 兜底", "umo", "err_code=", "stage 口径", "爱莉希雅"], 2500),
-    ("policy", "策略", ["主模型（发言审核）", "备用模型", "送审条件", "重复违规时长累加", "风险分阈值（达到即送审）", "当前生效："], ["兜底处置", "动作地板", "爱莉希雅"], 6000),
+    ("policy", "策略", ['id="notify-warn"', "主模型（发言审核）", "备用模型", "送审条件", "重复违规时长累加", "风险分阈值（达到即送审）", "当前生效："], ["兜底处置", "动作地板", "爱莉希雅"], 6000),
     # 入群页断言必须落在本群规则卡内：顶栏就有"入群审批"，拿它当断言会漏掉整页崩溃
     ("joins", "入群审批", ["本群规则", "跟随全局配置（不含审批模式）", "待人工审批"], ["兜底处置", "动作地板", "爱莉希雅"], 6000),
 ]
@@ -66,6 +66,12 @@ def build_config() -> dict:
     settings["join_llm_fallback_provider_ids"] = ["gone/stale"]
     return {
         "settings": settings,
+        "notify": {
+            "session": "",
+            "configured": False,
+            "valid": False,
+            "hint": "不是合法会话 ID（应形如 平台实例ID:消息类型:会话ID）",
+        },
         "groups": [{"group_id": "g1", "name": "预览群", "join_review_mode": "", "join_follow_global": False, "join_overrides": {"join_llm_fallback_provider_ids": ["gone/stale"]}}],
         "providers": {
             "items": [

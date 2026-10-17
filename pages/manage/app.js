@@ -1256,6 +1256,9 @@ async function viewPolicy(root) {
       ? el('div', { class: 'hint' }, ['当前使用自定义提示词，本次判词更新（PROMPT_VERSION）不会生效；清空下面两个输入框即可恢复默认。'])
       : null,
     el('label', { class: 'field' }, [el('span', { text: '管理员通知会话（会话 ID）' }), notifySession]),
+    state.config && state.config.notify && !state.config.notify.valid
+      ? el('p', { class: 'hint', id: 'notify-warn', text: state.config.notify.hint })
+      : null,
     el('div', { class: 'field-actions' }, [el('span', { class: 'muted', text: '送审条件：' })]),
     el('p', { class: 'hint', text: '一条都不勾会按「规则命中」处理（后端兜底，避免误关全部审核）；想让所有消息都送审，请勾「全部消息」。' }),
     conditions,

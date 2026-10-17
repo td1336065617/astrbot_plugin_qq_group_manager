@@ -25,6 +25,8 @@ from .utils import human_duration, mask_openid, to_iso
 # --------------------------------------------------------------------------
 MENU_COMMANDS = ("群管理菜单", "群管菜单", "qq群管理")
 INFO_COMMANDS = ("群信息",)
+#: 通知通道自检（仅 AstrBot 管理员）：向配置的通知会话发一条测试消息
+NOTIFY_TEST_COMMANDS = ("群管通知测试", "通知测试")
 STATUS_COMMANDS = ("审核状态",)
 SELFCHECK_COMMANDS = ("群管理自检",)
 CONFIG_COMMANDS = ("群管理配置",)
