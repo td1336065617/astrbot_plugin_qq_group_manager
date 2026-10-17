@@ -1260,38 +1260,6 @@ async function viewPolicy(root) {
     } finally { dryBtn.disabled = false; }
   } });
 
-  root.appendChild(card('规则增强（变体识别 / 风险分）',
-    '归一化让规则"看得见"形近字、插符号、全角与拼音变体；风险分把多个弱信号累加，达到阈值即送审（不影响纯闲聊）。', [
-    el('div', { class: 'row' }, [homoglyphOn.node, templateOn.node, pinyinOn.node, fuzzyDist.node]),
-    el('div', { class: 'row' }, [dupWindow.node, dupMembers.node]),
-    el('div', { class: 'row' }, [spamOn.node, spamCount.node, spamWindow.node, spamCooldown.node]),
-    el('div', { class: 'row' }, [autoEnforce.node]),
-    pinyinHint,
-  ]));
-
-  root.appendChild(card('竞赛域名白名单', '白名单内的链接不计 link 分（25 分），但只降权不豁免：规则、审计与 LLM 送审判断照常执行。', [
-    el('div', { class: 'row' }, [domainAllow.node]),
-    domainArea,
-    el('p', { class: 'card-desc', text: '一行一个域名，按点边界后缀匹配：codeforces.com 命中 m1.codeforces.com，但不命中 fake-codeforces.com。' }),
-  ]));
-
-  root.appendChild(card('申诉闭环', '成员回复被处置消息发送「申诉 <理由>」；群管回复申诉消息发送「申诉通过 / 申诉驳回」。误判白名单默认关闭。', [
-    el('div', { class: 'row' }, [appealEnabled.node, appealNotify.node, appealAuto.node]),
-    el('p', { class: 'card-desc', text: '申诉通过会自动解禁（若该事件产生过禁言）并追加 appeal_accepted 动作留痕，不删除原审核事件。' }),
-  ]));
-
-  root.appendChild(card('模型', '审核用哪个对话模型；主模型超时或失败时，按下面的顺序自动换备用模型继续判。',
-    [
-    el('div', { class: 'row' }, [
-      el('div', { class: 'field-block' }, [
-        el('span', { class: 'field-label', text: '主模型（发言审核）' }),
-        providerSelect,
-      ]),
-      ]),
-      providerHint,
-      fallbackList.node,
-    ]));
-
   root.appendChild(card('运行参数', '首次安装默认 dry-run + lenient；确认判定质量后再关闭 dry-run 并切到标准档。', [
     el('div', { class: 'row' }, [dryRun.node, dryRunWarn.node, allowNoFull.node, blockLlm.node]),
     el('div', { class: 'row' }, [
@@ -1326,16 +1294,48 @@ async function viewPolicy(root) {
     conditions,
   ]));
 
+  root.appendChild(card('模型', '审核用哪个对话模型；主模型超时或失败时，按下面的顺序自动换备用模型继续判。',
+    [
+    el('div', { class: 'row' }, [
+      el('div', { class: 'field-block' }, [
+        el('span', { class: 'field-label', text: '主模型（发言审核）' }),
+        providerSelect,
+      ]),
+      ]),
+      providerHint,
+      fallbackList.node,
+    ]));
+
+  root.appendChild(card('处置矩阵', '按严重度（1–5，1 最轻）执行的动作；lenient 模式只会保留警告与上报。', [matrixBox]));
+
+
+  root.appendChild(card('提示词', '留空使用内置默认值；修改后建议先在下方试跑验证。', [promptHint, systemPrompt, userPrompt]));
+
+
   root.appendChild(card('AI 能力（工具）', '让大模型能查群信息 / 审核状态 / 统计 / 最近日志；授权后还能禁言、解禁。只影响 AI，人类指令不受影响。', [
     el('div', { class: 'row' }, [aiToolsOn.node, aiToolsRead.node]),
     el('div', { class: 'row' }, [aiToolsWrite.node, aiRespectLenient.node]),
     el('div', { class: 'row' }, [aiThrottleLimit.node, aiThrottleWindow.node]),
   ]));
 
-  root.appendChild(card('处置矩阵', '按严重度（1–5，1 最轻）执行的动作；lenient 模式只会保留警告与上报。', [matrixBox]));
+  root.appendChild(card('规则增强（变体识别 / 风险分）',
+    '归一化让规则"看得见"形近字、插符号、全角与拼音变体；风险分把多个弱信号累加，达到阈值即送审（不影响纯闲聊）。', [
+    el('div', { class: 'row' }, [homoglyphOn.node, templateOn.node, pinyinOn.node, fuzzyDist.node]),
+    el('div', { class: 'row' }, [dupWindow.node, dupMembers.node]),
+    el('div', { class: 'row' }, [spamOn.node, spamCount.node, spamWindow.node, spamCooldown.node]),
+    el('div', { class: 'row' }, [autoEnforce.node]),
+    pinyinHint,
+  ]));
 
-  root.appendChild(card('提示词', '留空使用内置默认值；修改后建议先在下方试跑验证。', [promptHint, systemPrompt, userPrompt]));
-
+  root.appendChild(card('竞赛域名白名单', '白名单内的链接不计 link 分（25 分），但只降权不豁免：规则、审计与 LLM 送审判断照常执行。', [
+    el('div', { class: 'row' }, [domainAllow.node]),
+    domainArea,
+    el('p', { class: 'card-desc', text: '一行一个域名，按点边界后缀匹配：codeforces.com 命中 m1.codeforces.com，但不命中 fake-codeforces.com。' }),
+  ]));
+  root.appendChild(card('申诉闭环', '成员回复被处置消息发送「申诉 <理由>」；群管回复申诉消息发送「申诉通过 / 申诉驳回」。误判白名单默认关闭。', [
+    el('div', { class: 'row' }, [appealEnabled.node, appealNotify.node, appealAuto.node]),
+    el('p', { class: 'card-desc', text: '申诉通过会自动解禁（若该事件产生过禁言）并追加 appeal_accepted 动作留痕，不删除原审核事件。' }),
+  ]));
   root.appendChild(card('保存', null, [el('div', { class: 'field-actions' }, [saveBtn])]));
 
   root.appendChild(card('试跑（dry-run）', '完整走一遍「规则 → LLM → 动作规划」，不执行任何真实动作。', [
