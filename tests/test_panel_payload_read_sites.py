@@ -77,7 +77,7 @@ def test_join_spec_keys_are_read_by_backend():
 #: 豁免必须附带"证据仍存在"的校验：那处读取点被删掉时这条断言会红，
 #: 避免出现「代码早改了、豁免还留着」的静默失效。
 EVIDENCE_CHECKS = {
-    "join_llm_fallback_provider_ids": ("main.py", "fallback_key"),
+    "join_llm_fallback_provider_ids": ("main.py", "get_setting(fallback_key)"),
 }
 
 

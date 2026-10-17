@@ -190,28 +190,30 @@ window.addEventListener('load', function () {
                   + (f"｜不该出现的内部术语 {jargon}" if jargon else ""))
         import re as _re_width
 
-        narrow_url = f"http://127.0.0.1:{port}/index.html#/policy"
-        narrow_dom = dump_dom(chrome, narrow_url, window_size="360,900")
-        probe_hit = _re_width.search(r'id="smoke-width"[^>]*>([^<]*)', narrow_dom)
-        if not probe_hit:
-            failures.append(("360px 宽度探针", ["探针未被注入或脚本未执行"], [], len(narrow_dom)))
-        else:
+        for _view, _label in (('policy', '策略'), ('joins', '入群审批')):
+            narrow_url = f'http://127.0.0.1:{port}/index.html#/{_view}'
+            narrow_dom = dump_dom(chrome, narrow_url, window_size='360,900')
+            probe_hit = _re_width.search(r'id="smoke-width"[^>]*>([^<]*)', narrow_dom)
+            if not probe_hit:
+                failures.append((f'360px 宽度探针（{_label}）', ['探针未被注入或脚本未执行'], [], len(narrow_dom)))
+                continue
             payload = probe_hit.group(1).strip()
-            nums = _re_width.search(r"(\d+)x(\d+)", payload)
+            nums = _re_width.search(r'(\d+)x(\d+)', payload)
             scroll_w = int(nums.group(1)) if nums else 0
             inner_w = int(nums.group(2)) if nums else 0
-            offenders = payload.split("|", 1)[1].strip() if "|" in payload else ""
+            offenders = payload.split('|', 1)[1].strip() if '|' in payload else ''
             if scroll_w > 375:
                 failures.append(
                     (
-                        "360px 宽度探针",
-                        [f"横向溢出：scrollWidth={scroll_w} > 375（innerWidth={inner_w}）", f"溢出元素：{offenders}"],
+                        f'360px 宽度探针（{_label}）',
+                        [f'横向溢出：scrollWidth={scroll_w} > 375（innerWidth={inner_w}）', f'溢出元素 {offenders}'],
                         [],
                         len(narrow_dom),
                     )
                 )
-            tail = ("｜溢出元素 " + offenders) if offenders else ""
-            print(f"  [{'OK' if scroll_w <= 375 else 'FAIL'}] 360px 视口：scrollWidth={scroll_w}（innerWidth={inner_w}）{tail}")
+            tail = ('｜溢出元素 ' + offenders) if offenders else ''
+            _w_status = 'OK' if scroll_w <= 375 else 'FAIL'
+            print(f'  [{_w_status}] 360px 视口（{_label}）：scrollWidth={scroll_w}（innerWidth={inner_w}）{tail}')
         httpd.shutdown()
         if failures:
             print(f"[FAIL] {len(failures)} 个视图渲染异常（多半是渲染时抛了异常导致内容没出来）")

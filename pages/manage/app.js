@@ -883,6 +883,7 @@ const STAGE_LABELS = {
   budget: '超出预算',
   sampled_out: '未命中采样',
   rate_limited: '限流',
+  throttled: '单群限流',
   api_error: '接口失败',
   parse_error: '解析失败',
   low_confidence: '置信度不足',
