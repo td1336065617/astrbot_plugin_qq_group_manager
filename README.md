@@ -209,6 +209,13 @@ QQ 官方群管理接口分三档（下表为 **QQ 官方通道**；OneBot 通�
 
 ## 开发
 
+运行测试套件的**宿主环境要求 Python ≥ 3.12**：测试依赖 `astrbot==4.28.1`，其 `Requires-Python` 就是 `>=3.12`，
+因此在 3.10/3.11 上 `pip install` 阶段就会失败（插件本体没有 3.11+ 专属语法，但测试宿主装不起来）。
+
+已知的测试覆盖缺口（有意保留并记录）：`tests/test_audit_write_order.py` 里「运行期 `mod_actions` 列序」一条恒为
+`skip`——它需要构造 actions 的运行期写入上下文，成本高而收益低；列存在性已有恒跑的静态校验，列序错位由
+写列清单与建表语句同源（`WRITE_COLUMNS`）兜住。
+
 - 运行时依赖 AstrBot（`astrbot`、`botpy`），插件本身**不引入第三方库**。
 - 结构：`main.py`（入口与指令）+ `src/`（api_client / rules / normalize / moderator / actions / audit / store / web_api …）+ `pages/manage/`（管理台 SPA）。
 - 仓库只发布插件本体；测试套件与设计文档保留在开发环境，发版前会跑全量回归。
