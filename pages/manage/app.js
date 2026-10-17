@@ -1192,7 +1192,7 @@ async function viewPolicy(root) {
       el('td', {}, [maxSel]),
     ]));
   });
-  const boundaryBox = el('div', { class: 'table-wrap' }, [
+  const boundaryBox = el('div', { style: 'border: 1px solid var(--line); border-radius: 8px' }, [
     el('table', {}, [
       el('thead', {}, [el('tr', {}, [
         el('th', { text: '类别' }),
