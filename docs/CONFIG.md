@@ -229,7 +229,7 @@
 
 | 类别 | 键 | 说明 |
 | --- | --- | --- |
-| 可按群固化（18） | `join_min_confidence` `join_decline_blacklist` `join_trust_inviter` `join_profile_enabled` `join_min_account_days` `join_min_qq_level` `join_require_qid` `join_gate_action` `join_profile_missing` `join_avatar_review` `join_avatar_only_below` `join_expected_answer` `join_answer_keywords` `join_answer_regex` `join_answer_action` `join_answer_case_sensitive` `join_llm_provider_id` | 门槛 / 答案校验 / 头像复核 / 置信度 / 拉黑 / 画像开关 / 入群审批模型 |
+| 可按群固化（18） | `join_llm_fallback_provider_ids` `join_min_confidence` `join_decline_blacklist` `join_trust_inviter` `join_profile_enabled` `join_min_account_days` `join_min_qq_level` `join_require_qid` `join_gate_action` `join_profile_missing` `join_avatar_review` `join_avatar_only_below` `join_expected_answer` `join_answer_keywords` `join_answer_regex` `join_answer_action` `join_answer_case_sensitive` `join_llm_provider_id` | 门槛 / 答案校验 / 头像复核 / 置信度 / 拉黑 / 画像开关 / 入群审批模型 |
 | 全局唯一（5） | `join_review_mode`（审批模式：**全局值在「全局设置」卡编辑**（0.14 补齐入口），按群可覆盖或选「跟随全局」，**不受总开关管辖**）、`join_poll_interval`、`join_profile_cache_days`、`join_profile_qpm`、`join_profile_concurrency` | 调度间隔、画像缓存与限频是全局资源闸门；缓存键跨群共享 |
 
 **存储**：`join_follow_global`（布尔，默认 true）与 `join_overrides`（稀疏键值表）存 KV 的
@@ -254,7 +254,7 @@ A：`data/plugin_data/astrbot_plugin_qq_group_manager/moderation.db`，按上表
 
 以下键在 default_settings() 里有效，但面板目前**不提供控件**（2026-10-17 复核实测，N5）：
 
-audit_queue_maxsize / db_path / flood_threshold / group_rules_brief / llm_context_messages /
+enabled / audit_queue_maxsize / db_path / flood_threshold / group_rules_brief / llm_context_messages /
 menu_image / mute_steps / probe_full_msg_interval / retention_api_days /
 retention_capability_days / retention_events_days / retention_join_days
 
@@ -262,3 +262,12 @@ retention_capability_days / retention_events_days / retention_join_days
 
 需要修改时直接改 AstrBot 的 preferences：scope_id = <平台实例ID>/astrbot_plugin_qq_group_manager，
 key = settings（值为 {"val": {...}} 包裹）。
+
+### store_text 开启后的连带影响（0.15.11 起）
+
+开启 `store_text` 后，审核事件表里的 `text_excerpt` 会是**完整正文**（单条上限 4000 字），因此：
+
+- 申诉通知只带前 200 字摘要（已截断，避免超出平台消息长度上限）；
+- WebUI 日志页与 SSE 实时流会带完整正文（网页内可见）；
+- 数据库导出体积会明显变大（导出上限 20000 行，开启后单文件可达数十 MB）；
+- 日志页的正文检索（LIKE）扫描量变大。默认关闭，需要时再开。

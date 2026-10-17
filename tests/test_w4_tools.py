@@ -97,13 +97,15 @@ def _acc_db(tmp_path, name, rows, mutes=None, api=None, cap=None):
 
     db = tmp_path / name
     conn = sqlite3.connect(db)
-    conn.execute("create table mod_events (ts text, stage text, verdict text, fallback_index int, latency_ms int)")
+    conn.execute(
+        "create table mod_events (ts text, stage text, verdict text, fallback_index int, latency_ms int, provider_id text)"
+    )
     conn.execute("create table mutes (event_id int, updated_unix int)")
     conn.execute("create table api_calls (ok int, err_code int, ts_unix int)")
     conn.execute("create table capability_log (capability text, ok int, err_code int, ts_unix int, note text)")
     conn.execute("create table join_requests (decision text)")
     for row in rows:
-        conn.execute("insert into mod_events values (?,?,?,?,?)", row)
+        conn.execute("insert into mod_events values (?,?,?,?,?,?)", tuple(row) + (None,) * (6 - len(row)))
     for row in mutes or []:
         conn.execute("insert into mutes values (?,?)", row)
     for row in api or []:
@@ -213,3 +215,20 @@ def test_acceptance_report_accepts_capability_failure_with_note(tmp_path):
     )
     report = build_report(db, DEPLOY)
     assert report["passed"] is True, [i for i in report["checks"] if not i["ok"]]
+
+
+def test_acceptance_report_includes_parse_error_rate(tmp_path):
+    db = _acc_db(tmp_path, "rate.db", [
+        ("2026-10-16T21:00:00+08:00", "parse_error", "review", 0, 100),
+        ("2026-10-16T21:01:00+08:00", "judged", "allow", 0, 100),
+    ])
+    import sqlite3
+
+    conn = sqlite3.connect(db)
+    conn.execute("update mod_events set provider_id = 'A'")
+    conn.commit()
+    conn.close()
+    from tools.acceptance_report import build_report
+
+    report = build_report(db, DEPLOY)
+    assert report["parse_error_rate_by_provider"] == [["A", 1, 2]]

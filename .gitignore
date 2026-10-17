@@ -16,4 +16,3 @@ data/
 dist/
 build/
 .DS_Store
-ruff.toml

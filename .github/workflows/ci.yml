@@ -29,7 +29,7 @@ jobs:
         run: python tools/check_no_cross_plugin_imports.py .
       - name: 静态检查（全量 ruff；配置来自仓库内的 ruff.toml）
         run: |
-          pip install ruff
+          pip install "ruff==0.16.9"
           ruff check .
       - name: 非同名目录回归（防目录名脆弱性）
         run: |

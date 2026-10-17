@@ -2916,7 +2916,8 @@ class QQGroupManager(Star):
                 "text": reason,
                 "event_id": event_id,
                 "msg_id": row.get("msg_id") or "",
-                "excerpt": row.get("text_excerpt") or "",
+                # store_text 开启后 DB 里可能是完整正文（上限 4000 字）：通知只带摘要，避免超平台消息长度上限
+                "excerpt": (row.get("text_excerpt") or "")[:200],
             },
         )
         return ["申诉已提交，管理员会复核这条记录。"]
