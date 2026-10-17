@@ -60,7 +60,9 @@ def build_config() -> dict:
     )
 
     settings = default_settings()
-    settings["llm_fallback_provider_ids"] = ["gone/stale", "openai/gpt-4o-mini"]
+    # 长 provider id：让 360px 断言真能咬住「长 id 撑破布局」这类回归（B4）
+    long_provider_id = "provider/" + "x" * 120
+    settings["llm_fallback_provider_ids"] = ["gone/stale", "openai/gpt-4o-mini", long_provider_id]
     settings["join_llm_fallback_provider_ids"] = ["gone/stale"]
     return {
         "settings": settings,
@@ -68,6 +70,7 @@ def build_config() -> dict:
         "providers": {
             "items": [
                 {"id": "openai/gpt-4o-mini", "model": "gpt-4o-mini", "type": "openai"},
+                {"id": "provider/" + "x" * 120, "model": "x", "type": "openai"},
                 {"id": "deepseek/deepseek-chat", "model": "deepseek-chat", "type": "deepseek"},
                 {"id": "dup/one", "model": "qwen-max", "type": "openai"},
                 {"id": "dup/two", "model": "qwen-max", "type": "dashscope"},
@@ -167,6 +170,24 @@ window.addEventListener('load', function () {
         )
         httpd, port = serve(work)
         failures = []
+        for view, label, must, forbidden, min_bytes in ROUTES:
+            url = f"http://127.0.0.1:{port}/index.html#/{view}"
+            dom = dump_dom(chrome, url)
+            missing = [m for m in must if m not in dom]
+            if "__errhook" in dom:
+                import re as _re
+                m = _re.search(r"<div id=\"__errhook\"[^>]*>(.*?)</div>", dom, _re.S)
+                if m and m.group(1).strip():
+                    missing.append("JS 运行时错误: " + m.group(1).strip()[:160])
+            if len(dom) < min_bytes:
+                missing.append(f"DOM 体积异常小（{len(dom)} < {min_bytes} 字节，疑似整页渲染中断）")
+            jargon = [f for f in forbidden if f in dom]
+            status = "OK" if not missing and not jargon else "FAIL"
+            if status == "FAIL":
+                failures.append((label, missing, jargon, len(dom)))
+            print(f"  [{status}] {label}：DOM {len(dom)} 字节"
+                  + (f"｜缺少关键内容 {missing}" if missing else "")
+                  + (f"｜不该出现的内部术语 {jargon}" if jargon else ""))
         import re as _re_width
 
         narrow_url = f"http://127.0.0.1:{port}/index.html#/policy"

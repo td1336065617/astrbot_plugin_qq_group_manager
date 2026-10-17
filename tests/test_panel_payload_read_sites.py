@@ -72,3 +72,20 @@ def test_join_spec_keys_are_read_by_backend():
     assert len(keys) >= 20, f"抽出的入群键太少（{len(keys)} 个）：提取器可能退化了"
     missing = [key for key in keys if not _read_sites(key) and key not in EVIDENCE_EXEMPTIONS]
     assert not missing, f"入群页能编辑但后端从不读的键：{missing}"
+
+
+#: 豁免必须附带"证据仍存在"的校验：那处读取点被删掉时这条断言会红，
+#: 避免出现「代码早改了、豁免还留着」的静默失效。
+EVIDENCE_CHECKS = {
+    "join_llm_fallback_provider_ids": ("main.py", "fallback_key"),
+}
+
+
+def test_evidence_exemptions_still_point_at_real_read_sites():
+    for key, (rel, snippet) in EVIDENCE_CHECKS.items():
+        assert key in EVIDENCE_EXEMPTIONS, f"{key} 有证据校验却不在豁免表里"
+        path = ROOT / rel
+        assert path.exists(), f"豁免 {key} 指向的文件不存在：{rel}"
+        assert snippet in path.read_text(encoding="utf-8"), (
+            f"豁免 {key} 的证据代码已不存在（{rel} 中找不到 {snippet!r}）：豁免该撤销"
+        )

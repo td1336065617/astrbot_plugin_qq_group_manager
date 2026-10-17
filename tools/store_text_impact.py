@@ -55,7 +55,9 @@ def main(argv: list[str] | None = None) -> int:
         for label, size in sizes.items():
             print(f"  {label}: {size / 1024:.1f} KB（单条约 {size / args.rows:.0f} 字节）")
         ratio = full / max(base, 1)
-        print(f"  开启 store_text 后约放大 {ratio:.1f} 倍；每 1000 条多约 {(full - base) / 1024 * 1000 / args.rows:.1f} KB")
+        per_k = (full - base) / 1024 * 1000 / args.rows
+        print(f"  开启 store_text 后约放大 {ratio:.1f} 倍；每 1000 条多约 {per_k:.1f} KiB"
+              f"（约 {per_k * 1024 / 1_000_000:.1f} MB 十进制）")
         worst = (full / args.rows) * args.export_limit / 1024 / 1024
         print(f"  按导出上限 {args.export_limit} 行估算：开启后单次导出最坏约 {worst:.1f} MB")
     return 0
