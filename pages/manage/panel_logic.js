@@ -170,3 +170,31 @@ export function sessionPickerHint(total, shown) {
   if (!shown) return "没有匹配的会话（共 " + total + " 条候选）。";
   return "共 " + total + " 条候选，显示 " + shown + " 条。";
 }
+
+/** 处罚边界：表单原始值 → category_policy（空串 ⇒ null = 不设该边界；"0".."5" ⇒ 数字） */
+export function boundaryPolicyFromForm(raw) {
+  const out = {};
+  Object.keys(raw || {}).forEach((name) => {
+    const item = raw[name] || {};
+    const conv = (value) => {
+      const text = String(value === undefined || value === null ? '' : value).trim();
+      if (text === '') return null;
+      const num = Number(text);
+      return Number.isFinite(num) ? num : null;
+    };
+    out[name] = { min: conv(item.min), max: conv(item.max) };
+  });
+  return out;
+}
+
+/** 处罚边界校验：返回错误文案（空串=通过） */
+export function boundaryProblemFromPolicy(policy) {
+  const names = Object.keys(policy || {});
+  for (let i = 0; i < names.length; i += 1) {
+    const item = policy[names[i]] || {};
+    if (item.min !== null && item.min !== undefined && item.max !== null && item.max !== undefined && item.min > item.max) {
+      return '「' + names[i] + '」的最低等级不能大于最高等级';
+    }
+  }
+  return '';
+}

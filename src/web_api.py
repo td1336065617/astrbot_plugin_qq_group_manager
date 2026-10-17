@@ -29,6 +29,7 @@ from .models import (
     SEND_CONDITIONS,
     default_settings,
     notify_session_state,
+    resolve_category_policy,
     validate_join_mode_value,
 )
 from .utils import now_ts, to_iso
@@ -410,6 +411,7 @@ class WebApi:
                     "join_overridable_keys": list(JOIN_GROUP_OVERRIDABLE_KEYS),
                     "join_global_only_keys": list(JOIN_GLOBAL_ONLY_KEYS),
                     "join_follow_stats": store.join_follow_stats(),
+                    "category_policy_resolved": resolve_category_policy(store.settings()),
                 },
             }
         )

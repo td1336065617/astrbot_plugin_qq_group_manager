@@ -706,10 +706,15 @@ def resolve_category_policy(settings: dict[str, Any] | None) -> dict[str, dict[s
         default = DEFAULT_CATEGORY_POLICY[category]
         entry = raw.get(category) if isinstance(raw, dict) else None
         if isinstance(entry, dict):
-            raw_min = entry.get("min")
-            raw_max = entry.get("max")
-            minimum = default["min"] if raw_min is None else _coerce(raw_min, default["min"])
-            maximum = default["max"] if raw_max is None else _coerce(raw_max, default["max"])
+            # 设计 §3.1：键存在且为 null ⇒ **不设该边界**；键缺失才回退默认。
+            if "min" in entry:
+                minimum = None if entry["min"] is None else _coerce(entry["min"], default["min"])
+            else:
+                minimum = default["min"]
+            if "max" in entry:
+                maximum = None if entry["max"] is None else _coerce(entry["max"], default["max"])
+            else:
+                maximum = default["max"]
         else:
             minimum, maximum = default["min"], default["max"]
         if minimum is not None and maximum is not None and minimum > maximum:

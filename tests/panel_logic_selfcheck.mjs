@@ -84,3 +84,11 @@ eq("hint_miss", L.sessionPickerHint(31, 0).indexOf("没有匹配") >= 0, true);
 eq("hint_count", L.sessionPickerHint(31, 12).indexOf("31") >= 0, true);
 eq("risk_replace_keeps_order", L.conditionsWithRisk(["rule_hit", "risk>=10", "flood"], true, 20), ["rule_hit", "flood", "risk>=20"]);
 
+// —— 处罚边界（0.15.24 起）：表单→配置、配置校验 ——
+eq("boundary_form_null_and_num", L.boundaryPolicyFromForm({ 其他: { min: "", max: "2" } }), { 其他: { min: null, max: 2 } });
+eq("boundary_form_zero_kept", L.boundaryPolicyFromForm({ 政治敏感: { min: "", max: "0" } }), { 政治敏感: { min: null, max: 0 } });
+eq("boundary_form_empty", L.boundaryPolicyFromForm({}), {});
+eq("boundary_ok", L.boundaryProblemFromPolicy({ 其他: { min: 1, max: 2 } }), "");
+eq("boundary_bad_min_gt_max", L.boundaryProblemFromPolicy({ 其他: { min: 3, max: 1 } }).indexOf("不能大于") >= 0, true);
+eq("boundary_null_max_skips_check", L.boundaryProblemFromPolicy({ 其他: { min: 3, max: null } }), "");
+eq("boundary_max_zero_with_min", L.boundaryProblemFromPolicy({ 其他: { min: 1, max: 0 } }).indexOf("不能大于") >= 0, true);

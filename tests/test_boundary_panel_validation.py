@@ -76,3 +76,15 @@ def test_panel_saved_policy_roundtrip() -> None:
         }
 
     asyncio.run(scenario())
+
+
+def test_null_means_no_limit_not_default() -> None:
+    """H2 行为锁：键存在且为 null ⇒ 不设该边界（不是"用默认值"）。"""
+    policy = resolve_category_policy({"category_policy": {"其他": {"min": None, "max": None}}})
+    assert policy["其他"] == {"min": None, "max": None}
+    # 键缺失才回退默认
+    fallback = resolve_category_policy({"category_policy": {"其他": {}}})
+    assert fallback["其他"]["max"] == 2
+    # 面板选「最高=5」与「不限」等价（5 是区间上限，不夹任何等级）
+    five = resolve_category_policy({"category_policy": {"其他": {"min": None, "max": 5}}})
+    assert five["其他"]["max"] == 5

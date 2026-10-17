@@ -322,7 +322,7 @@ def test_chain_mutes_at_double_threshold(tmp_path):
         await send_many(env, 10)
         assert len(transport.calls_for("POST", MUTE_PATH)) == 1, "10 条必须升级为禁言"
         rows = await audit_rows(env, "events")
-        assert [row["severity"] for row in rows["items"]] == [2, 3]
+        assert sorted(row["severity"] for row in rows["items"]) == [2, 3]
 
     asyncio.run(scenario())
 

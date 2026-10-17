@@ -22,6 +22,8 @@ import {
   sessionOptionLabel,
   sessionPickerHint,
   toggleProvider,
+  boundaryPolicyFromForm,
+  boundaryProblemFromPolicy,
 } from './panel_logic.js';
 
 const bridge = window.AstrBotPluginPage;
@@ -1163,16 +1165,14 @@ async function viewPolicy(root) {
 
   /* 处罚边界：每类允许等级区间 + 越界处置（全局一套） */
   const BOUNDARY_CATS = ['无', '广告引流', '色情低俗', '辱骂攻击', '政治敏感', '违法违规', '诈骗赌博', '刷屏灌水', '其他'];
-  const boundaryPolicy = JSON.parse(JSON.stringify(settings.category_policy || {}));
-  const boundaryBox = el('div', { class: 'grid cols-2' });
+  const boundaryResolved = (((config || {}).options || {}).category_policy_resolved) || settings.category_policy || {};
+  const boundaryPolicy = JSON.parse(JSON.stringify(boundaryResolved));
   const boundaryInputs = {};
-  const levelOptions = (current, allowZero) => {
-    const box = el('select');
+  const levelSelect = (current, allowZero) => {
+    const box = el('select', { style: 'width: 8.5em' });
     const opts = [['', '不限']];
-    for (let v = 0; v <= 5; v += 1) {
-      if (v === 0 && !allowZero) continue;
-      opts.push([String(v), v === 0 ? '0（一律转人工）' : String(v)]);
-    }
+    for (let v = 1; v <= 5; v += 1) opts.push([String(v), String(v)]);
+    if (allowZero) opts.push(['0', '0（一律转人工）']);
     opts.forEach((pair) => {
       const opt = el('option', { value: pair[0], text: pair[1] });
       if (String(current === null || current === undefined ? '' : current) === pair[0]) opt.selected = true;
@@ -1180,23 +1180,32 @@ async function viewPolicy(root) {
     });
     return box;
   };
+  const boundaryRows = [];
   BOUNDARY_CATS.forEach((name) => {
     const entry = boundaryPolicy[name] || {};
-    const row = el('div', { class: 'notice' });
-    row.appendChild(el('div', { text: name }));
-    const wrap = el('div', { class: 'row' });
-    const minSel = levelOptions(entry.min, false);
-    const maxSel = levelOptions(entry.max, true);
+    const minSel = levelSelect(entry.min, false);
+    const maxSel = levelSelect(entry.max, true);
     boundaryInputs[name] = { min: minSel, max: maxSel };
-    wrap.appendChild(el('label', { class: 'switch' }, [el('span', { text: '最低' }), minSel]));
-    wrap.appendChild(el('label', { class: 'switch' }, [el('span', { text: '最高' }), maxSel]));
-    row.appendChild(wrap);
-    boundaryBox.appendChild(row);
+    boundaryRows.push(el('tr', {}, [
+      el('td', { text: name }),
+      el('td', {}, [minSel]),
+      el('td', {}, [maxSel]),
+    ]));
   });
+  const boundaryBox = el('div', { class: 'table-wrap' }, [
+    el('table', {}, [
+      el('thead', {}, [el('tr', {}, [
+        el('th', { text: '类别' }),
+        el('th', { text: '最低等级' }),
+        el('th', { text: '最高等级' }),
+      ])]),
+      el('tbody', {}, boundaryRows),
+    ]),
+  ]);
   const boundaryAction = settings.boundary_action || {};
   const actionOptions = (current) => {
-    const box = el('select');
-    [['notify', '通报管理员（转人工）'], ['silent', '静默（不通知不处罚，仍写审计）']].forEach((pair) => {
+    const box = el('select', { style: 'width: 15em' });
+    [['notify', '通报管理员（转人工）'], ['silent', '静默（仍写审计）']].forEach((pair) => {
       const opt = el('option', { value: pair[0], text: pair[1] });
       if ((current || 'notify') === pair[0]) opt.selected = true;
       box.appendChild(opt);
@@ -1205,32 +1214,22 @@ async function viewPolicy(root) {
   };
   const belowSel = actionOptions(boundaryAction.below);
   const aboveSel = actionOptions(boundaryAction.above);
-  const boundaryActionsBox = el('div', { class: 'grid cols-2' }, [
-    el('label', { class: 'switch' }, [el('span', { text: '等级低于下限时' }), belowSel]),
-    el('label', { class: 'switch' }, [el('span', { text: '等级超过上限时' }), aboveSel]),
+  const boundaryActionsBox = el('div', { class: 'row' }, [
+    el('label', { class: 'field-inline' }, [el('span', { text: '等级低于下限时：' }), belowSel]),
+    el('label', { class: 'field-inline' }, [el('span', { text: '等级高于上限时（含最高=0）：' }), aboveSel]),
   ]);
+  const boundaryHelp = el('p', {
+    class: 'field-help',
+    text: '默认：其他 / 无 最高 2 · 政治敏感 最高 0（一律转人工）· 刷屏灌水 最高 3 · 其余不限。留空 = 不设该边界。',
+  });
   const readBoundaryPolicy = () => {
-    const out = {};
+    const raw = {};
     BOUNDARY_CATS.forEach((name) => {
-      const minRaw = boundaryInputs[name].min.value;
-      const maxRaw = boundaryInputs[name].max.value;
-      out[name] = {
-        min: minRaw === '' ? null : Number(minRaw),
-        max: maxRaw === '' ? null : Number(maxRaw),
-      };
+      raw[name] = { min: boundaryInputs[name].min.value, max: boundaryInputs[name].max.value };
     });
-    return out;
+    return boundaryPolicyFromForm(raw);
   };
-  const boundaryProblem = (policy) => {
-    const names = Object.keys(policy);
-    for (let i = 0; i < names.length; i += 1) {
-      const item = policy[names[i]];
-      if (item.min !== null && item.max !== null && item.min > item.max) {
-        return '「' + names[i] + '」的最低等级不能大于最高等级';
-      }
-    }
-    return '';
-  };
+  const boundaryProblem = (policy) => boundaryProblemFromPolicy(policy);
   /* 提示词 */
   const systemPrompt = el('textarea', { placeholder: '留空使用内置默认提示词' });
   systemPrompt.value = settings.prompt_system || '';
@@ -1312,7 +1311,7 @@ async function viewPolicy(root) {
     const badBoundary = boundaryProblem(payload.category_policy);
     if (badBoundary) {
       saveBtn.disabled = false;
-      window.alert(badBoundary);
+      toast(badBoundary, 'bad');
       return;
     }
       await bridge.apiPost('config', { section: 'settings', data: payload });
@@ -1387,7 +1386,7 @@ async function viewPolicy(root) {
   root.appendChild(card('处置矩阵', '按严重度（1–5，1 最轻）执行的动作；lenient 模式只会保留警告与上报。', [matrixBox]));
 
 
-  root.appendChild(card('处罚边界（每类允许等级区间）', '等级在区间内按矩阵自动处置；越界改转人工或静默（仍写审计）。留空=不限，最高 0=该类一律转人工。', [boundaryBox, boundaryActionsBox]));
+  root.appendChild(card('处罚边界（每类允许等级区间）', '区间内按处置矩阵执行；越界不再处罚，改按越界开关处理（静默也写审计）。', [boundaryActionsBox, boundaryBox, boundaryHelp]));
   root.appendChild(card('提示词', '留空使用内置默认值；修改后建议先在下方试跑验证。', [promptHint, systemPrompt, userPrompt]));
 
 
@@ -2109,6 +2108,16 @@ function buildJoinField(key, spec, value, providerInfo, onChange) {
     read = () => input.value;
   } else if (spec.kind === 'select') {
     input = el('select');
+    const knownValues = new Set((spec.options || []).map((pair) => pair[0]));
+    // BUG-06 同款防线：当前值不在候选里（选项被收敛/改名）时补占位项，
+    // 避免"打开页面不动它，点保存就把配置静默改成第一项"。
+    if (display !== '' && !knownValues.has(display)) {
+      input.appendChild(el('option', {
+        value: display,
+        text: display + '（当前值·注意）',
+        selected: 'selected',
+      }));
+    }
     (spec.options || []).forEach((pair) => input.appendChild(el('option', {
       value: pair[0],
       text: pair[1],
@@ -2288,7 +2297,8 @@ async function viewJoins(root) {
   const groupRows = {};
   const ensureEdit = () => state.joinEdits[gid] || (state.joinEdits[gid] = { dirty: {}, reset: [] });
   let discardBtnNode = null;   // 首次编辑时就地显示（不必等下一次渲染）
-  overridableKeys.forEach((key) => {
+  const groupFieldKeys = Object.keys(JOIN_FIELD_SPECS).filter((key) => overridableKeys.indexOf(key) >= 0);
+  groupFieldKeys.forEach((key) => {
     const spec = JOIN_FIELD_SPECS[key];
     if (!spec) return;
     const pendingRestore = resetSet.has(key);

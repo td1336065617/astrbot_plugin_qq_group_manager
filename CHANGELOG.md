@@ -9,6 +9,24 @@
 ---
 
 
+## [0.15.24] - 2026-10-18
+
+### 修复（面板热修）
+
+- 🐛 **入群全局卡不再静默关闭头像判定**：`join_avatar_review` 收敛为两档后，KV 里的旧值 `approve_only` 在全局卡会落到第一个选项（关闭）⇒ 点「保存全局配置」即把 KV 写成 `off`。现对所有 `select` 字段通用加「当前值不在候选里时补占位项」防线（沿用 provider 分支 BUG-06 的做法），打开页面不再改动用户原值。
+- 🐛 **「不限」真正生效**：`category_policy` 的 `min`/`max` 语义改为「键存在且为 `null` ⇒ 不设该边界」，键缺失才回退默认（此前 `null` 被当作"用默认值"，导致面板显示"不限"而实际仍受限）。
+- ⚙️ 前端校验提示由 `window.alert` 改为项目统一的 `toast`。
+
+### 测试
+
+- 新增 `tests/test_panel_boundary_wiring.py`：钉住"`config_set` 必须在校验通过后才写入"、以及"前端 9 类清单与后端 `CATEGORIES` 集合相等"。
+- 处罚边界的前端纯逻辑抽到 `pages/manage/panel_logic.js`（`boundaryPolicyFromForm` / `boundaryProblemFromPolicy`），`tests/panel_logic_selfcheck.mjs` 断言数 37 → **44**。
+
+### 说明
+
+- 0.15.23 的 CHANGELOG 写「历史值 `approve_only` 显示与保存均按开启处理」：实际是**显示按开启、保存保留原值**（不会静默改成 `off`，也不会强制改写为 `always`）。
+- 显式声明"不支持图片"的模型：入群侧**每条申请都转人工**（不是纯文本降级；只有"能力未知"的模型按支持图片处理）。
+
 ## [0.15.23] - 2026-10-18
 
 ### 面板
