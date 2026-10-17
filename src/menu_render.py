@@ -102,8 +102,10 @@ _STYLE = """
   }
 """
 
-#: 指令片段最长字符数（超过则整条当说明，避免出现超长 chip）
+#: 指令片段最长字符数（超过则退化为首个词做 chip，避免出现超长 chip）
 MAX_COMMAND_CHARS = 18
+#: 兜底时首个词最长字符数
+MAX_CHIP_CHARS = 12
 
 
 def split_item(item: str) -> tuple[str, str]:
@@ -118,6 +120,12 @@ def split_item(item: str) -> tuple[str, str]:
         command, description = command.strip(), description.strip()
         if command and description and len(command) <= MAX_COMMAND_CHARS:
             return command, description
+        # 命令段太长（例如把多种写法并列写进去了）时退化成首个词做胶囊，
+        # 不要把整行变成正文 —— 否则这一行会「掉渲染」，看着像普通文字。
+        head = command.split()[0] if command.split() else ""
+        if description and head and len(head) <= MAX_CHIP_CHARS:
+            rest = command[len(head) :].strip(" /·、,，") + " ─ " + description
+            return head, rest
         return "", text
     head, sep, tail = text.partition(" ")
     if sep and tail.strip() and len(head) <= MAX_COMMAND_CHARS:

@@ -55,3 +55,26 @@ def test_menu_mentions_full_message_prerequisite():
     text = commands.menu_text()
     assert "接收全部消息" in text, "菜单没写「需群已开启接收全部消息」这个前置条件"
 
+
+
+def _render():
+    if str(PLUGIN_ROOT.parent) not in sys.path:
+        sys.path.insert(0, str(PLUGIN_ROOT.parent))
+    return importlib.import_module(f"{PLUGIN_ROOT.name}.src.menu_render")
+
+
+def test_every_menu_item_gets_a_chip():
+    """每一行都必须渲染出指令胶囊。
+
+    命令段写得过长（例如把多种写法并列写进去）会让整行退化成正文，看着像「掉渲染」——
+    0.15.18 之前就有三行是这样（审核模式 / 黑名单 / 全局拉黑）。
+    """
+    commands, _ = _modules()
+    render = _render()
+    bad = [
+        item
+        for _title, items in commands.MENU_SECTIONS
+        for item in items
+        if not render.split_item(item)[0]
+    ]
+    assert not bad, f"这些菜单行没有指令胶囊（会看着像掉渲染）：{bad}"
