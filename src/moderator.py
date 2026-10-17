@@ -281,10 +281,69 @@ def extract_kv_verdict(raw_text: str) -> dict | None:
     parsed["verdict"] = verdict_value
     return parsed
 
+#: 只修「已知字符串键的值漏了开引号」这一类（生产实测 4/4 条 parse_error 都是这种毛病）
+REPAIR_KEYS = ("analysis", "evidence", "reason", "category")
+
+
+#: R3-2 修复计数（模块级；供 status 与验收读取）
+_REPAIR_STATS: dict[str, int] = {"n": 0}
+
+
+def repair_json_text(text: str) -> str:
+    """给「已知字符串键漏了开引号」的行补上开引号；其余一律不动。
+
+    保守约束（宁可修不回来，也不要凭空造出判定）：
+      1. 只认 analysis / evidence / reason / category 四个键；
+      2. 值必须以已有的闭合引号结尾（漏的是开引号），且在此之前不能夹着引号；
+      3. 逐行处理，不匹配的行原样保留；没有任何改动时返回原串（调用方据此判断是否值得重试）。
+    """
+    raw = text or ""
+    if "{" not in raw:
+        return raw
+    changed = False
+    out: list[str] = []
+    for line in raw.split("\n"):
+        stripped = line.strip()
+        replacement = None
+        for key in REPAIR_KEYS:
+            prefix = chr(34) + key + chr(34)
+            if not stripped.startswith(prefix):
+                continue
+            rest = stripped[len(prefix) :].lstrip()
+            if not rest.startswith(":"):
+                continue
+            value = rest[1:].lstrip()
+            if not value or value.startswith(chr(34)):
+                continue
+            tail = ""
+            if value.endswith(","):
+                value = value[:-1].rstrip()
+                tail = ","
+            if not value.endswith(chr(34)) or chr(34) in value[:-1]:
+                continue
+            body = value[:-1]
+            indent = line[: len(line) - len(line.lstrip())]
+            replacement = indent + prefix + ": " + chr(34) + body + chr(34) + tail
+            break
+        if replacement is not None:
+            out.append(replacement)
+            changed = True
+        else:
+            out.append(line)
+    return "\n".join(out) if changed else raw
+
+
 def parse_verdict(raw_text: str, *, source: str = "llm", latency_ms: int = 0) -> Verdict:
     """把模型输出解析为 Verdict；失败返回 review（不处置）。"""
     payload = extract_json_object(raw_text or "")
     used_kv = False
+    if payload is None:
+        # R3-2：模型偶尔只漏一个开引号（生产实测 4/4 条 parse_error），先保守修补再重试一次解析
+        candidate = repair_json_text(raw_text or "")
+        if candidate != (raw_text or ""):
+            payload = extract_json_object(candidate)
+            if payload is not None:
+                _REPAIR_STATS["n"] = _REPAIR_STATS.get("n", 0) + 1
     if payload is None:
         payload = extract_kv_verdict(raw_text or "")
         used_kv = bool(payload)
@@ -724,6 +783,7 @@ class LLMModerator:
             "circuit_open": self.circuit_open(),
             "cache_size": len(self._cache),
             "updated_at": now_ts(),
+            "parse_repairs": _REPAIR_STATS.get("n", 0),   # R3-2
             **self.stats.to_dict(),
         }
 
