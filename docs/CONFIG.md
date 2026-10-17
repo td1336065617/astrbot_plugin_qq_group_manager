@@ -84,7 +84,7 @@
 | `retention_capability_days` | 30 | 能力受限日志保留天数 |
 | `retention_join_days` | 90 | 入群申请记录保留天数 |
 | `db_path` | 空 | 自定义审计库路径（默认 `data/plugin_data/.../moderation.db`） |
-| `store_text` | false | 是否在审计库保存消息正文（默认只存摘要 + 前 120 字） |
+| `store_text` | false | 是否在审计库保存消息正文：true 时存完整正文（上限 4000 字），false 时只存前 120 字摘要。**隐私提示**：开启后群内正文会落库（0.15.11 起真正生效；此前该键无读取点） |
 
 
 > **本地风险分权重**（0~100 累加后截断；达到 `risk>=N` 阈值即送审）：
@@ -249,3 +249,16 @@ A：这 5 个接口官方标注"该能力正在内邀接入中"。插件会调�
 
 **Q：日志数据存在哪里？会不会无限增长？**
 A：`data/plugin_data/astrbot_plugin_qq_group_manager/moderation.db`，按上表的保留期每日自动裁剪，可在工具页手动裁剪/备份/清空。
+
+## 只能直接改 KV 的键（面板暂无控件）
+
+以下键在 default_settings() 里有效，但面板目前**不提供控件**（2026-10-17 复核实测，N5）：
+
+audit_queue_maxsize / db_path / flood_threshold / group_rules_brief / llm_context_messages /
+menu_image / mute_steps / probe_full_msg_interval / retention_api_days /
+retention_capability_days / retention_events_days / retention_join_days
+
+其中 default_moderation_enabled 已在 0.15.11 接线（决定新群默认是否开启审核），但同样没有面板控件。
+
+需要修改时直接改 AstrBot 的 preferences：scope_id = <平台实例ID>/astrbot_plugin_qq_group_manager，
+key = settings（值为 {"val": {...}} 包裹）。

@@ -547,7 +547,14 @@ class PluginStore:
         return self._groups.get(group_id)
 
     def group_or_default(self, group_id: str) -> GroupConfig:
-        return self._groups.get(group_id) or GroupConfig(group_id=group_id)
+        existing = self._groups.get(group_id)
+        if existing is not None:
+            return existing
+        # 新群默认是否开启审核由设置决定（此前该键无读取点，行为恒为 False）
+        return GroupConfig(
+            group_id=group_id,
+            moderation_enabled=bool(self.get_setting("default_moderation_enabled", False)),
+        )
 
     async def ensure_group(
         self,
@@ -564,6 +571,7 @@ class PluginStore:
                 group_id=group_id,
                 platform_id=str(platform_id or ""),
                 name=name,
+                moderation_enabled=bool(self.get_setting("default_moderation_enabled", False)),
                 added_at=now_ts(),
                 last_seen=now_ts(),
                 source=source,

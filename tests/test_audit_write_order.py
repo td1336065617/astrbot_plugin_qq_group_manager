@@ -81,3 +81,22 @@ def test_actions_write_column_order():
         _check("actions", "mod_actions")
     except AssertionError as exc:
         pytest.skip(f"进程内无法触达 actions 写入路径（{exc}）；同一 _flush 使用 WRITE_COLUMNS，events 已验证列序")
+
+
+def test_actions_write_columns_exist_in_schema():
+    """N8 已知缺口：actions 的运行期列序用例依赖运行期上下文，进程内不可达。
+
+    这里补一条始终运行的静态校验：WRITE_COLUMNS[actions] 的每一列都必须真实存在于 mod_actions 表结构里，
+    至少拦住「写一个不存在的列 / 列名拼写错位」这类问题。
+    """
+    db = Path(__file__).resolve().parent / "_n8_schema.db"
+    db.unlink(missing_ok=True)
+    store = AuditStore(str(db))
+    asyncio.run(store.initialize())
+    conn = sqlite3.connect(str(db))
+    try:
+        cols = [row[1] for row in conn.execute("PRAGMA table_info(mod_actions)")]
+    finally:
+        conn.close()
+    missing = [c for c in WRITE_COLUMNS["actions"] if c not in cols]
+    assert not missing, f"WRITE_COLUMNS[actions] 里有表结构中不存在的列：{missing}"

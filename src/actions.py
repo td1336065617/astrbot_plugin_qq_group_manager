@@ -27,6 +27,20 @@ from .models import (
 )
 from .utils import now_ts, safe_json_dumps, to_iso, truncate
 
+
+def excerpt_for_store(store: Any, text: str) -> str:
+    """正文落库长度：store_text=true 时存完整正文（上限 4000 字），否则只存 120 字摘要。
+
+    这个键此前没有任何读取点（面板与 CONFIG 却承诺"可开启保存完整正文"），0.15.11 起真正生效。
+    """
+    full = False
+    if store is not None:
+        try:
+            full = bool(store.get_setting("store_text", False))
+        except Exception:  # pragma: no cover - 设置读取失败或桩 store 无此方法
+            full = False
+    return truncate(text, 4000 if full else 120)
+
 #: AI/显式入口允许的动作（撤回/拉黑/移除**不给** AI，见需求 QG-09）
 MANUAL_ACTIONS: tuple[str, ...] = ("mute", "unmute", "warn")
 
@@ -299,7 +313,7 @@ class ActionExecutor:
                 reason=verdict.reason,
                 rule_hits=safe_json_dumps(rule_hits or []),
                 text_digest=text_digest,
-                text_excerpt=truncate(message_excerpt, 120),
+                text_excerpt=excerpt_for_store(self.store, message_excerpt),
                 raw_verdict=verdict.raw,
                 latency_ms=latency_ms,
                 provider_id=provider_id,

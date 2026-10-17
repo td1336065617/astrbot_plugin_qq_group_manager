@@ -966,6 +966,7 @@ async function viewPolicy(root) {
   const blockLlm = checkField('违规消息阻断后续 LLM 对话', settings.block_llm_on_violation);
   const repeatMul = checkField('重复违规时长累加（≤3 倍）', settings.repeat_offense_multiplier);
   const autoRemove = checkField('自动移除成员（内邀能力，风险高）', settings.auto_remove);
+  const storeTextOn = checkField('保存消息正文（隐私：开启后群内正文会落库）', settings.store_text === true);
   /* AI 能力（工具） */
   const aiToolsOn = checkField('开启 AI 工具（只读：群信息 / 审核状态 / 统计 / 日志）', settings.qqgm_ai_tools_enabled !== false);
   const aiToolsRead = checkField('AI 只读工具可用', settings.qqgm_ai_tools_read_enabled !== false);
@@ -1133,6 +1134,7 @@ async function viewPolicy(root) {
       block_llm_on_violation: blockLlm.input.checked,
       repeat_offense_multiplier: repeatMul.input.checked,
       auto_remove: autoRemove.input.checked,
+      store_text: storeTextOn.input.checked,
       mode: modeSelect.value,
       llm_provider_id: providerSelect.value,
       llm_fallback_provider_ids: fallbackList.read(),
@@ -1214,7 +1216,7 @@ async function viewPolicy(root) {
     pinyinHint,
   ]));
 
-  root.appendChild(card('竞赛域名白名单', '白名单内的链接不计 link 分（25 分），但**只降权不豁免**：规则、审计与 LLM 送审判断照常执行。', [
+  root.appendChild(card('竞赛域名白名单', '白名单内的链接不计 link 分（25 分），但只降权不豁免：规则、审计与 LLM 送审判断照常执行。', [
     el('div', { class: 'row' }, [domainAllow.node]),
     domainArea,
     el('p', { class: 'card-desc', text: '一行一个域名，按点边界后缀匹配：codeforces.com 命中 m1.codeforces.com，但不命中 fake-codeforces.com。' }),
@@ -1248,11 +1250,13 @@ async function viewPolicy(root) {
     imageHint,
     el('div', { class: 'row' }, [qpmField.node, concurrency.node, budget.node, cacheTtl.node, breaker.node]),
     el('div', { class: 'row' }, [maxMuteDays.node, repeatMul.node, autoRemove.node]),
+    el('div', { class: 'row' }, [storeTextOn.node]),
     (systemPrompt.value.trim() || userPrompt.value.trim())
       ? el('div', { class: 'hint' }, ['当前使用自定义提示词，本次判词更新（PROMPT_VERSION）不会生效；清空下面两个输入框即可恢复默认。'])
       : null,
     el('label', { class: 'field' }, [el('span', { text: '管理员通知会话（会话 ID）' }), notifySession]),
     el('div', { class: 'field-actions' }, [el('span', { class: 'muted', text: '送审条件：' })]),
+    el('p', { class: 'hint', text: '一条都不勾会按「规则命中」处理（后端兜底，避免误关全部审核）；想让所有消息都送审，请勾「全部消息」。' }),
     conditions,
   ]));
 
