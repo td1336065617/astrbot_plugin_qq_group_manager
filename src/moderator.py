@@ -712,12 +712,28 @@ class LLMModerator:
         timeout = float(settings.get("llm_timeout", 20) or 20)
         # 回退链：每跳各自用 llm_timeout，外层预算按候选数放宽（备用为空时=旧行为）
         fallback_items = [item for item in (settings.get("llm_fallback_provider_ids") or []) if str(item)]
-        budget = max(1.0, timeout) if not fallback_items else timeout * (1 + len(fallback_items)) + 5.0
+        # B1（R3-1）：备用非空时，真实链长 = 1 个主模型 + n 个备用（外加会话默认可能那一跳），
+        # 且每跳超时后会「同 provider 再试一次」，所以外层预算要按 2 倍跳数放宽；
+        # 备用为空时**保持旧行为**（max(1.0, timeout)），避免单 provider 超时挂起时间被放大。
+        if not fallback_items:
+            budget = max(1.0, timeout)
+        else:
+            hops = 2 + len(fallback_items)  # 主模型 + 备用 + 会话默认
+            budget = min(900.0, max(60.0, timeout) * (2 + 2 * hops)) + 5.0
         try:
-            raw = await asyncio.wait_for(
-                self.provider_call(request, system_prompt, user_prompt),  # type: ignore[misc]
-                timeout=budget,
-            )
+            if fallback_items:
+                raw = await asyncio.wait_for(
+                    self.provider_call(  # type: ignore[misc]
+                        request, system_prompt, user_prompt, validate=validate_llm_text
+                    ),
+                    timeout=budget,
+                )
+            else:
+                # 无备用：保持原来的三参调用文本（tests/test_join_follow_gate.py:527 有源码契约断言）
+                raw = await asyncio.wait_for(
+                    self.provider_call(request, system_prompt, user_prompt),  # type: ignore[misc]
+                    timeout=budget,
+                )
         except Exception as exc:
             self._record_failure(f"{type(exc).__name__}: {exc}")
             return Verdict.review(f"模型调用失败：{type(exc).__name__}", source="llm", stage="api_error")
@@ -830,6 +846,20 @@ FALLBACK_CODES = frozenset({
 })
 #: 安全策略类报文特征词（命中即视为平台主动拒绝：不重试、不回退）
 SAFETY_MARKERS = ("safety", "content_filter", "policy", "moderation", "blocked", "risk")
+
+
+def validate_llm_text(text: str) -> bool:
+    """B1（R3-1）：轻量校验输出能否解析成判定。
+
+    刻意不复用 parse_verdict：那个路径会累加 _REPAIR_STATS 修复计数，
+    回退链上再校验一次会让「救回条数」虚高一倍；这里只做无副作用的形状判断。
+    """
+    stripped = (text or "").strip()
+    if not stripped:
+        return False
+    if extract_json_object(stripped) is not None:
+        return True
+    return extract_kv_verdict(stripped) is not None
 
 
 def classify_failure(exc):

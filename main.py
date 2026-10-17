@@ -100,6 +100,7 @@ from .src.moderator import (
     choose_provider_chain,
     classify_failure,
     should_fallback,
+    SAFETY_MARKERS,
     resolve_prompt_version,
 )
 from .src.normalize import skeleton_text
@@ -725,6 +726,7 @@ class QQGroupManager(Star):
         *,
         provider_setting: str = "llm_provider_id",
         provider_override: str | None = None,
+        validate: Callable[[str], bool] | None = None,
     ) -> str:
         """调用 AstrBot 已配置的 LLM（复用官方 SDK）。
 
@@ -773,6 +775,7 @@ class QQGroupManager(Star):
                 chain[0] or "会话默认模型",
             )
         last_error: BaseException | None = None
+        last_text: str | None = None
         for index, provider_id in enumerate(chain):
             self._note_used_provider(provider_setting, provider_id)
             request.provider_id = provider_id
@@ -821,14 +824,43 @@ class QQGroupManager(Star):
                         raise
                     break
                 else:
+                    text = str(getattr(response, "completion_text", "") or "")
+                    if validate is not None and not validate(text):
+                        if any(marker in text.lower() for marker in SAFETY_MARKERS):
+                            # 文本级安全拒绝：不换模型（否则等于用备用模型绕开主模型的策略拒绝）
+                            self.logger.warning("审核模型 %s 以自然语言拒绝，不回退", provider_id)
+                            return text
+                        hop_failed_code = "parse_error"
+                        last_text = text
+                        if self.audit is not None:
+                            try:
+                                self.audit.record_capability(
+                                    group_id=request.group_id,
+                                    capability="llm_hop",
+                                    ok=False,
+                                    err_code="parse_error",
+                                    note=digest_text(text),
+                                )
+                            except Exception:  # pragma: no cover - 审计失败不影响审核
+                                pass
+                        self.logger.warning(
+                            "审核模型 %s 输出无法解析（parse_error，第 %d 次）",
+                            provider_id,
+                            attempt + 1,
+                        )
+                        break
                     note = getattr(self.moderator, "note_provider_result", None)
                     if note is not None:
                         note(provider_id, True)
-                    return str(getattr(response, "completion_text", "") or "")
+                    return text
             if hop_failed_code:
                 note = getattr(self.moderator, "note_provider_result", None)
                 if note is not None:  # 一次逻辑调用只记一次失败
                     note(provider_id, False, hop_failed_code)
+        if last_text is not None:
+            # 所有候选都吐不出可解析输出：把最后一跳原文交给 judge 落 parse_error，
+            # 绝不退化到下面的 legacy 调用（那是「没有任何候选可用」的路径）
+            return last_text
         if last_error is not None:
             raise last_error
         provider = await self.context.get_using_provider_async(umo=umo or None)
