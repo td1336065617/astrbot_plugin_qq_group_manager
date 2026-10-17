@@ -180,7 +180,7 @@ pre.guide {
 .scope-badge.own { background: rgba(37, 99, 235, .12); color: #2563eb; }
 .scope-badge.follow { background: #f3f4f6; color: #4b5563; }
 .scope-badge.pending { background: rgba(217, 119, 6, .14); color: #b45309; }
-.scope-badge.dormant { background: #f3f4f6; color: #6b7280; }
+.scope-badge.dormant { background: #f3f4f6; color: #636b78; }
 .impact { font-size: 11px; color: var(--muted); white-space: nowrap; }
 input:disabled, select:disabled, textarea:disabled {
   opacity: .6; cursor: not-allowed; background: rgba(148, 163, 184, .12);

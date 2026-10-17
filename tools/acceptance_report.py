@@ -177,7 +177,7 @@ def main(argv: list[str]) -> int:
     rates = report.get("parse_error_rate_by_provider") or []
     if rates:
         print("  解析失败率（失败/该 provider 全部判定）：" + "；".join(
-            str(pid or "(空)") + " " + str(bad) + "/" + str(tot) + "（" + ("%.1f" % ((100.0 * bad / tot) if tot else 0.0)) + "%），"
+            str(pid or "(空)") + " " + str(bad) + "/" + str(tot) + "（" + ("%.1f" % ((100.0 * bad / tot) if tot else 0.0)) + "%）"
             for pid, bad, tot in rates
         ))
     print("  按 provider 的解析失败：" + ("；".join(f"{pid or '(空)'} {n} 条" for pid, n in parse_err) if parse_err else "无"))

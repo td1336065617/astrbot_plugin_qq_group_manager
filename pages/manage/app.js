@@ -731,7 +731,7 @@ async function viewLogs(root) {
     if (!(await uiConfirm('将删除「' + (LOG_KIND_LABELS[kind] || kind) + '」类型的全部日志，且不可恢复。确认？'))) return;
     clearLogsBtn.disabled = true;
     try {
-      const result = await bridge.apiPost('logs/clear', { scope: kind });
+      await bridge.apiPost('logs/clear', { scope: kind });
       toast('已清空' + (LOG_KIND_LABELS[kind] || kind), 'ok');
       loadLogs(kind, 1);
     } catch (error) { toast('清空失败：' + error.message, 'bad'); }
