@@ -165,7 +165,6 @@ def test_joins_settings_payload_keys_are_known_settings():
         "join_gate_action",
         "join_profile_missing",
         "join_avatar_review",
-        "join_avatar_only_below",
         "join_profile_cache_days",
         "join_profile_qpm",
         "join_profile_concurrency",
@@ -211,7 +210,6 @@ def test_join_profile_settings_roundtrip():
             "join_gate_action": "manual",
             "join_profile_missing": "manual",
             "join_avatar_review": "approve_only",
-            "join_avatar_only_below": 0.9,
             "join_profile_cache_days": 3,
             "join_profile_qpm": 20,
             "join_profile_concurrency": 3,
@@ -223,7 +221,6 @@ def test_join_profile_settings_roundtrip():
     assert normalized["join_gate_action"] == "manual"
     assert normalized["join_profile_missing"] == "manual"
     assert normalized["join_avatar_review"] == "approve_only"
-    assert normalized["join_avatar_only_below"] == 0.9
     assert normalized["join_profile_cache_days"] == 3
     assert normalized["join_profile_qpm"] == 20
     assert normalized["join_profile_concurrency"] == 3

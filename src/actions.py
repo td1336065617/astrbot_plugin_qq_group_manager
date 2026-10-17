@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any
 
 from .models import (
@@ -21,9 +22,11 @@ from .models import (
     CAP_RECALL,
     CAP_REMOVE_MEMBER,
     MUTE_MAX_SECONDS,
+    TARGET_REQUIRED_CATEGORY,
     ActionResult,
     GroupConfig,
     Verdict,
+    evaluate_boundary,
 )
 from .utils import now_ts, safe_json_dumps, to_iso, truncate
 
@@ -63,6 +66,16 @@ REPEAT_MAX_MULTIPLIER = 3
 WARN_TEMPLATE = (
     "提醒：{name} 的消息未通过群内容审核（{category}）。请遵守群规，违规内容会被撤回或禁言。"
 )
+
+
+@dataclass
+class Decision:
+    """一次处置的完整去向（纯数据，不含副作用）。"""
+
+    actions: list[str]
+    manual: bool = False
+    code: str = ""
+    notify: bool = True
 
 
 class ActionExecutor:
@@ -151,14 +164,55 @@ class ActionExecutor:
     #: A3（W-R2-3）：review 走既有 report 出口的严重度门槛（写死常量，不新增设置键）
     REVIEW_REPORT_MIN_SEVERITY = 2
 
+    def boundary_of(
+        self,
+        verdict: Verdict,
+        settings: dict[str, Any],
+        targets: dict[str, Any] | None = None,
+    ) -> tuple[bool, str, bool]:
+        """越界判定（纯函数包装，供面板试跑等只读调用）。"""
+        return evaluate_boundary(verdict, settings, targets)
+
+    def decide(
+        self,
+        *,
+        verdict: Verdict,
+        settings: dict[str, Any],
+        hard_actions: list[str] | None = None,
+        targets: dict[str, Any] | None = None,
+    ) -> Decision:
+        """纯函数：先判越界（人工 / 静默），否则按矩阵算动作。零副作用。"""
+        manual, code, notify = evaluate_boundary(verdict, settings, targets)
+        if manual:
+            return Decision(actions=[], manual=True, code=code, notify=notify)
+        planned = self._plan(
+            verdict=verdict, settings=settings, hard_actions=hard_actions
+        )
+        return Decision(actions=planned, manual=False, code="", notify=True)
+
+
     def plan_actions(
         self,
         *,
         verdict: Verdict,
         settings: dict[str, Any],
         hard_actions: list[str] | None = None,
+        targets: dict[str, Any] | None = None,
     ) -> list[str]:
-        """计算本次要执行的动作列表。"""
+        """薄壳：返回 decide() 的动作列表（保持既有调用方不变）。"""
+        return self.decide(
+            verdict=verdict, settings=settings, hard_actions=hard_actions, targets=targets
+        ).actions
+
+
+    def _plan(
+        self,
+        *,
+        verdict: Verdict,
+        settings: dict[str, Any],
+        hard_actions: list[str] | None = None,
+    ) -> list[str]:
+        """内部：只算矩阵 / 硬规则 / 低置信封顶，不含越界门。"""
         actions: list[str] = []
         hard = [action for action in (hard_actions or []) if action in MATRIX_ACTIONS]
         if verdict.stage == "judged_kv" and verdict.is_violation and not hard:
@@ -236,10 +290,35 @@ class ActionExecutor:
         fallback_index: int = 0,
         sampled: bool = False,
         send: Callable[[str], Awaitable[None]] | None = None,
+        targets: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """记录审核事件并按矩阵执行动作，返回执行摘要。"""
+        if (
+            targets is None
+            and str(getattr(verdict, "category", "")) == TARGET_REQUIRED_CATEGORY
+            and self.logger is not None
+        ):
+            self.logger.warning(
+                "辱骂类判定缺少 targets，对象校验已跳过（调用方需传 _collect_targets 结果）：group=%s",
+                group_id,
+            )
+        decision = self.decide(
+            verdict=verdict, settings=settings, hard_actions=hard_actions, targets=targets
+        )
+        if (
+            stage in ("judged_kv", "parse_error", "illegal_value")
+            or verdict.stage in ("judged_kv", "parse_error", "illegal_value")
+            or bool(getattr(verdict, "parse_error", False))
+        ):
+            decision = Decision(actions=[], manual=False, code="", notify=True)
+        manual, boundary_code, boundary_notify = (
+            decision.manual,
+            decision.code,
+            decision.notify,
+        )
+
         mode = str(config.mode or settings.get("mode") or "standard")
-        actions = self.plan_actions(verdict=verdict, settings=settings, hard_actions=hard_actions)
+        actions = list(decision.actions)
         planned = list(actions)
         if mode == "log_only":
             actions = []
@@ -250,6 +329,7 @@ class ActionExecutor:
             if (
                 verdict.is_violation
                 and verdict.stage != "judged_kv"
+                and not manual
                 and "warn" not in filtered
             ):
                 filtered.insert(0, "warn")
@@ -310,20 +390,41 @@ class ActionExecutor:
                 category=verdict.category,
                 severity=verdict.severity,
                 confidence=verdict.confidence,
-                reason=verdict.reason,
+                reason=(f"{boundary_code}: {verdict.reason}" if manual else verdict.reason),
                 rule_hits=safe_json_dumps(rule_hits or []),
                 text_digest=text_digest,
                 text_excerpt=excerpt_for_store(self.store, message_excerpt),
                 raw_verdict=verdict.raw,
                 latency_ms=latency_ms,
                 provider_id=provider_id,
-                stage=stage,
+                stage=("manual" if manual else stage),
                 prompt_version=prompt_version,
                 fallback_index=fallback_index,
                 dry_run=self.api.dry_run() if self.api is not None else False,
                 sampled=sampled,
                 parse_error=verdict.parse_error,
             )
+
+        if manual and boundary_notify and self.notifier is not None:
+            try:
+                await self.notifier(
+                    "moderation",
+                    {
+                        "group_id": group_id,
+                        "kind": "manual",
+                        "verdict": verdict.verdict,
+                        "sender_name": sender_name,
+                        "sender_openid": sender_openid,
+                        "msg_id": msg_id,
+                        "code": boundary_code,
+                        "category": verdict.category,
+                        "severity": verdict.severity,
+                        "confidence": verdict.confidence,
+                        "reason": verdict.reason,
+                    },
+                )
+            except Exception:
+                pass
 
         results: list[ActionResult] = []
         multiplier = (

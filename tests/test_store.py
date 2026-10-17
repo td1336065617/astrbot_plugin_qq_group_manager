@@ -158,7 +158,6 @@ def test_normalize_join_profile_settings():
     assert normalize_settings({"join_require_qid": 1})["join_require_qid"] is True
     assert normalize_settings({"join_min_account_days": 10**9})["join_min_account_days"] == 3650
     assert normalize_settings({"join_min_qq_level": 9999})["join_min_qq_level"] == 144
-    assert normalize_settings({"join_avatar_only_below": 9})["join_avatar_only_below"] == 1.0
     assert normalize_settings({"join_profile_qpm": 0})["join_profile_qpm"] == 1
     assert normalize_settings({"join_profile_concurrency": 99})["join_profile_concurrency"] == 8
 

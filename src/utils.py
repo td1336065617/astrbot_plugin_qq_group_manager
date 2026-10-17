@@ -274,3 +274,12 @@ def safe_json_dumps(value: Any, *, limit: int = 2000) -> str:
     except (TypeError, ValueError):
         dumped = str(value)
     return dumped[:limit]
+
+def match_member_name(text: str, names: list[str] | None) -> bool:
+    """在册成员名**精确**命中（设计 §3.3）：正文与某个显示名完全相等、或 @ + 显示名逐字匹配，
+    且命中唯一时才算「有对象」。名册是部分缓存，命中不了按无对象处理（保守）。"""
+    body = str(text or "").strip()
+    if not body or not names:
+        return False
+    hits = [n for n in names if n and (body == n or body == "@" + n)]
+    return len(hits) == 1

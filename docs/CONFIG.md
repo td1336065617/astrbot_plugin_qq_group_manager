@@ -1,7 +1,7 @@
 # 配置说明（面向用户）
 
-> **校对版本：v0.15.21（2026-10-17）**｜与插件 0.15.21 同步。
-> 完整的 **88 项配置项速查**见文末「附：完整配置项速查」；面板改不到的键见「10. 只能直接改 KV 的键」。
+> **校对版本：v0.15.22（2026-10-17）**｜与插件 0.15.22 同步。
+> 完整的 **90 项配置项速查**见文末「附：完整配置项速查」；面板改不到的键见「10. 只能直接改 KV 的键」。
 > 本文按 WebUI 视图组织，读完「5. 关键配置项」+ 速查表基本就够了。
 
 配置入口：**AstrBot WebUI → 插件管理 → QQ群管理 → 管理台**。
@@ -190,7 +190,6 @@
 | `join_gate_action` | decline | 门槛命中动作：`decline` 自动拒绝 / `manual` 转人工 / `pass` 放行 |
 | `join_profile_missing` | manual | 资料缺失策略：`pass / manual / decline`；**仅对可提供画像的通道生效** |
 | `join_avatar_review` | off | 头像多模态复核：`off` / `approve_only`（仅复核拟放行的）/ `always` |
-| `join_avatar_only_below` | 0.95 | `approve_only` 的触发阈值（文本置信度低于该值才复核头像） |
 | `join_profile_cache_days` | 7 | 画像缓存天数（0=不缓存） |
 | `join_profile_qpm` | 30 | 画像调用限频（次/分钟） |
 | `join_profile_concurrency` | 2 | 画像调用并发上限 |
@@ -211,7 +210,7 @@
 
 - 官方通道与未知平台**不会发起任何画像请求**，「资料缺失策略」对其不生效（否则会把所有官方申请变成人工审批）。
 - 门槛只在字段**确有值**时命中：协议端不返回等级/注册时间时，等级与年龄规则不会触发。
-- 头像复核结论**只能把「拟放行」收紧为拒绝**，不会反向放行；模型不支持图片时自动降级为纯文本判定。
+- 头像已**并入主判定**（作为图片一起送判）：`approve_only` 与 `always` 现在完全等价；模型不支持图片时按纯文本降级判断。
 
 ### 8.2 入群分群规则：跟随全局与本群配置（0.14+）
 
@@ -233,7 +232,7 @@
 
 | 类别 | 键 | 说明 |
 | --- | --- | --- |
-| 可按群固化（18） | `join_llm_fallback_provider_ids` `join_min_confidence` `join_decline_blacklist` `join_trust_inviter` `join_profile_enabled` `join_min_account_days` `join_min_qq_level` `join_require_qid` `join_gate_action` `join_profile_missing` `join_avatar_review` `join_avatar_only_below` `join_expected_answer` `join_answer_keywords` `join_answer_regex` `join_answer_action` `join_answer_case_sensitive` `join_llm_provider_id` | 门槛 / 答案校验 / 头像复核 / 置信度 / 拉黑 / 画像开关 / 入群审批模型 |
+| 可按群固化（18） | `join_llm_fallback_provider_ids` `join_min_confidence` `join_decline_blacklist` `join_trust_inviter` `join_profile_enabled` `join_min_account_days` `join_min_qq_level` `join_require_qid` `join_gate_action` `join_profile_missing` `join_avatar_review` `join_expected_answer` `join_answer_keywords` `join_answer_regex` `join_answer_action` `join_answer_case_sensitive` `join_llm_provider_id` `join_low_confidence_action` | 门槛 / 答案校验 / 头像附图 / 置信度 / 拉黑 / 画像开关 / 入群审批模型 |
 | 全局唯一（5） | `join_review_mode`（审批模式：**全局值在「全局设置」卡编辑**（0.14 补齐入口），按群可覆盖或选「跟随全局」，**不受总开关管辖**）、`join_poll_interval`、`join_profile_cache_days`、`join_profile_qpm`、`join_profile_concurrency` | 调度间隔、画像缓存与限频是全局资源闸门；缓存键跨群共享 |
 
 **存储**：`join_follow_global`（布尔，默认 true）与 `join_overrides`（稀疏键值表）存 KV 的
@@ -283,13 +282,13 @@ key = settings（值为 {"val": {...}} 包裹）。
 
 ### 已知取舍：正文非空时的纯文本兜底（2026-10-17）
 
-- **纯图片消息（正文为空）与头像复核**：候选链会剔除「显式声明不支持图片输入」的模型；
+- **纯图片消息（正文为空）与头像附图**：候选链会剔除「显式声明不支持图片输入」的模型；
   若一个都不剩，则**不调用模型**并记 `stage=api_error`（reason 含「无支持图片的候选」），不会送进纯文本模型盲判。
 - **图文混排（正文非空）**：**保留**现有的纯文本兜底（`image_ok + rest`）。
   代价：主模型失败且备用是纯文本时，图片里的二维码/引流信息拿不到（`qr_risk_text` 依赖模型填 `qr_text`），
   属于**已知漏判面**；换取的是「不因图片能力不足而整条不审」。
 - 能力**未知**（未配置 `modalities`）的模型一律按「支持图片」处理，所以上面的剔除只对**显式标注过**的模型生效。
-- 头像复核与纯图消息共用同一过滤，但头像的结局是「复核失败 → 保留原判定」，**不产生** `api_error` 事件（入群链路不写 mod_events）。
+- 头像附图并入主判定后与纯图消息**同一条路径**：候选全都不支持图片时按主判定失败处理（转人工），不再有独立的头像复核结局。
 
 ## 11. 管理员通知（notify_session / webhook）
 
@@ -304,7 +303,7 @@ key = settings（值为 {"val": {...}} 包裹）。
   `err_code` 取 `invalid_session` / `send_failed` / `webhook_failed`），并保留原有的 `[通知:kind] …` 日志回退，不会静默消失。
 - 自检方式：管理台「策略」页点「**发送测试通知**」按钮，会回显成功或失败原因（通知自检没有群内指令）。
 
-## 附：完整配置项速查（校对到本版本，共 88 项）
+## 附：完整配置项速查（校对到本版本，共 90 项）
 
 > 默认值直接取自 `src/models.py::default_settings()`；`tests/test_docs_config_coverage.py` 会检查「每个键都被写到」，漏写就红。
 > 面板能直接改的项见上面各视图章节；`10. 只能直接改 KV 的键` 一节列出面板改不到的键。
@@ -368,6 +367,8 @@ key = settings（值为 {"val": {...}} 包裹）。
 | `max_mute_days` | `30` | 禁言时长上限（天） |
 | `repeat_offense_multiplier` | `true` | 重复违规时长累加（最多 3 倍） |
 | `auto_remove` | `false` | 自动移除成员（需内邀能力，风险高） |
+| `category_policy` | object | 每个违规类别允许的等级区间：[min, max]；null = 不设该边界；max=0 = 该类一律交人工；越界不自动处置 |
+| `boundary_action` | object | 越界后处置：below / above 取 notify（默认，转人工通报）或 silent（静默：不通知不处罚，仍写审计） |
 
 ### AI 工具（给模型用）
 
@@ -389,6 +390,7 @@ key = settings（值为 {"val": {...}} 包裹）。
 | `join_review_mode` | `off` | 入群审批模式：off / strict / standard / human（human = 全部转人工） |
 | `join_poll_interval` | `60` | 拉取入群申请的间隔（秒） |
 | `join_min_confidence` | `0.8` | 入群判定置信度门槛（低于则转人工） |
+| `join_low_confidence_action` | select | 入群审批低置信处置：manual（默认，转人工）/ decline（自动拒绝，= strict 语义）/ pass（放行） |
 | `join_decline_blacklist` | `true` | 拒绝入群时是否自动拉黑 |
 | `join_trust_inviter` | `false` | 邀请人可信时是否放宽（默认关） |
 | `join_profile_enabled` | `true` | 是否启用申请人画像门槛（OneBot 通道） |
@@ -398,7 +400,6 @@ key = settings（值为 {"val": {...}} 包裹）。
 | `join_gate_action` | `decline` | 画像硬规则命中后的动作：decline / manual / pass |
 | `join_profile_missing` | `manual` | 拿不到画像时的处理：pass（放行）/ manual（转人工）/ decline（拒绝） |
 | `join_avatar_review` | `off` | 头像多模态复核：off / approve_only（仅复核拟放行的）/ always（每次） |
-| `join_avatar_only_below` | `0.95` | 头像复核的触发阈值（置信度低于此值才复核） |
 | `join_profile_cache_days` | `7` | 画像缓存天数 |
 | `join_pending_expire_days` | `7` | 待审申请多久自动标记过期（天，0 = 不清理） |
 | `join_profile_qpm` | `30` | 画像查询每分钟次数上限 |
@@ -446,3 +447,10 @@ key = settings（值为 {"val": {...}} 包裹）。
 | `prompt_user` | `空` | 自定义用户提示词模板（留空用内置） |
 | `menu_image` | `true` | 「群管理菜单」是否以图片卡片返回 |
 | `probe_full_msg_interval` | `1800` | 「接收全部消息」能力探测间隔（秒） |
+
+> **越界处置说明**：等级落在类别区间内 ⇒ 按动作矩阵自动处置；越界（过高或过低）⇒ 不自动处置，按 `boundary_action` 通报转人工或静默（静默仍写审计）。另外：`log_only` 模式下越界**仍会通知管理员**（只是不执行处罚）✓；把某类 `max` 设为 3 或更低时，本地硬规则命中（固定 4 级）的广告 / 色情 / 诈骗也不再自动处置。
+
+## 阶段 1 只能直接改 KV 的键（尚无面板入口）
+
+- `category_policy`：每个违规类别允许的等级区间（min/max）
+- `boundary_action`：越界后 below/above 取 notify 或 silent

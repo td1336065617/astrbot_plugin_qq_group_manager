@@ -130,6 +130,7 @@ from .src.utils import (
     is_placeholder_text,
     mask_openid,
     mask_uid,
+    match_member_name,
     normalize_command,
     now_ts,
     parse_duration,
@@ -141,7 +142,7 @@ from .src.utils import (
 from .src.web_api import EventBus, WebApi
 
 PLUGIN_NAME = "astrbot_plugin_qq_group_manager"
-VERSION = "0.15.21"
+VERSION = "0.15.22"
 
 STATE_FLUSH_INTERVAL = 30.0
 MAINTENANCE_INTERVAL = 3600.0
@@ -1547,6 +1548,7 @@ class QQGroupManager(Star):
             await event.send(MessageChain([Plain(text_out)]))
 
         summary = await self.actions.handle(
+            targets=self._collect_targets(event, group_id),
             group_id=group_id,
             config=config,
             verdict=verdict,
@@ -1871,6 +1873,7 @@ class QQGroupManager(Star):
             await event.send(MessageChain([Plain(text_out)]))
 
         summary = await self.actions.handle(
+            targets=self._collect_targets(event, group_id),
             group_id=group_id,
             config=config,
             verdict=verdict,
@@ -1933,6 +1936,36 @@ class QQGroupManager(Star):
                 pass
         values.append(str(getattr(getattr(event, "message_obj", None), "self_id", "") or ""))
         return {item.strip().casefold() for item in values if item.strip()}
+
+    def _match_roster_name(self, event: AstrMessageEvent, group_id: str) -> bool:
+        """在册成员名精确命中判定（纯逻辑在 src/utils.match_member_name）。"""
+        try:
+            text = str(event.message_str or "")
+            getter = getattr(self.store, "member_names", None)
+            pool = (getter(group_id, limit=500) or []) if callable(getter) else []
+            return match_member_name(text, pool)
+        except Exception:
+            return False
+
+
+    def _collect_targets(self, event: AstrMessageEvent, group_id: str) -> dict[str, Any]:
+        """采集辱骂类对象信息：@ 提及 / 被引用消息的发送者 / 在册成员名（唯一命中）。"""
+        mentions: list[str] = []
+        try:
+            mentions = [openid for openid, _name in (self._at_targets(event) or []) if openid]
+        except Exception:
+            mentions = []
+        reply_sender = ""
+        try:
+            reply_id = self._reply_message_id(event)
+            if reply_id:
+                found = self.audit.find_event_by_msg_id(group_id, reply_id)
+                if isinstance(found, dict):
+                    reply_sender = str(found.get("sender_openid") or "")
+        except Exception:
+            reply_sender = ""
+        named = self._match_roster_name(event, group_id)
+        return {"mentions": mentions, "reply_sender": reply_sender, "named": named}
 
     def _at_targets(self, event: AstrMessageEvent) -> list[tuple[str, str]]:
         """取出消息中 @ 的成员（openid, 昵称）。
@@ -4058,8 +4091,11 @@ class QQGroupManager(Star):
                 }
             )
         mode = str(group_config.mode or settings.get("mode") or "standard")
+        boundary_manual, boundary_code, boundary_notify = self.actions.boundary_of(
+            verdict, settings, None
+        )
         planned = self.actions.plan_actions(
-            verdict=verdict, settings=settings, hard_actions=hard_actions
+            verdict=verdict, settings=settings, hard_actions=hard_actions, targets=None
         )
         if mode == "log_only":
             planned = []
@@ -4070,6 +4106,12 @@ class QQGroupManager(Star):
         return {
             "ok": True,
             "kind": kind,
+            "boundary": {
+                "manual": boundary_manual,
+                "code": boundary_code,
+                "notify": boundary_notify,
+                "note": "试跑不采集 @ / 引用信息，辱骂类对象校验按「无对象」处理",
+            },
             "verdict": verdict.to_dict()
             if hasattr(verdict, "to_dict")
             else {

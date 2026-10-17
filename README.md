@@ -12,7 +12,7 @@ QQ 群消息 ──► 本地规则（形近字/黑话/模板，零成本）
 - **平台**：`qq_official` / `qq_official_webhook`（QQ 官方）+ `aiocqhttp`（OneBot v11）｜ **许可**：MIT；版本号与更新内容见 [CHANGELOG.md](CHANGELOG.md)
 - **零第三方依赖**：只用标准库 `sqlite3` + AstrBot 官方 SDK（`pypinyin` 为可选增强）
 
-> **文档校对：v0.15.21（2026-10-17）**｜配置项完整速查（88 项）见 [docs/CONFIG.md](docs/CONFIG.md)；每个版本的变更见 [CHANGELOG.md](CHANGELOG.md)；全部文档的「校对版本」一览见 [docs/文档索引.md](docs/文档索引.md)。
+> **文档校对：v0.15.22（2026-10-17）**｜配置项完整速查（90 项）见 [docs/CONFIG.md](docs/CONFIG.md)；每个版本的变更见 [CHANGELOG.md](CHANGELOG.md)；全部文档的「校对版本」一览见 [docs/文档索引.md](docs/文档索引.md)。
 
 ---
 
@@ -233,7 +233,7 @@ QQ 官方群管理接口分三档（下表为 **QQ 官方通道**；OneBot 通�
 | 文档 | 面向谁 | 内容 |
 | --- | --- | --- |
 | [docs/文档索引.md](docs/文档索引.md) | 所有人 | 全部文档一览 + 各自校对到哪个版本 |
-| [docs/CONFIG.md](docs/CONFIG.md) | 使用者 | 按 WebUI 视图讲配置 + **88 项完整速查表** |
+| [docs/CONFIG.md](docs/CONFIG.md) | 使用者 | 按 WebUI 视图讲配置 + **90 项完整速查表** |
 | [CHANGELOG.md](CHANGELOG.md) | 使用者 | 每个版本的新增与修复 |
 | [docs/设计方案.md](docs/设计方案.md) | 开发者 | 总体设计与模块划分 |
 | [docs/判定规则优化方案.md](docs/判定规则优化方案.md) | 开发者 | 规则 / 风险分 / 变体识别方案 |

@@ -1,11 +1,36 @@
 # 更新日志
 
+
 本文件记录所有值得注意的变更，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
 图例：✨ 新增 · 🐛 修复 · ⚙️ 变更 · ⚠️ 升级注意
 
 ---
+
+
+## [0.15.22] - 2026-10-18
+
+### 判定口径与处罚边界
+
+- ✨ 新增 `category_policy`：每个违规类别可设允许等级区间（`min`/`max`）。区间内照常自动处置；越界（过高或过低）**不再自动处置**，改按 `boundary_action` 转人工通报或静默（静默仍写审计）。
+  默认：其他 / 无 `max=2` · 政治敏感 `max=0`（一律人工）· 刷屏灌水 `max=3` · 其余五类留空（与 0.15.21 行为一致）。
+- ✨ 新增 `boundary_action`：`below` / `above` 取 `notify`（默认）或 `silent`（不通知、不处罚，仍写审计）。两个键在阶段 1 只能改 KV。
+- ✨ 原因码写入审计 `reason` 前缀：`boundary:above` / `boundary:below` / `no_target` / `max0`；越界时审计 `stage=manual`（不新增列）。
+- ⚙️ 辱骂攻击必须有具体对象：`@` 提及 / 被引用消息发送者 / 在册成员名**精确命中**（全等或 `@`+显示名，命中唯一）；拿不到对象 ⇒ 转人工，昵称不确定不处罚。
+- ⚙️ 判定链路重构：`ActionExecutor.decide()` 纯函数（`Decision` 含动作/去向/原因码）+ `plan_actions()` 变薄壳；四条既有短路（非 violation / `judged_kv` / `parse_error` / `illegal_value`）原样保留。
+- ⚙️ 提示词：补充「群体 / 种族 / 政治 / 历史 / 文化的表达不算辱骂攻击」与「图片中的文字按同一意图标准」。
+### 入群审批（头像综合判定）
+
+- ⚙️ 头像并入**主判定**（显式 `image_required`）：`approve_only` 档不再做独立复核，与 `always` 完全等价；顺带修掉 `always` 档未按图片能力过滤候选的问题。
+- ✨ 新增 `join_low_confidence_action`：低置信处置 `manual`（默认）/ `decline` / `pass`；`strict` 模式等价 `decline`。
+- 🐛 低置信 `pass` 档此前会把模型的 `decline` 当自动拒绝执行，现统一为"按配置放行"。
+### 移除 / 升级注意
+
+- ⚠️ **退休** `join_avatar_only_below`（键表 / 默认值 / 数值边界 / 面板 / CONFIG 全链移除）；删除 `_avatar_review()` 独立复核方法与 `AVATAR_*` 提示词常量。
+- ⚠️ 想回到旧口径：把 `category_policy` 的四个默认值清空 + `boundary_action` 全改 `notify`（仅配置回退）；`approve_only` 旧行为需整包回滚。
+- 📄 配置速查仍为 **90 项**（本批 +2、入群批 −1 +1）。
+
 
 ## [0.15.21] - 2026-10-17
 

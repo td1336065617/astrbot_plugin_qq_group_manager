@@ -987,38 +987,11 @@ def test_t11_join_valid_primary_stays_on_primary():
     run(scenario())
 
 
-def test_t5b_avatar_review_still_works_with_risk_only_output():
-    from src.join_review import JoinReviewer
+def test_t12_decision_call_site_passes_validator():
+    import pathlib
 
-    async def judge_call(system_prompt, user_prompt, **kw):
-        assert "validate" not in kw, "头像那次调用不能挂入群校验"
-        return AVATAR_RISK
-
-    store = make_store(groups=("g1",))
-    reviewer = JoinReviewer(api=None, store=store, audit=None, judge_call=judge_call)
-    settings = {"join_avatar_only_below": 0.95, "join_min_confidence": 0.8}
-    decision = reviewer.parse_decision(
-        '{"decision": "approve", "confidence": 0.9, "reason": "ok"}', {}, settings=settings, mode="auto"
-    )
-    out = run(reviewer._avatar_review(decision, "/tmp/avatar.jpg", {}, settings))
-    assert out.op == "decline", "头像复核判定有风险时应收紧为拒绝（证明新校验没把它拦掉）"
-
-
-def test_t12_decision_call_site_passes_validator_avatar_call_does_not():
-    """源码契约（与仓库既有风格一致）：入群判定那次调用必须挂校验，头像那次不挂。
-
-    删掉调用点的 validate=validate_join_text 会让本用例变红。
-    """
-    from pathlib import Path
-
-    path = Path(__file__).resolve().parent.parent / "src" / "join_review.py"
-    src = path.read_text(encoding="utf-8")
+    src = (pathlib.Path(__file__).resolve().parent.parent / "src" / "join_review.py").read_text(encoding="utf-8")
     assert "validate=validate_join_text" in src, "入群判定调用点必须挂校验"
-    i = src.index("AVATAR_SYSTEM_PROMPT, prompt, [avatar], group_id")
-    block = src[i : i + 120]
-    assert "validate=" not in block, "头像调用不能挂入群校验（其输出没有 decision）"
-    assert "image_required=True" in block, "头像调用必须声明只能靠图片判断"
-
 
 def test_t13_call_judge_forwards_validate_to_supported_judge_call():
     from src.join_review import JoinReviewer, validate_join_text

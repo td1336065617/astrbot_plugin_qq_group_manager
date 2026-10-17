@@ -208,18 +208,3 @@ def test_t8b_capability_filter_does_not_count_as_failure_or_open_circuit():
     assert mod._consecutive_failures == 0
     assert mod.stats.circuit_open_until == 0, '连续多次也不得熔断'
 
-
-def test_t5_avatar_review_marks_image_required_and_skips_validate():
-    seen = {}
-
-    async def judge_call(system_prompt, user_prompt, **kw):
-        seen.update(kw)
-        return '{"risk": false, "confidence": 0.9, "reason": "ok"}'
-
-    reviewer = JoinReviewer(api=None, store=FakeStore(), audit=FakeAudit(), judge_call=judge_call)
-    settings = {'join_avatar_only_below': 0.95}
-    decision = reviewer.parse_decision('{"decision": "approve", "confidence": 0.9, "reason": "ok"}', {}, settings=settings, mode='auto')
-    run(reviewer._avatar_review(decision, '/tmp/avatar.jpg', {}, settings))
-    assert seen.get('image_required') is True, '头像复核必须声明只能靠图片判断'
-    assert 'validate' not in seen, '头像输出没有 decision，不能挂入群判定校验'
-

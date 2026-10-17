@@ -1849,7 +1849,7 @@ const JOIN_FIELD_SPECS = {
   join_gate_action: { kind: 'select', row: 1, label: '门槛命中动作', options: [['decline', '自动拒绝'], ['manual', '转人工'], ['pass', '放行']] },
   join_profile_missing: { kind: 'select', row: 1, label: '资料缺失策略（仅对可提供画像的通道生效）', options: [['manual', '转人工'], ['pass', '放行'], ['decline', '拒绝']] },
   join_avatar_review: { kind: 'select', row: 2, label: '头像多模态复核', options: [['off', '关闭'], ['approve_only', '仅复核拟放行的'], ['always', '每次都复核']] },
-  join_avatar_only_below: { kind: 'number', row: 2, label: '头像复核触发阈值（置信度低于此值才复核）', min: 0, max: 1, step: 0.05 },
+  join_low_confidence_action: { kind: 'select', row: 2, label: '低置信处置', options: [['manual', '转人工（默认）'], ['decline', '自动拒绝'], ['pass', '放行']] },
   join_min_confidence: { kind: 'number', row: 2, label: '自动审批置信度门槛', min: 0, max: 1, step: 0.05 },
   join_expected_answer: { kind: 'text', row: 4, label: '期望答案（留空=不校验，子串匹配）', placeholder: '例：ACM', parse: (v) => String(v || '').trim() },
   join_answer_keywords: { kind: 'textarea', row: 4, label: '答案关键词（一行一个，命中任一即可）', placeholder: '例：ACM\n校赛', parse: (v) => String(v || '').split('\n').map((line) => line.trim()).filter(Boolean) },

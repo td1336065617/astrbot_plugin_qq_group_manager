@@ -1,203 +1,102 @@
-"""头像多模态复核与入群 LLM 闸门测试。"""
-
+"""入群审批：低置信归宿可配（原「头像独立复核」用例已随该行为删除而重写）。"""
 from __future__ import annotations
 
 import asyncio
+import json
 
-from src.api_client import QQGroupAPI
 from src.join_review import JoinReviewer
-from src.store import PluginStore
-from tests.fakes import FakeAudit, FakeKV, FakeTransport
 
-LIST_PATH = "/v2/groups/{group_openid}/join_request_list"
-APPROVE_PATH = "/v2/groups/{group_openid}/approval_join_request/{member_openid}"
-AVATAR = "https://q1.qlogo.cn/g?b=qq&nk=10001&s=640"
+BASE = {"join_min_confidence": 0.8, "join_decline_blacklist": True}
 
 
-def run(coro):
-    return asyncio.run(coro)
+def reviewer() -> JoinReviewer:
+    return JoinReviewer(api=None, store=None, logger=None)
 
 
-def avatar_profile(**overrides):
-    base = {
-        "kind": "onebot",
-        "nickname": "小号",
-        "qq_level": 30,
-        "account_age_days": 100,
-        "qid": "q-1",
-        "avatar_url": AVATAR,
-        "source": "onebot_stranger",
-        "degraded": False,
-    }
-    base.update(overrides)
-    return base
-
-
-def make_reviewer(responses, *, settings=None, errors=None, legacy=False):
-    kv = FakeKV()
-    store = PluginStore(kv)
-    run(store.load())
-    run(store.ensure_group("g1", name="测试群"))
-    if settings:
-        run(store.update_settings(settings))
-    api = QQGroupAPI(
-        FakeTransport(
-            {
-                ("GET", LIST_PATH): {"list": [], "next_cursor": ""},
-                ("POST", APPROVE_PATH): {},
-            }
-        )
+def raw(decision: str, confidence: float) -> str:
+    return json.dumps(
+        {"decision": decision, "confidence": confidence, "reason": "r", "risk": "无"}
     )
-    calls: list[dict] = []
-
-    if legacy:
-
-        async def judge_call(system_prompt, user_prompt):
-            calls.append({"system": system_prompt, "images": []})
-            return responses[0]
-
-    else:
-
-        async def judge_call(system_prompt, user_prompt, image_urls=None):
-            index = len(calls)
-            calls.append({"system": system_prompt, "images": list(image_urls or [])})
-            boom = (errors or {}).get(index)
-            if boom is not None:
-                raise boom
-            return responses[min(index, len(responses) - 1)]
-
-    reviewer = JoinReviewer(
-        api=api, store=store, audit=FakeAudit(), judge_call=judge_call
-    )
-    return store, reviewer, calls
 
 
-def request_payload(**overrides):
-    payload = {
-        "join_request_id": "j1",
+def test_low_confidence_manual_by_default() -> None:
+    out = reviewer().parse_decision(raw("approve", 0.5), {}, settings=dict(BASE), mode="standard")
+    assert out.op == "approve"
+    assert out.auto is False
+    assert out.source == "manual"
+
+
+def test_low_confidence_decline_when_configured() -> None:
+    settings = dict(BASE, join_low_confidence_action="decline")
+    out = reviewer().parse_decision(raw("approve", 0.5), {}, settings=settings, mode="standard")
+    assert out.op == "decline"
+    assert out.auto is True
+
+
+def test_low_confidence_pass_when_configured() -> None:
+    settings = dict(BASE, join_low_confidence_action="pass")
+    out = reviewer().parse_decision(raw("approve", 0.5), {}, settings=settings, mode="standard")
+    assert out.op == "approve"
+    assert out.auto is True
+
+
+def test_strict_mode_semantics_equal_decline() -> None:
+    out = reviewer().parse_decision(raw("approve", 0.5), {}, settings=dict(BASE), mode="strict")
+    assert out.op == "decline"
+    assert out.auto is True
+
+
+def test_high_confidence_is_auto() -> None:
+    out = reviewer().parse_decision(raw("decline", 0.9), {}, settings=dict(BASE), mode="standard")
+    assert out.op == "decline"
+    assert out.auto is True
+
+class _Store:
+    MODE = "always"
+
+    def __getattr__(self, name):
+        def _noop(*args, **kwargs):
+            return None
+
+        return _noop
+
+    def group(self, group_id: str):
+        return None
+
+    def local_blacklist(self, group_id: str):
+        return []
+
+    def effective_join_settings(self, group_id: str):
+        return {"join_avatar_review": _Store.MODE, "join_min_confidence": 0.8}
+
+
+def run_main_judgement_for(mode: str) -> None:
+    _Store.MODE = mode
+    captured = []
+    reviewer = JoinReviewer(api=None, store=_Store(), logger=None)
+
+    async def fake(system_prompt, user_prompt, images, group_id, **kwargs):
+        captured.append((list(images or []), kwargs.get("image_required")))
+        return json.dumps({"decision": "approve", "confidence": 0.9, "reason": "ok", "risk": "无"})
+
+    reviewer.judge_call = fake
+    reviewer._call_judge = fake
+    request = {
         "member_openid": "u1",
-        "username": "张三",
-        "apply_source": "self_apply",
-        "risk_tips": "",
-        "bot": False,
-        "verify_info": {"method": "verify_message", "verify_message": "你好"},
-        "profile": avatar_profile(),
+        "username": "n",
+        "profile": {"avatar_url": "https://example.invalid/a.png"},
+        "verify_info": {},
     }
-    payload.update(overrides)
-    return payload
+    asyncio.run(reviewer.judge("g1", request, mode="standard"))
+    assert captured, "主判定没有被调用"
+    images, image_required = captured[0]
+    assert images == ["https://example.invalid/a.png"]
+    assert image_required is True
 
 
-def test_avatar_off_never_sends_image():
-    _, reviewer, calls = make_reviewer(['{"decision":"approve","confidence":0.99,"reason":"ok"}'])
-    decision = run(reviewer.judge("g1", request_payload(), mode="standard"))
-    assert decision.op == "approve"
-    assert calls[0]["images"] == []
-    assert len(calls) == 1
+def test_avatar_attached_in_always_mode() -> None:
+    run_main_judgement_for("always")
 
 
-def test_avatar_always_attaches_image_to_first_call():
-    _, reviewer, calls = make_reviewer(
-        ['{"decision":"approve","confidence":0.99,"reason":"ok"}'],
-        settings={"join_avatar_review": "always"},
-    )
-    run(reviewer.judge("g1", request_payload(), mode="standard"))
-    assert calls[0]["images"] == [AVATAR]
-    assert len(calls) == 1
-
-
-def test_approve_only_triggers_second_call_and_declines():
-    _, reviewer, calls = make_reviewer(
-        [
-            '{"decision":"approve","confidence":0.85,"reason":"信息正常"}',
-            '{"risk":true,"confidence":0.93,"reason":"头像为擦边图"}',
-        ],
-        settings={"join_avatar_review": "approve_only"},
-    )
-    decision = run(reviewer.judge("g1", request_payload(), mode="standard"))
-    assert len(calls) == 2
-    assert calls[0]["images"] == []
-    assert calls[1]["images"] == [AVATAR]
-    assert decision.op == "decline" and decision.auto
-    assert decision.gate == "avatar"
-    assert decision.blacklist is True
-
-
-def test_approve_only_skips_when_confident_enough():
-    _, reviewer, calls = make_reviewer(
-        ['{"decision":"approve","confidence":0.99,"reason":"信息正常"}'],
-        settings={"join_avatar_review": "approve_only"},
-    )
-    decision = run(reviewer.judge("g1", request_payload(), mode="standard"))
-    assert len(calls) == 1
-    assert decision.op == "approve"
-
-
-def test_avatar_not_risky_keeps_approve():
-    _, reviewer, calls = make_reviewer(
-        [
-            '{"decision":"approve","confidence":0.85,"reason":"信息正常"}',
-            '{"risk":false,"confidence":0.2,"reason":"普通头像"}',
-        ],
-        settings={"join_avatar_review": "approve_only"},
-    )
-    decision = run(reviewer.judge("g1", request_payload(), mode="standard"))
-    assert len(calls) == 2
-    assert decision.op == "approve" and decision.gate == ""
-
-
-def test_avatar_low_confidence_keeps_approve():
-    _, reviewer, _calls = make_reviewer(
-        [
-            '{"decision":"approve","confidence":0.85,"reason":"信息正常"}',
-            '{"risk":true,"confidence":0.3,"reason":"拿不准"}',
-        ],
-        settings={"join_avatar_review": "approve_only"},
-    )
-    decision = run(reviewer.judge("g1", request_payload(), mode="standard"))
-    assert decision.op == "approve"
-
-
-def test_avatar_failure_keeps_original_decision():
-    _, reviewer, calls = make_reviewer(
-        [
-            '{"decision":"approve","confidence":0.85,"reason":"信息正常"}',
-            '{"risk":true,"confidence":0.99,"reason":"擦边"}',
-        ],
-        settings={"join_avatar_review": "approve_only"},
-        errors={1: RuntimeError("model down")},
-    )
-    decision = run(reviewer.judge("g1", request_payload(), mode="standard"))
-    assert len(calls) == 2
-    assert decision.op == "approve" and decision.gate == ""
-
-
-def test_avatar_never_upgrades_a_decline():
-    _, reviewer, calls = make_reviewer(
-        ['{"decision":"decline","confidence":0.95,"reason":"广告"}'],
-        settings={"join_avatar_review": "approve_only"},
-    )
-    decision = run(reviewer.judge("g1", request_payload(), mode="standard"))
-    assert decision.op == "decline"
-    assert len(calls) == 1
-
-
-def test_avatar_skipped_without_avatar_url():
-    _, reviewer, calls = make_reviewer(
-        ['{"decision":"approve","confidence":0.85,"reason":"信息正常"}'],
-        settings={"join_avatar_review": "approve_only"},
-    )
-    request = request_payload(profile=avatar_profile(avatar_url=""))
-    decision = run(reviewer.judge("g1", request, mode="standard"))
-    assert decision.op == "approve"
-    assert len(calls) == 1
-
-
-def test_legacy_two_arg_judge_call_still_works():
-    _, reviewer, calls = make_reviewer(
-        ['{"decision":"approve","confidence":0.99,"reason":"ok"}'],
-        settings={"join_avatar_review": "always"},
-        legacy=True,
-    )
-    decision = run(reviewer.judge("g1", request_payload(), mode="standard"))
-    assert decision.op == "approve"
-    assert len(calls) == 1
+def test_avatar_attached_in_approve_only_mode() -> None:
+    run_main_judgement_for("approve_only")

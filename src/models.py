@@ -92,11 +92,12 @@ JOIN_AVATAR_REVIEW_MODES: tuple[str, ...] = ("off", "approve_only", "always")
 #: 入群答案校验未通过时的动作
 JOIN_ANSWER_ACTIONS: tuple[str, ...] = ("manual", "decline", "pass")
 
-#: 可按群固化/跟随的入群审批配置键（决策类，17 个）。
+#: 可按群固化/跟随的入群审批配置键（决策类，18 个）。
 #: 「键存在 = 本群固化值，键缺失 = 跟随全局」，与群级 join_follow_global 开关配合；
 #: 分类依据与语义见 docs/入群审批分群规则-设计文档.md §2.2。
 JOIN_GROUP_OVERRIDABLE_KEYS: tuple[str, ...] = (
     "join_min_confidence",
+    "join_low_confidence_action",
     "join_decline_blacklist",
     "join_trust_inviter",
     "join_profile_enabled",
@@ -106,7 +107,6 @@ JOIN_GROUP_OVERRIDABLE_KEYS: tuple[str, ...] = (
     "join_gate_action",
     "join_profile_missing",
     "join_avatar_review",
-    "join_avatar_only_below",
     "join_expected_answer",
     "join_answer_keywords",
     "join_answer_regex",
@@ -563,9 +563,12 @@ def default_settings() -> dict[str, Any]:
         "qqgm_ai_respect_lenient": True,
         "repeat_offense_multiplier": True,
         "auto_remove": False,
+        "category_policy": {name: dict(entry) for name, entry in DEFAULT_CATEGORY_POLICY.items()},
+        "boundary_action": dict(DEFAULT_BOUNDARY_ACTION),
         "join_review_mode": "off",
         "join_poll_interval": 60,
         "join_min_confidence": 0.8,
+        "join_low_confidence_action": "manual",
         "join_decline_blacklist": True,
         "join_trust_inviter": False,
         "join_llm_provider_id": "",   # 入群审批专用模型；留空=跟随发言审核模型
@@ -577,7 +580,6 @@ def default_settings() -> dict[str, Any]:
         "join_gate_action": "decline",
         "join_profile_missing": "manual",
         "join_avatar_review": "off",
-        "join_avatar_only_below": 0.95,
         "join_profile_cache_days": 7,
         "join_pending_expire_days": 7,
         "join_profile_qpm": 30,
@@ -633,7 +635,6 @@ NUMERIC_BOUNDS: dict[str, tuple[float, float]] = {
     "join_min_confidence": (0.0, 1.0),
     "join_min_account_days": (0, 3650),
     "join_min_qq_level": (0, 144),
-    "join_avatar_only_below": (0.0, 1.0),
     "join_profile_cache_days": (0, 90),
     "join_profile_qpm": (1, 300),
     "join_profile_concurrency": (1, 8),
@@ -654,3 +655,123 @@ NUMERIC_BOUNDS: dict[str, tuple[float, float]] = {
     "join_pending_expire_days": (0, 90),
     "notify_webhook_timeout": (1, 60),
 }
+
+
+# ----------------------------------------------------------------------
+# 违规类别上下限与越界处置（纯逻辑，无副作用）
+# 设计见 docs/判定口径与处罚边界设计（讨论稿）.md v6.3 §3
+# ----------------------------------------------------------------------
+
+CATEGORIES = ("无", "广告引流", "色情低俗", "辱骂攻击", "政治敏感", "违法违规", "诈骗赌博", "刷屏灌水", "其他")
+
+TARGET_REQUIRED_CATEGORY = "辱骂攻击"
+
+BOUNDARY_ACTIONS = ("notify", "silent")
+
+DEFAULT_CATEGORY_POLICY: dict[str, dict[str, int | None]] = {
+    "无": {"min": None, "max": 2},
+    "广告引流": {"min": None, "max": None},
+    "色情低俗": {"min": None, "max": None},
+    "辱骂攻击": {"min": None, "max": None},
+    "政治敏感": {"min": None, "max": 0},
+    "违法违规": {"min": None, "max": None},
+    "诈骗赌博": {"min": None, "max": None},
+    "刷屏灌水": {"min": None, "max": 3},
+    "其他": {"min": None, "max": 2},
+}
+
+DEFAULT_BOUNDARY_ACTION: dict[str, str] = {"below": "notify", "above": "notify"}
+
+
+def _coerce(value: Any, fallback: int | None) -> int | None:
+    """把配置值规整为 0~5 的整数；bool / 非法 / 越界 ⇒ 回退到默认值。"""
+    if value is None or isinstance(value, bool):
+        return fallback
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    if not isinstance(value, str) and number != value:
+        return fallback
+    if number < 0 or number > 5:
+        return fallback
+    return number
+
+
+def resolve_category_policy(settings: dict[str, Any] | None) -> dict[str, dict[str, int | None]]:
+    """读时补默认：未配置 / 脏数据一律回退到默认表，保证 9 个类别齐全。"""
+    raw = (settings or {}).get("category_policy")
+    policy: dict[str, dict[str, int | None]] = {}
+    for category in CATEGORIES:
+        default = DEFAULT_CATEGORY_POLICY[category]
+        entry = raw.get(category) if isinstance(raw, dict) else None
+        if isinstance(entry, dict):
+            raw_min = entry.get("min")
+            raw_max = entry.get("max")
+            minimum = default["min"] if raw_min is None else _coerce(raw_min, default["min"])
+            maximum = default["max"] if raw_max is None else _coerce(raw_max, default["max"])
+        else:
+            minimum, maximum = default["min"], default["max"]
+        if minimum is not None and maximum is not None and minimum > maximum:
+            minimum, maximum = default["min"], default["max"]
+        policy[category] = {"min": minimum, "max": maximum}
+    return policy
+
+
+def resolve_boundary_action(settings: dict[str, Any] | None) -> dict[str, str]:
+    """读时补默认：仅接受 notify / silent。"""
+    raw = (settings or {}).get("boundary_action")
+    resolved = dict(DEFAULT_BOUNDARY_ACTION)
+    if isinstance(raw, dict):
+        for key in ("below", "above"):
+            value = str(raw.get(key) or "").strip().lower()
+            if value in BOUNDARY_ACTIONS:
+                resolved[key] = value
+    return resolved
+
+
+def has_target(targets: dict[str, Any] | None) -> bool:
+    """是否命中了具体对象。
+
+    targets 为 None 表示「调用方没有提供对象信息」（如面板试跑），此时**跳过**对象校验以免误判；
+    生产路径必须传入 dict（`main.py::_collect_targets`），空 dict 才表示「确认没有对象」⇒ 转人工。
+    """
+    if targets is None:
+        return True
+    if not isinstance(targets, dict):
+        return False
+    if targets.get("mentions"):
+        return True
+    if str(targets.get("reply_sender") or "").strip():
+        return True
+    return bool(targets.get("named"))
+
+
+def evaluate_boundary(
+    verdict: Any,
+    settings: dict[str, Any] | None,
+    targets: dict[str, Any] | None = None,
+) -> tuple[bool, str, bool]:
+    """返回 (是否需要人工, 原因码, 是否通知)。纯函数，无任何副作用。"""
+    if not getattr(verdict, "is_violation", False):
+        return (False, "", True)
+    category = str(getattr(verdict, "category", "") or "")
+    try:
+        severity = max(1, min(5, int(getattr(verdict, "severity", 1) or 1)))
+    except (TypeError, ValueError):
+        severity = 1
+    action = resolve_boundary_action(settings)
+    if category not in CATEGORIES:
+        return (False, "", True)
+    if category == TARGET_REQUIRED_CATEGORY and not has_target(targets):
+        return (True, "no_target", action["above"] == "notify")
+    entry = resolve_category_policy(settings).get(category) or {}
+    maximum = entry.get("max")
+    minimum = entry.get("min")
+    if maximum == 0:
+        return (True, "max0", action["above"] == "notify")
+    if maximum is not None and severity > maximum:
+        return (True, "boundary:above", action["above"] == "notify")
+    if minimum is not None and severity < minimum:
+        return (True, "boundary:below", action["below"] == "notify")
+    return (False, "", True)

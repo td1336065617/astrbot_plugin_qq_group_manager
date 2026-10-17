@@ -13,6 +13,8 @@ from collections.abc import Mapping
 from typing import Any, Protocol, runtime_checkable
 
 from .models import (
+    BOUNDARY_ACTIONS,
+    DEFAULT_BOUNDARY_ACTION,
     IMAGE_REVIEW_MODES,
     JOIN_ANSWER_ACTIONS,
     JOIN_AVATAR_REVIEW_MODES,
@@ -146,6 +148,15 @@ def normalize_settings(raw: Any) -> dict[str, Any]:
         settings["join_profile_missing"] = "manual"
     if settings.get("join_gate_action") not in JOIN_GATE_ACTIONS:
         settings["join_gate_action"] = "decline"
+    raw_boundary = settings.get("boundary_action")
+    if not isinstance(raw_boundary, dict):
+        settings["boundary_action"] = dict(DEFAULT_BOUNDARY_ACTION)
+    else:
+        cleaned = dict(raw_boundary)
+        for key in ("below", "above"):
+            value = str(cleaned.get(key) or "").strip().lower()
+            cleaned[key] = value if value in BOUNDARY_ACTIONS else "notify"
+        settings["boundary_action"] = cleaned
     if settings.get("join_avatar_review") not in JOIN_AVATAR_REVIEW_MODES:
         settings["join_avatar_review"] = "off"
     if settings.get("join_answer_action") not in JOIN_ANSWER_ACTIONS:

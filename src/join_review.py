@@ -40,24 +40,9 @@ JOIN_SYSTEM_PROMPT = """你是 QQ 群入群申请审核引擎。根据群规与�
 - 信息不足、无法判断 → decline 并把 confidence 给低值（交由人工处理）
 - 不臆测：不要因为昵称特殊字符、地区等无关特征拒绝正常用户
 - 账号年龄过短、QQ 等级过低、资料空白只作为风险加分，不得单独定罪
+- 若附带头像图片：结合头像与其余信息**一起**判断；头像中的政治、宗教、文化符号不得作为风险依据
+- 头像只作为综合判断的一部分，不得仅凭头像单独定罪
 - 「画像缺失」是协议端能力问题，不等于申请人可疑"""
-
-AVATAR_SYSTEM_PROMPT = """你是 QQ 群入群申请的头像审核器。只根据头像图片判断该账号是否属于广告/引流/色情。
-只输出一个 JSON 对象，不要输出解释性文字，不要使用 Markdown 代码块。
-
-字段：
-- risk: true | false
-- confidence: 0-1 的小数
-- reason: 不超过 30 字的中文理由
-
-准则：
-- 正常人物、风景、动漫、表情包、纯色或默认头像 → risk=false
-- 明显色情/性暗示/裸露画面、二维码、加群或联系方式水印、广告版式 → risk=true
-- 拿不准 → risk=false 且 confidence 给低值（不要臆测）"""
-
-AVATAR_USER_TEMPLATE = """【申请人昵称】{username}
-【QQ等级】{qq_level}
-请判断该申请人的头像是否属于需要拒绝入群的风险头像。"""
 
 JOIN_USER_TEMPLATE = """【群规摘要】{rules_brief}
 【申请来源】{apply_source}
@@ -539,13 +524,14 @@ class JoinReviewer:
             user_prompt = user_prompt.replace("{" + key + "}", str(value))
         avatar = str(profile.get("avatar_url") or "")
         avatar_mode = str(settings.get("join_avatar_review") or "off")
-        first_images = [avatar] if (avatar and avatar_mode == "always") else []
+        first_images = [avatar] if (avatar and avatar_mode != "off") else []
         try:
             raw = await self._call_judge(
                 JOIN_SYSTEM_PROMPT,
                 user_prompt,
                 first_images,
                 group_id,
+                image_required=bool(first_images),
                 validate=validate_join_text,
             )
         except Exception as exc:
@@ -555,8 +541,6 @@ class JoinReviewer:
                 op="approve", auto=False, reason="模型调用失败，转人工", source="manual"
             )
         decision = self.parse_decision(raw, request, settings=settings, mode=mode)
-        if avatar and avatar_mode == "approve_only":
-            decision = await self._avatar_review(decision, avatar, profile, settings, group_id)
         return decision
 
     def _judge_accepts(self) -> set[str] | None:
@@ -612,57 +596,6 @@ class JoinReviewer:
             wanted = {key: value for key, value in wanted.items() if key in accepts}
         return await self.judge_call(system_prompt, user_prompt, **wanted)
 
-    async def _avatar_review(
-        self,
-        decision: JoinDecision,
-        avatar: str,
-        profile: dict[str, Any],
-        settings: dict[str, Any],
-        group_id: str = "",
-    ) -> JoinDecision:
-        """头像多模态复核：只允许把「拟放行」收紧为拒绝，绝不反向放行。"""
-        if not (decision.op == "approve" and decision.auto):
-            return decision
-        below = float(settings.get("join_avatar_only_below", 0.95) or 0.95)
-        if decision.confidence >= below:
-            return decision
-        prompt = (
-            AVATAR_USER_TEMPLATE.replace("{username}", str(profile.get("nickname") or "未知"))
-            .replace(
-                "{qq_level}",
-                str(profile.get("qq_level") if profile.get("qq_level") is not None else "未知"),
-            )
-        )
-        try:
-            raw = await self._call_judge(
-                AVATAR_SYSTEM_PROMPT, prompt, [avatar], group_id, image_required=True
-            )
-        except Exception as exc:
-            if self.logger is not None:
-                self.logger.debug("头像复核失败（保留原判定）：%s", exc)
-            return decision
-        payload = extract_json_object(raw or "")
-        if not payload:
-            return decision
-        risk = payload.get("risk")
-        risky = risk is True or str(risk or "").strip().lower() in ("true", "1", "yes")
-        if not risky:
-            return decision
-        confidence = clamp_float(payload.get("confidence"), 0.0, 0.0, 1.0)
-        threshold = float(settings.get("join_min_confidence", 0.8) or 0.8)
-        if confidence < threshold:
-            return decision
-        return JoinDecision(
-            op="decline",
-            auto=True,
-            confidence=confidence,
-            reason=truncate(payload.get("reason") or "头像疑似违规", 60),
-            risk="违规内容",
-            blacklist=bool(settings.get("join_decline_blacklist", True)),
-            source="llm",
-            gate="avatar",
-        )
-
     def parse_decision(
         self,
         raw: str,
@@ -688,7 +621,12 @@ class JoinReviewer:
         threshold = float(settings.get("join_min_confidence", 0.8) or 0.8)
         if str(request.get("risk_tips") or "") == "warning_tips":
             threshold = min(0.98, threshold + 0.1)
-        if mode == "strict" and decision == "approve" and confidence < threshold:
+        low_action = str(settings.get("join_low_confidence_action") or "manual").strip().lower()
+        if low_action not in ("manual", "decline", "pass"):
+            low_action = "manual"
+        if mode == "strict":
+            low_action = "decline"
+        if low_action == "decline" and decision == "approve" and confidence < threshold:
             return JoinDecision(
                 op="decline",
                 auto=True,
@@ -699,6 +637,15 @@ class JoinReviewer:
             )
         auto = confidence >= threshold
         if not auto:
+            if low_action == "pass":
+                return JoinDecision(
+                    op="approve",
+                    auto=True,
+                    confidence=confidence,
+                    reason=reason or "低置信按配置放行",
+                    risk=risk,
+                    source="llm",
+                )
             return JoinDecision(
                 op=decision,
                 auto=False,
