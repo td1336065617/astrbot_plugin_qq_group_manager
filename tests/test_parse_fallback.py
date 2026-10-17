@@ -83,13 +83,13 @@ def test_parse_failure_sets_parse_error_stage_and_keeps_raw():
     assert verdict.raw != ""
 
 
-def test_low_confidence_rebuild_keeps_qr_text_and_reason():
+def test_low_confidence_keeps_judgement_and_qr_text():
     raw = '{"verdict": "violation", "category": "广告引流", "confidence": 0.1, "reason": "疑似引流", "qr_text": "https://example.com", "analysis": "先推理后结论"}'
     verdict = run(make_moderator(raw).judge(request_of("a")))
-    assert verdict.verdict == "review"
-    assert verdict.stage == "low_confidence"
+    assert verdict.verdict == "violation"
+    assert verdict.stage == "judged"
     assert verdict.qr_text == "https://example.com"
-    assert "原判定理由：疑似引流" in verdict.analysis
+    assert "低置信" in verdict.analysis
 
 
 def test_parse_error_rebuild_keeps_flag_and_marks_reason():

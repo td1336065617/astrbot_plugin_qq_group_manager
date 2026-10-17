@@ -134,6 +134,9 @@ class ActionExecutor:
         return max(1, min(REPEAT_MAX_MULTIPLIER, len(bucket)))
 
     # ------------------------------------------------------------------
+    #: A3（W-R2-3）：review 走既有 report 出口的严重度门槛（写死常量，不新增设置键）
+    REVIEW_REPORT_MIN_SEVERITY = 2
+
     def plan_actions(
         self,
         *,
@@ -163,6 +166,23 @@ class ActionExecutor:
                 for action in configured
                 if isinstance(action, str) and action in MATRIX_ACTIONS
             )
+        elif (
+            verdict.verdict == "review"
+            and verdict.stage == "judged"
+            and int(verdict.severity or 1) >= self.REVIEW_REPORT_MIN_SEVERITY
+        ):
+            # A3（W-R2-3）：review 的出口 —— 复用既有 report（只认真判定 + 达到严重度门槛）；
+            # 放在硬规则分支之后（elif），避免与 actions.py 硬规则补 report 的那条重复。
+            actions.append("report")
+        # A2（W-R2-2）：低置信只降力度 —— 判定保留，动作封顶为「警告 + 上报」（不看矩阵，
+        # 因为默认矩阵 sev4 不含 report，纯过滤会得到空集）
+        if actions and not hard and verdict.source == "llm" and verdict.stage == "judged" and verdict.is_violation:
+            try:
+                limit = float(settings.get("llm_min_confidence", 0.7))
+            except (TypeError, ValueError):
+                limit = 0.7
+            if verdict.confidence < limit:
+                return ["warn", "report"]
         return actions
 
     def _mute_seconds(self, settings: dict[str, Any], severity: int, multiplier: int) -> int:

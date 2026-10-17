@@ -739,7 +739,15 @@ class LLMModerator:
         raw_threshold = settings.get("llm_min_confidence", 0.7)
         threshold = 0.7 if raw_threshold is None else float(raw_threshold)
         if verdict.verdict != "allow" and verdict.confidence < threshold:
-            verdict = Verdict(
+            # A2（W-R2-2）拆开共用块：只有「真 judged 且低置信」保留判定、只降处置力度；
+            # 解析失败 / 非法值 / KV 兜底三类维持原语义（改写为 review），避免连带改动统计口径。
+            keep_verdict = not verdict.parse_error and verdict.stage not in ("illegal_value", "judged_kv")
+            if keep_verdict:
+                marker = f"低置信({verdict.confidence:.2f}<{threshold:.2f})，处置已封顶"
+                merged = f"{verdict.analysis} / {marker}" if verdict.analysis else marker
+                verdict.analysis = merged[:500]
+            else:
+                verdict = Verdict(
                 verdict="review",
                 category=verdict.category,
                 severity=verdict.severity,
@@ -765,8 +773,8 @@ class LLMModerator:
                     "illegal_value"
                     if verdict.stage == "illegal_value"
                     else ("parse_error" if verdict.parse_error else "low_confidence")
-                ),
-            )
+                    ),
+                )
         self._cache_put(cache_key, verdict, int(settings.get("cache_ttl", 600) or 0))
         return verdict
 

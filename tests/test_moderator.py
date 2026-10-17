@@ -112,16 +112,18 @@ def test_judge_returns_verdict_and_caches():
     assert calls["n"] == 2
 
 
-def test_low_confidence_downgrades_to_review():
+def test_low_confidence_keeps_verdict_and_caps_actions():
+    """A2 之后：低置信不再把 violation 改写成 review；判定保留，力度交给 plan_actions 封顶。"""
     response = (
         '{"verdict":"violation","category":"辱骂攻击","severity":3,'
         '"confidence":0.4,"reason":"疑似","suggested_action":"mute"}'
     )
     moderator, _ = make_moderator(response=response)
     verdict = run(moderator.judge(ModerationRequest(group_id="g1", text="你个笨蛋")))
-    assert verdict.verdict == "review"
-    assert "置信度不足" in verdict.reason
-    assert verdict.suggested_action == "none"
+    assert verdict.verdict == "violation"
+    assert verdict.stage == "judged"
+    assert verdict.severity == 3
+    assert "低置信" in verdict.analysis
 
 
 def test_failures_trigger_circuit_breaker():
@@ -264,7 +266,7 @@ def test_parse_verdict_reads_analysis_and_evidence():
     assert verdict.evidence == ""
 
 
-def test_low_confidence_downgrade_keeps_analysis():
+def test_low_confidence_keeps_analysis_and_marks_it():
     response = (
         '{"analysis":"像广告但缺可触达渠道","evidence":"加群","verdict":"violation",'
         '"category":"广告引流","severity":3,"confidence":0.4,"reason":"疑似",'
@@ -272,11 +274,11 @@ def test_low_confidence_downgrade_keeps_analysis():
     )
     moderator, _ = make_moderator(response=response)
     verdict = run(moderator.judge(ModerationRequest(group_id="g1", text="加群")))
-    assert verdict.verdict == "review"
-    assert "置信度不足" in verdict.reason
-    # 0.15.3：降级重建不再覆盖模型自己的理由（前缀进入 analysis），原文必须保留
-    assert verdict.analysis.startswith("原判定理由：")
+    assert verdict.verdict == "violation"
+    assert verdict.stage == "judged"
+    assert verdict.reason == "疑似"  # 模型自己的理由不再被覆盖
     assert "像广告但缺可触达渠道" in verdict.analysis
+    assert "低置信" in verdict.analysis
     assert verdict.evidence == "加群"
 
 

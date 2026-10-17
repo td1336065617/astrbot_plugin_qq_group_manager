@@ -103,11 +103,11 @@ def test_judged_stage_on_success():
     assert run(moderator.judge(request_of("a"))).stage == "judged"
 
 
-def test_low_confidence_rebuild_marks_low_confidence():
+def test_low_confidence_keeps_judged_stage():
     moderator = make_moderator('{"verdict": "violation", "category": "广告引流", "confidence": 0.2, "reason": "x"}')
     verdict = run(moderator.judge(request_of("a")))
-    assert verdict.verdict == "review"
-    assert verdict.stage == "low_confidence"
+    assert verdict.verdict == "violation"
+    assert verdict.stage == "judged"
 
 
 def test_low_confidence_rebuild_keeps_illegal_value():

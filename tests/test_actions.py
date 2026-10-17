@@ -47,7 +47,7 @@ def make_env(*, dry_run=False, capabilities=(), transport=None):
 def test_plan_actions_prefers_hard_actions():
     _, _, _, actions, _ = make_env()
     settings = default_settings()
-    verdict = Verdict(verdict="violation", severity=3, category="广告引流")
+    verdict = Verdict(verdict="violation", severity=3, category="广告引流", confidence=0.9)
     matrix_actions = actions.plan_actions(verdict=verdict, settings=settings)
     assert matrix_actions == ["warn", "mute"]  # 标准档矩阵（severity=3）
     hard = actions.plan_actions(verdict=verdict, settings=settings, hard_actions=["recall", "mute"])
@@ -204,10 +204,10 @@ def review_verdict(stage: str = "judged", category: str = "色情低俗") -> Ver
     return Verdict(verdict="review", category=category, severity=2, confidence=0.9, stage=stage)
 
 def test_default_settings_never_produce_actions_for_review_or_allow():
-    """默认关时的等价性：review/allow 不产生任何动作（含 judged_kv 的 violation）。"""
+    """A3 之后：真判定的 review 走既有 report 出口（severity>=2）；allow 与 judged_kv 仍不产生动作。"""
     settings = dict(default_settings())
     ex = executor()
-    assert ex.plan_actions(verdict=review_verdict(), settings=settings) == []
+    assert ex.plan_actions(verdict=review_verdict(), settings=settings) == ["report"]
     assert ex.plan_actions(verdict=review_verdict(stage="judged_kv"), settings=settings) == []
     assert ex.plan_actions(verdict=Verdict(verdict="allow", category="无"), settings=settings) == []
     kv_violation = Verdict(verdict="violation", category="色情低俗", severity=4, confidence=0.99, stage="judged_kv")
@@ -243,3 +243,25 @@ def test_review_with_hard_actions_still_reports():
     verdict = Verdict(verdict="review", category="广告引流", severity=2, confidence=0.9, stage="judged")
     actions = executor().plan_actions(verdict=verdict, settings=settings, hard_actions=["warn"])
     assert actions == ["warn", "report"]
+
+
+def test_low_confidence_caps_actions_to_warn_and_report():
+    """A2：低置信只降力度 —— 判定保留，动作封顶为 warn + report。"""
+    settings = dict(default_settings())
+    ex = executor()
+    low = Verdict(verdict="violation", category="色情低俗", severity=4, confidence=0.5, stage="judged")
+    assert ex.plan_actions(verdict=low, settings=settings) == ["warn", "report"]
+    high = Verdict(verdict="violation", category="色情低俗", severity=4, confidence=0.95, stage="judged")
+    assert ex.plan_actions(verdict=high, settings=settings) == ["recall", "mute"]
+
+
+def test_review_reports_only_for_judged_and_severity_two_plus():
+    """A3：review 只认真判定、且 severity >= 2 才走既有 report 出口。"""
+    settings = dict(default_settings())
+    ex = executor()
+    assert ex.plan_actions(verdict=review_verdict(), settings=settings) == ["report"]
+    one = Verdict(verdict="review", category="其他", severity=1, confidence=0.9, stage="judged")
+    assert ex.plan_actions(verdict=one, settings=settings) == []
+    assert ex.plan_actions(verdict=review_verdict(stage="judged_kv"), settings=settings) == []
+    assert ex.plan_actions(verdict=review_verdict(stage="parse_error"), settings=settings) == []
+
