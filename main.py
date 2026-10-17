@@ -58,7 +58,6 @@ from .src.commands import (
     MODE_FOLLOW,
     MODE_LABELS,
     MUTE_COMMANDS,
-    NOTIFY_TEST_COMMANDS,
     RECALL_COMMANDS,
     SELFCHECK_COMMANDS,
     STATS_COMMANDS,
@@ -2074,10 +2073,6 @@ class QQGroupManager(Star):
         if name in GROUP_ADMIN_COMMANDS and not (admin or group_admin):
             return ["该指令仅群主 / 群管理员或 AstrBot 管理员可用。"]
 
-        if name in NOTIFY_TEST_COMMANDS:
-            if not admin:
-                return ["仅 AstrBot 管理员可执行通知测试。"]
-            return await self._cmd_notify_test()
         if name in TOGGLE_COMMANDS:
             return await self._cmd_toggle(group_id, name, sender_openid)
         if name in MODE_COMMANDS:
@@ -2656,24 +2651,6 @@ class QQGroupManager(Star):
         if ok:
             return [f"测试通知已送出（{detail or session or 'webhook'}），请确认是否收到。"]
         return [f"发送失败：{detail}", f"目标：{session or '（仅 webhook）'}"]
-
-    async def _cmd_notify_test(self) -> list[str]:
-        """向配置的通知会话发一条测试消息并回显结果（仅管理员）。"""
-        session = str(self.store.get_setting("notify_session") or "").strip()
-        if not session:
-            return ["未配置「管理员通知会话（会话 ID）」，请在管理台「策略」页填写。"]
-        if not is_valid_umo(session):
-            return [
-                "通知会话格式不合法，未发送。",
-                "应形如 平台实例ID:消息类型:会话ID（消息类型取 GroupMessage / FriendMessage / OtherMessage）；",
-                f"当前值：{session[:40]}（冒号 {session.count(':')} 个）",
-            ]
-        ok, detail = await self._notify(
-            "notify_test", {"group_id": "", "ts": to_iso(now_ts())}
-        )
-        if ok:
-            return [f"已发往 {session}：成功（请查看该会话是否收到测试消息）"]
-        return [f"发送失败：{detail}", f"目标：{session}"]
 
     async def _cmd_mute(
         self,

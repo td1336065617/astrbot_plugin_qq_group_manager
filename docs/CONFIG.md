@@ -302,7 +302,7 @@ key = settings（值为 {"val": {...}} 包裹）。
 - 面板「策略」页该字段下方会实时提示格式是否合法；点「选择会话…」打开候选列表（来源：平台实例 + AstrBot 会话库 + 最近见过的会话，可搜索、点击填入），另有「刷新候选」按钮（进入策略页会自动刷新，插件重启后也不会拿到过期列表）。
 - 发送失败（格式不合法 / 平台未匹配 / 抛异常 / webhook 失败）都会**写审计**（能力表 `capability=notify`，
   `err_code` 取 `invalid_session` / `send_failed` / `webhook_failed`），并保留原有的 `[通知:kind] …` 日志回退，不会静默消失。
-- 自检方式：群内发「**群管通知测试**」（仅 AstrBot 管理员），或点面板上的「发送测试通知」按钮，会回显成功或失败原因。
+- 自检方式：管理台「策略」页点「**发送测试通知**」按钮，会回显成功或失败原因（通知自检没有群内指令）。
 
 ## 附：完整配置项速查（校对到本版本，共 88 项）
 
@@ -345,7 +345,7 @@ key = settings（值为 {"val": {...}} 包裹）。
 
 | 键 | 默认 | 说明 |
 | --- | --- | --- |
-| `llm_min_confidence` | `0.7` | 全局置信度门槛（按群可用「审核阈值」覆盖） |
+| `llm_min_confidence` | `0.7` | 全局置信度门槛（只看全局设置；「审核阈值」指令改的也是这个键，不是按群覆盖） |
 | `llm_timeout` | `20` | 单次模型调用超时（秒） |
 | `llm_qpm_per_group` | `20` | 每群每分钟最多调用多少次模型 |
 | `llm_max_concurrency` | `4` | 全局同时进行的模型调用上限 |
@@ -386,7 +386,7 @@ key = settings（值为 {"val": {...}} 包裹）。
 | --- | --- | --- |
 | `join_llm_provider_id` | `空` | 入群审批使用的模型；留空跟随发言审核模型（可按群单独配置） |
 | `join_llm_fallback_provider_ids` | `[]` | 入群审批的备用模型列表（主模型失败时按顺序重试） |
-| `join_review_mode` | `off` | 入群审批模式：off / strict / standard / manual |
+| `join_review_mode` | `off` | 入群审批模式：off / strict / standard / human（human = 全部转人工） |
 | `join_poll_interval` | `60` | 拉取入群申请的间隔（秒） |
 | `join_min_confidence` | `0.8` | 入群判定置信度门槛（低于则转人工） |
 | `join_decline_blacklist` | `true` | 拒绝入群时是否自动拉黑 |
@@ -395,9 +395,9 @@ key = settings（值为 {"val": {...}} 包裹）。
 | `join_min_account_days` | `0` | 账号最小年龄（天，0 = 不限） |
 | `join_min_qq_level` | `0` | QQ 等级下限（0 = 不限） |
 | `join_require_qid` | `false` | 是否要求设置 QID |
-| `join_gate_action` | `decline` | 画像不达标时的动作：decline / manual |
-| `join_profile_missing` | `manual` | 拿不到画像时的处理：manual（转人工）/ allow / decline |
-| `join_avatar_review` | `off` | 头像复核：off / always / below（低置信度时） |
+| `join_gate_action` | `decline` | 画像硬规则命中后的动作：decline / manual / pass |
+| `join_profile_missing` | `manual` | 拿不到画像时的处理：pass（放行）/ manual（转人工）/ decline（拒绝） |
+| `join_avatar_review` | `off` | 头像多模态复核：off / approve_only（仅复核拟放行的）/ always（每次） |
 | `join_avatar_only_below` | `0.95` | 头像复核的触发阈值（置信度低于此值才复核） |
 | `join_profile_cache_days` | `7` | 画像缓存天数 |
 | `join_pending_expire_days` | `7` | 待审申请多久自动标记过期（天，0 = 不清理） |
@@ -406,7 +406,7 @@ key = settings（值为 {"val": {...}} 包裹）。
 | `join_expected_answer` | `空` | 入群问题期望答案（精确匹配） |
 | `join_answer_keywords` | `[]` | 入群问题关键词白名单 |
 | `join_answer_regex` | `空` | 入群问题正则 |
-| `join_answer_action` | `manual` | 答案不匹配时的动作：manual / decline |
+| `join_answer_action` | `manual` | 入群答案校验不通过时的动作：manual / decline / pass |
 | `join_answer_case_sensitive` | `false` | 答案比对是否区分大小写 |
 
 ### 管理员通知
@@ -435,13 +435,13 @@ key = settings（值为 {"val": {...}} 包裹）。
 | `retention_capability_days` | `30` | 能力探测记录保留天数 |
 | `retention_join_days` | `90` | 入群申请记录保留天数 |
 | `store_text` | `false` | 是否保存消息正文（隐私敏感，开启后库会明显变大） |
-| `audit_queue_maxsize` | `5000` | 审计写入队列上限（满时丢弃最旧的） |
+| `audit_queue_maxsize` | `5000` | 审计写入队列上限；队列满时**丢弃新来的那条**并计入 dropped（不会丢历史已入队的） |
 
 ### 提示词与运维
 
 | 键 | 默认 | 说明 |
 | --- | --- | --- |
-| `group_rules_brief` | `空` | 本群规则简述（注入提示词用，留空用默认） |
+| `group_rules_brief` | `空` | 全局默认的规则简述（注入提示词用）；群级 rules_brief 可覆盖它 |
 | `prompt_system` | `空` | 自定义系统提示词（留空用内置） |
 | `prompt_user` | `空` | 自定义用户提示词模板（留空用内置） |
 | `menu_image` | `true` | 「群管理菜单」是否以图片卡片返回 |

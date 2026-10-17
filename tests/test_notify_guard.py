@@ -127,21 +127,21 @@ def test_u3_notify_session_state_reports_hint():
 
 def test_u5_notify_test_command_reports_success():
     svc = make_service(GOOD)
-    out = run(main.QQGroupManager._cmd_notify_test(svc))
-    assert any("成功" in line for line in out), out
+    out = run(main.QQGroupManager.notify_test_once(svc))
+    assert any(("送出" in line or "成功" in line) for line in out), out
     assert svc.context.calls == [GOOD]
 
 
 def test_u6_notify_test_command_refuses_invalid_without_sending():
     svc = make_service("BROKEN")
-    out = run(main.QQGroupManager._cmd_notify_test(svc))
+    out = run(main.QQGroupManager.notify_test_once(svc))
     assert any("不合法" in line for line in out), out
     assert svc.context.calls == [], "格式不合法不得盲调 send_message"
 
 
 def test_u7_notify_test_command_surfaces_send_error():
     svc = make_service(GOOD, raise_exc=ValueError("boom"))
-    out = run(main.QQGroupManager._cmd_notify_test(svc))
+    out = run(main.QQGroupManager.notify_test_once(svc))
     assert any("发送失败" in line and "ValueError" in line for line in out), out
 
 

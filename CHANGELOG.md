@@ -15,13 +15,13 @@
   - `docs/CONFIG.md` 有 22 个配置项**从未被提及**（spam_flood 四项、llm_timeout / llm_daily_budget / cache_ttl / circuit_break_threshold、
     block_llm_on_violation、action_matrix、max_mute_days、qqgm_ai_* 六项、repeat_offense_multiplier、auto_remove、join_pending_expire_days、
     prompt_system / prompt_user），并且有**两个 `## 6.` 重复编号**。
-  - `menu.md`（群内菜单文案）停在 2026-09-29，缺 0.15.13 新增的「群管通知测试」。
+  - `menu.md`（群内菜单文案）停在 2026-09-29，0.15.13 以来没有更新。
   - `intro.md`、`README.md` 没写管理员通知 / webhook / 通知测试 / 失败可见性。
   - `docs/设计方案.md`、`docs/判定规则优化方案.md` 只校对到 0.15.9。
 - 修复：
   - `docs/CONFIG.md`：修正重复编号与标题层级，顶部加「校对版本」，文末新增**全部 88 项配置速查表**
     （默认值直接 import `default_settings()` 生成，不再手抄，避免再次漂移）。
-  - `README.md`：顶部加校对行；新增「🔔 管理员通知」功能块；指令表补 `群管通知测试`；
+  - `README.md`：顶部加校对行；新增「🔔 管理员通知」功能块（自检方式写明只有面板按钮）；
     配置表补 notify 三项与 `store_text`；「相关文档」改成带用途的索引表。
   - `intro.md` 新增「管理员通知」一节。
   - 修正本批自己引入的一处不一致：初版把「群管通知测试」写进了 `menu.md`，但群内菜单的真源是
@@ -31,7 +31,13 @@
     并新增 `tests/test_menu_doc_parity.py`（2 条）守住两者一致：menu.md 里出现的命令词，真源里必须有。
   - 新增 `docs/文档索引.md`：每份文档的用途、校对版本，以及「改了什么要同步哪份文档」。
   - `docs/设计方案.md` / `docs/判定规则优化方案.md`：追加「文档校对与增量（0.15.10–0.15.16）」章节。
-- 新增守门测试 `tests/test_docs_config_coverage.py`（3 条）：每个配置项必须出现在 CONFIG.md、速查表必须列出每个键、
+- 新增守门测试 `tests/test_docs_config_coverage.py`（4 条）：每个配置项必须出现在 CONFIG.md、速查表必须列出每个键、
+  速查表行集合必须与 `default_settings()` 完全相等、顶部校对版本必须与 `metadata.yaml` 一致。
+- 互审逐条核对内容后修掉 8 处**说明写错**（漏写能被测试拦住，写错只能靠人读）：`audit_queue_maxsize` 队列满时丢弃的是**新来的**那条；
+  `join_review_mode` 的取值是 `human`（不是 manual）；`join_avatar_review` 是 `off / approve_only / always`；
+  `join_profile_missing` / `join_gate_action` / `join_answer_action` 都含 `pass`；`llm_min_confidence` 只看全局（不按群覆盖）；
+  `group_rules_brief` 是「全局默认，群级可覆盖」。并把「86 项」更正为 **88 项**。
+- 恢复本批初版误删的 README「开发」段两条说明（测试宿主需 Python ≥ 3.12；`tests/test_audit_write_order.py` 运行期列序用例恒 skip）。
   CONFIG.md 顶部校对版本必须与 `metadata.yaml` 一致 ⇒ 以后文档再落后会直接测试红。
 ## [0.15.15] - 2026-10-18
 
@@ -67,7 +73,8 @@
 - `_notify` 先做预校验，不盲调 `send_message`；**失败可见**：格式不合法 / 平台未匹配 / 异常 / webhook 失败都写
   `capability=notify`（`err_code=invalid_session|send_failed|webhook_failed`）+ 明确 warning，并保留 `[通知:kind] …` 日志回退。
   返回值由 `None` 改为 `(bool, detail)`——四个既有调用点都不使用返回值，对外语义不变。
-- 新增管理员指令「**群管通知测试**」与面板「发送测试通知」按钮：回显「已送出 / 发送失败：原因 / 格式不合法 + 当前值 + 冒号个数」。
+- 面板「发送测试通知」按钮：回显「已送出 / 发送失败：原因 / 格式不合法 + 当前值 + 冒号个数」。
+> 更正（0.15.16）：本条当初还提到一个「群管通知测试」群内指令，但它当时没有接入指令注册表（`ALL_COMMANDS`），实际永远匹配不到；已在 0.15.16 移除。通知自检只有面板按钮这一个入口。
 
 ### 新增：通知会话候选与兜底通道
 

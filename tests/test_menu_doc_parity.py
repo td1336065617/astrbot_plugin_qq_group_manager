@@ -8,11 +8,19 @@
 from __future__ import annotations
 
 import importlib
+import re
 import sys
 from pathlib import Path
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 MENU_DOC = PLUGIN_ROOT / "menu.md"
+
+
+def _menu_sections() -> list[tuple[str, tuple[str, ...]]]:
+    if str(PLUGIN_ROOT.parent) not in sys.path:
+        sys.path.insert(0, str(PLUGIN_ROOT.parent))
+    commands = importlib.import_module(f"{PLUGIN_ROOT.name}.src.commands")
+    return list(commands.MENU_SECTIONS)
 
 
 def _menu_sections_text() -> str:
@@ -52,12 +60,39 @@ def _doc_commands() -> list[str]:
     return words
 
 
+def _section_tokens() -> set[str]:
+    """真源菜单文本切出的词集合（按空格 / 斜杠 / 间隔号 / 逗号切）。
+
+    用词集合而不是整串子串比较，是为了让「• 审核 全开」这种「拿真实命令当前缀的伪造条目」也能被抓到
+    （「审核」本身不是真源里的任何命令词）。
+    """
+    tokens: set[str] = set()
+    for _title, items in _menu_sections():
+        for item in items:
+            for token in re.split(r"[\s/·、,，（(]+", item.split("─")[0].strip()):
+                if token:
+                    tokens.add(token)
+    return tokens
+
+
 def test_menu_doc_has_no_command_missing_from_sections():
-    sections = _menu_sections_text()
-    missing = [w for w in _doc_commands() if w not in sections]
+    tokens = _section_tokens()
+    missing = [w for w in _doc_commands() if w not in tokens]
     assert not missing, (
         "menu.md 里出现了真源 MENU_SECTIONS 没有的命令（群内菜单实际不会显示它）：" + "、".join(missing)
     )
+
+
+def test_every_section_command_appears_in_doc():
+    """反向：真源里的命令不能只在机器人里存在、文档副本却漏写。"""
+    doc_commands = _doc_commands()
+    missing: list[str] = []
+    for _title, items in _menu_sections():
+        for item in items:
+            first = item.split("─")[0].split()[0]
+            if not any(c.startswith(first) or first.startswith(c) for c in doc_commands):
+                missing.append(first)
+    assert not missing, f"真源菜单里有、menu.md 没写的命令：{missing}"
 
 
 def test_menu_doc_covers_core_commands():
