@@ -146,6 +146,7 @@ def main() -> int:
 <script>
 window.addEventListener('load', function () {
   function measure(c) {
+    if (document.getElementById('smoke-width')) { return; }
     var cr = c.getBoundingClientRect();
     var bad = [];
     c.querySelectorAll('*').forEach(function (el) {
@@ -174,20 +175,31 @@ window.addEventListener('load', function () {
     if (!c) { return; }
     c.style.width = '360px';
     c.style.maxWidth = '360px';
-    var toggle = document.getElementById('notify-picker-toggle');
-    if (!toggle) {
-      // 非策略页没有选择器：直接测量，绝不等待
+    // 用路由判断视图：不能靠「按钮是否已渲染」，慢机器会把策略页误判成非策略页、立即测量 ⇒ rows=0 假红
+    if (String(location.hash || '').indexOf('/policy') < 0) {
       setTimeout(function () { measure(c); }, 60);
       return;
     }
-    // 策略页：点开候选列表；候选行是同步渲染的，只做很短的兜底轮询
-    toggle.click();
     var tries = 0;
-    (function settle() {
-      var ready = c.querySelectorAll('.notify-picker-item').length > 0;
-      if (ready || tries >= 8) { measure(c); return; }
-      tries += 1;
-      setTimeout(settle, 60);
+    (function waitToggle() {
+      var toggle = document.getElementById('notify-picker-toggle');
+      if (!toggle) {
+        if (tries >= 20) { measure(c); return; }
+        tries += 1;
+        setTimeout(waitToggle, 50);
+        return;
+      }
+      toggle.click();
+      var left = 8;
+      (function settle() {
+        if (c.querySelectorAll('.notify-picker-item').length > 0 || left <= 0) { measure(c); return; }
+        left -= 1;
+        setTimeout(settle, 60);
+      })();
+    })();
+  }, 300);
+});
+</script>
     })();
   }, 300);
 });
