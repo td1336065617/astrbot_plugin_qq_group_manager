@@ -65,3 +65,13 @@ def test_doc_declares_current_version():
         f"docs/CONFIG.md 的校对版本与 metadata.yaml（{_plugin_version()}）不一致"
     )
 
+
+
+def test_doc_index_declares_current_version():
+    """文档索引的「校对基准」也必须跟版本走——它和 CONFIG 标头是两份文档，容易只改一份。"""
+    index = (PLUGIN_ROOT / "docs" / "文档索引.md").read_text(encoding="utf-8")
+    version = _plugin_version()
+    assert f"校对基准：**v{version}" in index, (
+        f"docs/文档索引.md 的校对基准不是当前版本 {version}"
+    )
+    assert "v0.15." in index, "索引里没有版本行"

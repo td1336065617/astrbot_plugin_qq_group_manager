@@ -29,11 +29,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def chrome_path(explicit: str = "") -> str:
+    """找不到/路径无效一律返回空串，调用方按 SKIP 处理（不要把环境配错变成红）。"""
     if explicit:
-        return explicit
+        return explicit if os.path.exists(explicit) else ""
     env = os.environ.get("CHROME") or os.environ.get("CHROME_PATH")
     if env:
-        return env
+        return env if os.path.exists(env) else ""
     for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser"):
         found = shutil.which(name)
         if found:
@@ -41,10 +42,14 @@ def chrome_path(explicit: str = "") -> str:
     return ""
 
 
-def _menu_html() -> str:
+def _render_module():
     if str(ROOT.parent) not in sys.path:
         sys.path.insert(0, str(ROOT.parent))
-    render = importlib.import_module(f"{ROOT.name}.src.menu_render")
+    return importlib.import_module(f"{ROOT.name}.src.menu_render")
+
+
+def _menu_html() -> str:
+    render = _render_module()
     return render.menu_html(
         version="0.0.0-smoke",
         requested_at="2026-10-18 04:00",
@@ -96,9 +101,10 @@ def main() -> int:
             raise SystemExit("FAIL：探针没读到尺寸\n" + dom.stdout[-600:])
         return tuple(int(group) for group in found.groups())
 
-    wide_card, _, doc_h = probe(1280)
+    card_width = int(_render_module().CARD_WIDTH)
+    wide_card, _, doc_h = probe(max(card_width + 200, 1280))
     narrow_card, narrow_doc, _ = probe(760)
-    _run(chrome, [f"--window-size={max(wide_card, 1080)},{min(max(doc_h, 800), 6000)}",
+    _run(chrome, [f"--window-size={max(wide_card, card_width)},{min(max(doc_h, 800), 6000)}",
                   f"--screenshot={png}", url])
     if not png.is_file():
         print("FAIL：没有生成 PNG")
@@ -106,16 +112,16 @@ def main() -> int:
     png_w, png_h = _png_size(png)
     size_kb = png.stat().st_size // 1024
     problems = []
-    if wide_card != 1080:
-        problems.append(f"宽视口下卡片宽度应为 1080，实际 {wide_card}")
+    if wide_card != card_width:
+        problems.append(f"宽视口下卡片宽度应为 {card_width}，实际 {wide_card}")
     if narrow_card > 760:
         problems.append(f"窄视口下卡片没自适应收缩：{narrow_card} > 760")
     if narrow_doc > 761:
         problems.append(f"窄视口下出现横向溢出：文档宽 {narrow_doc}")
     if not 800 <= doc_h <= 6000:
         problems.append(f"文档高度异常：{doc_h}")
-    if png_w < 1000:
-        problems.append(f"出图宽度过窄：{png_w}")
+    if png_w < int(card_width * 0.9):
+        problems.append(f"出图宽度过窄：{png_w}（卡片宽 {card_width}）")
     if size_kb < 20:
         problems.append(f"出图疑似空白：仅 {size_kb}KB")
     print(f"菜单出图：卡片宽 宽视口 {wide_card} / 窄视口 {narrow_card}（文档 {narrow_doc}）| 高 {doc_h} | PNG {png_w}x{png_h} | {size_kb}KB")

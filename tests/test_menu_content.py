@@ -46,7 +46,7 @@ def test_recall_description_keeps_key_limits():
     text = commands.menu_text()
     line = next((item for item in text.splitlines() if "撤回" in item), "")
     assert line, "菜单里找不到「撤回」条目"
-    for key in ("2 分钟", "群主", "管理员", "普通成员", "图片"):
+    for key in ("2 分钟", "群主", "普通成员", "图片", "机器人", "群管"):
         assert key in line, f"「撤回」说明丢了关键限制「{key}」：{line}"
 
 
