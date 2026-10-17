@@ -38,6 +38,10 @@
   通知自检只保留管理台「发送测试通知」按钮（POST `/notify/test` → `notify_test_once()`）。
 - 新增 `tests/test_commands_registry.py`（2 条）：`*_COMMANDS` 里的名字必须能被 `match_command` 解析、`ALL_COMMANDS` 不得有出处不明的名字；
   并修好 `tests/test_menu_doc_parity.py`（补 `import re`、分词补括号），复跑变异：伪造菜单条目与删光关键词行都能被抓住。
+  （`tests/test_menu_doc_parity.py` 与 `tests/test_commands_registry.py` 现各 3 条断言。）
+- **群管理菜单图片换风格**：对齐同类群管插件的菜单观感 —— 深紫底 + 粉/青径向光晕 + 磨砂白面板 + 粉色指令胶囊，
+  宽度 660 → **1080px**、正文字号 13.5 → 19px（手机上看更清楚）；分区标题加圆点，管理员区加「仅 AstrBot 管理员」徽标；
+  数据仍来自 `MENU_SECTIONS`、文字版菜单不受影响，渲染失败仍回落文字。仅方言观感与配色，未引入任何外部依赖。
 - 互审逐条核对内容后修掉 8 处**说明写错**（漏写能被测试拦住，写错只能靠人读）：`audit_queue_maxsize` 队列满时丢弃的是**新来的**那条；
   `join_review_mode` 的取值是 `human`（不是 manual）；`join_avatar_review` 是 `off / approve_only / always`；
   `join_profile_missing` / `join_gate_action` / `join_answer_action` 都含 `pass`；`llm_min_confidence` 只看全局（不按群覆盖）；
