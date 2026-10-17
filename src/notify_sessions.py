@@ -22,7 +22,7 @@ def session_label(umo: str) -> str:
     parts = str(umo or "").split(":")
     if len(parts) >= 3:
         kind = MESSAGE_TYPE_LABELS.get(parts[1], parts[1])
-        return f"{parts[0]} · {kind} {parts[2]}"
+        return f"{parts[0]} · {kind} {':'.join(parts[2:])}"
     return str(umo or "")
 
 

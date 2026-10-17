@@ -170,7 +170,9 @@ def _webhook_post(url: str, body: bytes, timeout: float) -> tuple[bool, str]:
         url, data=body, headers={"Content-Type": "application/json"}, method="POST"
     )
     try:
-        with urllib.request.urlopen(request, max(1.0, timeout)) as resp:
+        # 注意：urlopen 的第二个位置参数是 data，timeout 必须用关键字传，
+        # 否则会覆盖 Request 里的 JSON 体并直接抛 TypeError（webhook 必失败）。
+        with urllib.request.urlopen(request, timeout=max(1.0, float(timeout))) as resp:
             code = int(getattr(resp, "status", 0) or 0)
             return (200 <= code < 300), f"HTTP {code}"
     except urllib.error.HTTPError as exc:
@@ -1013,13 +1015,17 @@ class QQGroupManager(Star):
         if audit is None:
             return
         try:
-            await audit.record_capability(
+            # 真实 AuditStore.record_capability 是同步 def（src/audit.py），
+            # 这里不 await；万一将来改成协程，也能兼容。
+            result = audit.record_capability(
                 group_id="",
                 capability="notify",
                 ok=False,
                 err_code=err_code,
                 note=f"{kind}|{note}"[:200],
             )
+            if hasattr(result, "__await__"):
+                await result
         except Exception:  # pragma: no cover - 审计失败不影响通知
             pass
 
@@ -1031,16 +1037,15 @@ class QQGroupManager(Star):
         """
         session = str(payload.get("umo") or self.store.get_setting("notify_session") or "").strip()
         text = self._render_notification(kind, payload)
+        reason = ""
         if session and not is_valid_umo(session):
-            detail = (
+            reason = (
                 "通知会话格式不合法（应形如 平台实例ID:消息类型:会话ID，"
                 "消息类型取 GroupMessage/FriendMessage/OtherMessage）：" + session[:24]
             )
             await self._record_notify_failure(kind, "invalid_session", session[:64])
-            self.logger.warning("%s；已退化为写日志", detail)
-            self.logger.info("[通知:%s] %s", kind, text.replace("\n", " | "))
-            return False, detail
-        if session:
+            self.logger.warning("%s；已尝试 webhook 兜底", reason)
+        elif session:
             try:
                 sent = await self.context.send_message(session, MessageChain([Plain(text)]))
                 if sent:
@@ -1050,6 +1055,8 @@ class QQGroupManager(Star):
                 reason = f"{type(exc).__name__}: {exc}"
             await self._record_notify_failure(kind, "send_failed", f"{session[:48]}|{reason}"[:150])
             self.logger.warning("通知发送失败（%s）：%s", session, reason)
+        else:
+            reason = "未配置通知会话"
         wok, wdetail = await self._post_webhook(kind, payload, text)
         if wok:
             return True, "已通过 webhook 送达"
@@ -1057,9 +1064,7 @@ class QQGroupManager(Star):
             await self._record_notify_failure(kind, "webhook_failed", wdetail[:120])
             self.logger.warning("通知 webhook 失败：%s", wdetail)
         self.logger.info("[通知:%s] %s", kind, text.replace("\n", " | "))
-        if not session:
-            return False, "未配置通知会话"
-        return False, f"发送失败：{reason}"
+        return False, reason or "发送失败"
 
     @staticmethod
     def _parse_profile_json(raw: Any) -> dict[str, Any]:
@@ -2623,12 +2628,13 @@ class QQGroupManager(Star):
     async def sessions_candidates(self) -> dict[str, Any]:
         """通知会话候选：平台实例 + 会话库 + 最近见过的会话（全部容错）。"""
         db_sessions = await collect_db_sessions(self.context, limit=200)
-        entries = session_entries(self._seen_sessions, db_sessions)
+        seen = getattr(self, "_seen_sessions", [])
+        entries = session_entries(seen, db_sessions)
         valid = [item for item in entries if is_valid_umo(item["umo"])]
         return {
             "items": valid[:200],
             "platform_ids": [item["id"] for item in platform_entries(self.context)],
-            "observed": len(self._seen_sessions),
+            "observed": len(seen),
         }
 
     async def notify_test_once(self) -> list[str]:
@@ -2637,11 +2643,13 @@ class QQGroupManager(Star):
         if not session and not str(self.store.get_setting("notify_webhook_url") or "").strip():
             return ["未配置「管理员通知会话（会话 ID）」，也没配 webhook，请在管理台「策略」页填写。"]
         if session and not is_valid_umo(session):
-            return [
-                "通知会话格式不合法，未发送。",
-                "应形如 平台实例ID:消息类型:会话ID（消息类型取 GroupMessage / FriendMessage / OtherMessage）；",
-                f"当前值：{session[:40]}（冒号 {session.count(':')} 个）",
-            ]
+            webhook = str(self.store.get_setting("notify_webhook_url") or "").strip()
+            if not webhook:
+                return [
+                    "通知会话格式不合法，未发送。",
+                    "应形如 平台实例ID:消息类型:会话ID（消息类型取 GroupMessage / FriendMessage / OtherMessage）；",
+                    f"当前值：{session[:40]}（冒号 {session.count(':')} 个）",
+                ]
         ok, detail = await self._notify(
             "notify_test", {"group_id": "", "ts": to_iso(now_ts())}
         )

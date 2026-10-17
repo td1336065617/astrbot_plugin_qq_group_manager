@@ -38,7 +38,7 @@ class FakeAudit:
     def __init__(self):
         self.capabilities = []
 
-    async def record_capability(self, **kw):
+    def record_capability(self, **kw):  # 与 src/audit.py 的真实签名一致（同步）
         self.capabilities.append(kw)
 
 
@@ -279,3 +279,94 @@ def test_u12b_notify_test_once_supports_webhook_only_setup():
     svc.poster = lambda url, body, timeout: (True, "HTTP 200")
     out = run(main.QQGroupManager.notify_test_once(svc))
     assert any("送出" in line or "成功" in line for line in out), out
+
+
+def test_u13_webhook_post_uses_timeout_keyword_and_bytes_body(monkeypatch):
+    """P1 回归点：urlopen 的第二个位置参数是 data，timeout 必须用关键字传。"""
+    import urllib.request
+
+    seen = {}
+
+    class FakeResp:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def fake_urlopen(request, *args, **kwargs):
+        seen["request"] = request
+        seen["args"] = args
+        seen["kwargs"] = kwargs
+        return FakeResp()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    ok, detail = main._webhook_post("https://example.invalid/hook", b'{"a": 1}', 7)
+    assert ok is True and "HTTP 200" in detail
+    assert seen["args"] == (), "不得把 timeout 当位置参数传（那是 data）"
+    assert seen["kwargs"].get("timeout") == 7.0
+    assert isinstance(seen["request"].data, bytes)
+
+
+def test_u14_webhook_real_transport_reaches_local_http_server():
+    """端到端：真起一个本地 HTTP server，用真 _webhook_post 发一次。"""
+    import http.server
+    import json as _json
+    import threading
+
+    received = {}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length") or 0)
+            received["body"] = _json.loads(self.rfile.read(length).decode("utf-8"))
+            received["ctype"] = self.headers.get("Content-Type")
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"ok")
+
+        def log_message(self, *args):
+            return
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.handle_request, daemon=True)
+    thread.start()
+    url = f"http://127.0.0.1:{server.server_address[1]}/hook"
+    try:
+        ok, detail = main._webhook_post(url, b'{"hello": "world"}', 5)
+        thread.join(timeout=5)
+    finally:
+        server.server_close()
+    assert ok is True, detail
+    assert received.get("body") == {"hello": "world"}, "服务端必须真的收到 JSON 体"
+    assert "json" in (received.get("ctype") or "")
+
+
+def test_u15_sessions_candidates_works_before_any_message_seen():
+    """P2 回归点：重启后还没收到任何消息时，候选接口不得抛 AttributeError。"""
+    svc = make_service(GOOD)
+    svc.context = make_ctx_with_sessions([GOOD])
+    if hasattr(svc, "_seen_sessions"):
+        del svc._seen_sessions
+    data = run(main.QQGroupManager.sessions_candidates(svc))
+    assert [item["umo"] for item in data["items"]] == [GOOD]
+
+
+def test_u16_notify_test_once_tries_webhook_when_session_invalid():
+    svc = make_service("BROKEN")
+    svc.store = FakeStore({
+        "notify_session": "BROKEN",
+        "notify_webhook_url": "https://example.invalid/hook",
+    })
+    svc.poster = lambda url, body, timeout: (True, "HTTP 200")
+    out = run(main.QQGroupManager.notify_test_once(svc))
+    assert any("送出" in line or "成功" in line for line in out), out
+
+
+def test_u17_session_label_keeps_colons_in_session_id():
+
+    mod = _pkg("src.notify_sessions")
+    label = mod.session_label("a:FriendMessage:x:y")
+    assert "x:y" in label, label
