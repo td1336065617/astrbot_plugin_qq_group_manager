@@ -1,6 +1,6 @@
 # 配置说明（面向用户）
 
-> **校对版本：v0.15.22（2026-10-17）**｜与插件 0.15.22 同步。
+> **校对版本：v0.15.23（2026-10-17）**｜与插件 0.15.23 同步。
 > 完整的 **90 项配置项速查**见文末「附：完整配置项速查」；面板改不到的键见「10. 只能直接改 KV 的键」。
 > 本文按 WebUI 视图组织，读完「5. 关键配置项」+ 速查表基本就够了。
 
@@ -189,7 +189,7 @@
 | `join_require_qid` | false | 要求申请人有 QID |
 | `join_gate_action` | decline | 门槛命中动作：`decline` 自动拒绝 / `manual` 转人工 / `pass` 放行 |
 | `join_profile_missing` | manual | 资料缺失策略：`pass / manual / decline`；**仅对可提供画像的通道生效** |
-| `join_avatar_review` | off | 头像多模态复核：`off` / `approve_only`（仅复核拟放行的）/ `always` |
+| `join_avatar_review` | off | 头像多模态判定：`off` / `always`（已并入主判定，历史值 `approve_only` 视同开启） |
 | `join_profile_cache_days` | 7 | 画像缓存天数（0=不缓存） |
 | `join_profile_qpm` | 30 | 画像调用限频（次/分钟） |
 | `join_profile_concurrency` | 2 | 画像调用并发上限 |
@@ -450,7 +450,7 @@ key = settings（值为 {"val": {...}} 包裹）。
 
 > **越界处置说明**：等级落在类别区间内 ⇒ 按动作矩阵自动处置；越界（过高或过低）⇒ 不自动处置，按 `boundary_action` 通报转人工或静默（静默仍写审计）。另外：`log_only` 模式下越界**仍会通知管理员**（只是不执行处罚）✓；把某类 `max` 设为 3 或更低时，本地硬规则命中（固定 4 级）的广告 / 色情 / 诈骗也不再自动处置。
 
-## 阶段 1 只能直接改 KV 的键（尚无面板入口）
+## 边界配置的面板入口（0.15.23 起）
 
-- `category_policy`：每个违规类别允许的等级区间（min/max）
-- `boundary_action`：越界后 below/above 取 notify 或 silent
+- `category_policy`：在「策略 → 处罚边界（每类允许等级区间）」卡片按类别选「最低 / 最高」，留空=不限、最高 0=一律转人工；保存时校验「最低不得大于最高」
+- `boundary_action`：同卡片底部两个下拉（低于下限 / 超过上限）⇒ 通报管理员 或 静默（仍写审计）

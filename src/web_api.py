@@ -18,8 +18,10 @@ from astrbot.api.web import error_response, file_response, json_response, reques
 
 from .audit import LOG_TABLES
 from .models import (
+    BOUNDARY_ACTIONS,
     CAPABILITIES,
     CAPABILITY_LABELS,
+    CATEGORIES,
     JOIN_GLOBAL_ONLY_KEYS,
     JOIN_GROUP_OVERRIDABLE_KEYS,
     JOIN_REVIEW_MODES,
@@ -157,6 +159,42 @@ class EventBus:
         if topic is None:
             return sum(len(bucket) for bucket in self._subscribers.values())
         return len(self._subscribers.get(topic, ()))
+
+
+def validate_boundary_patch(data: dict) -> str:
+    """面板保存前的边界配置校验（返回空串表示通过）。"""
+    policy = data.get("category_policy")
+    if policy is not None:
+        if not isinstance(policy, dict):
+            return "category_policy 必须是对象"
+        for name, entry in policy.items():
+            if name not in CATEGORIES:
+                return "未知类别：" + str(name)
+            if entry is None:
+                continue
+            if not isinstance(entry, dict):
+                return "类别 " + str(name) + " 的配置必须是对象"
+            vals = {}
+            for key in ("min", "max"):
+                raw = entry.get(key, None)
+                if raw is None or raw == "":
+                    continue
+                if isinstance(raw, bool) or not isinstance(raw, int):
+                    return "类别 " + str(name) + " 的 " + key + " 必须是 0-5 的整数或留空"
+                if raw < 0 or raw > 5:
+                    return "类别 " + str(name) + " 的 " + key + " 必须在 0-5"
+                vals[key] = raw
+            if "min" in vals and "max" in vals and vals["min"] > vals["max"]:
+                return "类别 " + str(name) + "：最低等级不能大于最高等级"
+    action = data.get("boundary_action")
+    if action is not None:
+        if not isinstance(action, dict):
+            return "boundary_action 必须是对象"
+        for key in ("below", "above"):
+            value = action.get(key, "notify")
+            if value not in BOUNDARY_ACTIONS:
+                return "boundary_action." + key + " 只能是 notify 或 silent"
+    return ""
 
 
 class WebApi:
@@ -394,6 +432,9 @@ class WebApi:
         store = self.service.store
         try:
             if section == "settings":
+                problem = validate_boundary_patch(data)
+                if problem:
+                    return error_response(problem)
                 settings = await store.update_settings(data)
                 self.service.reload_rules()
                 return json_response({"section": section, "settings": settings})

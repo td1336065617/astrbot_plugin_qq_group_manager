@@ -1161,6 +1161,76 @@ async function viewPolicy(root) {
     matrixBox.appendChild(row);
   }
 
+  /* 处罚边界：每类允许等级区间 + 越界处置（全局一套） */
+  const BOUNDARY_CATS = ['无', '广告引流', '色情低俗', '辱骂攻击', '政治敏感', '违法违规', '诈骗赌博', '刷屏灌水', '其他'];
+  const boundaryPolicy = JSON.parse(JSON.stringify(settings.category_policy || {}));
+  const boundaryBox = el('div', { class: 'grid cols-2' });
+  const boundaryInputs = {};
+  const levelOptions = (current, allowZero) => {
+    const box = el('select');
+    const opts = [['', '不限']];
+    for (let v = 0; v <= 5; v += 1) {
+      if (v === 0 && !allowZero) continue;
+      opts.push([String(v), v === 0 ? '0（一律转人工）' : String(v)]);
+    }
+    opts.forEach((pair) => {
+      const opt = el('option', { value: pair[0], text: pair[1] });
+      if (String(current === null || current === undefined ? '' : current) === pair[0]) opt.selected = true;
+      box.appendChild(opt);
+    });
+    return box;
+  };
+  BOUNDARY_CATS.forEach((name) => {
+    const entry = boundaryPolicy[name] || {};
+    const row = el('div', { class: 'notice' });
+    row.appendChild(el('div', { text: name }));
+    const wrap = el('div', { class: 'row' });
+    const minSel = levelOptions(entry.min, false);
+    const maxSel = levelOptions(entry.max, true);
+    boundaryInputs[name] = { min: minSel, max: maxSel };
+    wrap.appendChild(el('label', { class: 'switch' }, [el('span', { text: '最低' }), minSel]));
+    wrap.appendChild(el('label', { class: 'switch' }, [el('span', { text: '最高' }), maxSel]));
+    row.appendChild(wrap);
+    boundaryBox.appendChild(row);
+  });
+  const boundaryAction = settings.boundary_action || {};
+  const actionOptions = (current) => {
+    const box = el('select');
+    [['notify', '通报管理员（转人工）'], ['silent', '静默（不通知不处罚，仍写审计）']].forEach((pair) => {
+      const opt = el('option', { value: pair[0], text: pair[1] });
+      if ((current || 'notify') === pair[0]) opt.selected = true;
+      box.appendChild(opt);
+    });
+    return box;
+  };
+  const belowSel = actionOptions(boundaryAction.below);
+  const aboveSel = actionOptions(boundaryAction.above);
+  const boundaryActionsBox = el('div', { class: 'grid cols-2' }, [
+    el('label', { class: 'switch' }, [el('span', { text: '等级低于下限时' }), belowSel]),
+    el('label', { class: 'switch' }, [el('span', { text: '等级超过上限时' }), aboveSel]),
+  ]);
+  const readBoundaryPolicy = () => {
+    const out = {};
+    BOUNDARY_CATS.forEach((name) => {
+      const minRaw = boundaryInputs[name].min.value;
+      const maxRaw = boundaryInputs[name].max.value;
+      out[name] = {
+        min: minRaw === '' ? null : Number(minRaw),
+        max: maxRaw === '' ? null : Number(maxRaw),
+      };
+    });
+    return out;
+  };
+  const boundaryProblem = (policy) => {
+    const names = Object.keys(policy);
+    for (let i = 0; i < names.length; i += 1) {
+      const item = policy[names[i]];
+      if (item.min !== null && item.max !== null && item.min > item.max) {
+        return '「' + names[i] + '」的最低等级不能大于最高等级';
+      }
+    }
+    return '';
+  };
   /* 提示词 */
   const systemPrompt = el('textarea', { placeholder: '留空使用内置默认提示词' });
   systemPrompt.value = settings.prompt_system || '';
@@ -1187,6 +1257,8 @@ async function viewPolicy(root) {
       auto_remove: autoRemove.input.checked,
       store_text: storeTextOn.input.checked,
       mode: modeSelect.value,
+      category_policy: readBoundaryPolicy(),
+      boundary_action: { below: belowSel.value, above: aboveSel.value },
       llm_provider_id: providerSelect.value,
       llm_fallback_provider_ids: fallbackList.read(),
       image_review: imageReview.value,
@@ -1237,6 +1309,12 @@ async function viewPolicy(root) {
       prompt_user: userPrompt.value,
     };
     try {
+    const badBoundary = boundaryProblem(payload.category_policy);
+    if (badBoundary) {
+      saveBtn.disabled = false;
+      window.alert(badBoundary);
+      return;
+    }
       await bridge.apiPost('config', { section: 'settings', data: payload });
       state.config = null;
       toast('策略已保存（送审条件：' + (payload.send_conditions.join('、') || '无') + '）', 'ok');
@@ -1309,6 +1387,7 @@ async function viewPolicy(root) {
   root.appendChild(card('处置矩阵', '按严重度（1–5，1 最轻）执行的动作；lenient 模式只会保留警告与上报。', [matrixBox]));
 
 
+  root.appendChild(card('处罚边界（每类允许等级区间）', '等级在区间内按矩阵自动处置；越界改转人工或静默（仍写审计）。留空=不限，最高 0=该类一律转人工。', [boundaryBox, boundaryActionsBox]));
   root.appendChild(card('提示词', '留空使用内置默认值；修改后建议先在下方试跑验证。', [promptHint, systemPrompt, userPrompt]));
 
 
@@ -1848,8 +1927,8 @@ const JOIN_FIELD_SPECS = {
   join_min_qq_level: { kind: 'number', row: 1, label: 'QQ 等级门槛（0=关闭）', min: 0, max: 144, step: 1 },
   join_gate_action: { kind: 'select', row: 1, label: '门槛命中动作', options: [['decline', '自动拒绝'], ['manual', '转人工'], ['pass', '放行']] },
   join_profile_missing: { kind: 'select', row: 1, label: '资料缺失策略（仅对可提供画像的通道生效）', options: [['manual', '转人工'], ['pass', '放行'], ['decline', '拒绝']] },
-  join_avatar_review: { kind: 'select', row: 2, label: '头像多模态复核', options: [['off', '关闭'], ['approve_only', '仅复核拟放行的'], ['always', '每次都复核']] },
-  join_low_confidence_action: { kind: 'select', row: 2, label: '低置信处置', options: [['manual', '转人工（默认）'], ['decline', '自动拒绝'], ['pass', '放行']] },
+  join_avatar_review: { kind: 'select', row: 2, label: '头像多模态判定（已并入主判定）', options: [['off', '关闭'], ['always', '开启（作为图片随主判定送审）']] },
+  join_low_confidence_action: { kind: 'select', row: 2, label: '低置信处置（低于上面「自动审批置信度门槛」时生效）', options: [['manual', '转人工（默认）'], ['decline', '自动拒绝'], ['pass', '放行']] },
   join_min_confidence: { kind: 'number', row: 2, label: '自动审批置信度门槛', min: 0, max: 1, step: 0.05 },
   join_expected_answer: { kind: 'text', row: 4, label: '期望答案（留空=不校验，子串匹配）', placeholder: '例：ACM', parse: (v) => String(v || '').trim() },
   join_answer_keywords: { kind: 'textarea', row: 4, label: '答案关键词（一行一个，命中任一即可）', placeholder: '例：ACM\n校赛', parse: (v) => String(v || '').split('\n').map((line) => line.trim()).filter(Boolean) },
@@ -2219,7 +2298,7 @@ async function viewJoins(root) {
       ? settings[key]
       : (isOwn ? (scope.overrides || {})[key] : settings[key]);
     const initialValue = (!scope.follow_global && joinEdit && key in joinEdit.dirty) ? joinEdit.dirty[key] : serverValue;
-    const built = buildJoinField(key, spec, initialValue, joinProviderInfo, (next) => {
+    const built = buildJoinField(key, spec, (key === 'join_avatar_review' && initialValue === 'approve_only') ? 'always' : initialValue, joinProviderInfo, (next) => {
       if (scope.follow_global) return;
       const entry = ensureEdit();
       entry.reset = entry.reset.filter((item) => item !== key);

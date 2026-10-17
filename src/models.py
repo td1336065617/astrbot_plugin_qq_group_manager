@@ -700,7 +700,7 @@ def _coerce(value: Any, fallback: int | None) -> int | None:
 
 def resolve_category_policy(settings: dict[str, Any] | None) -> dict[str, dict[str, int | None]]:
     """读时补默认：未配置 / 脏数据一律回退到默认表，保证 9 个类别齐全。"""
-    raw = (settings or {}).get("category_policy")
+    raw = settings.get("category_policy") if isinstance(settings, dict) else None
     policy: dict[str, dict[str, int | None]] = {}
     for category in CATEGORIES:
         default = DEFAULT_CATEGORY_POLICY[category]
