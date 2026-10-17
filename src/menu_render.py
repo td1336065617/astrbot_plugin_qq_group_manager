@@ -124,7 +124,8 @@ def split_item(item: str) -> tuple[str, str]:
         # 不要把整行变成正文 —— 否则这一行会「掉渲染」，看着像普通文字。
         head = command.split()[0] if command.split() else ""
         if description and head and len(head) <= MAX_CHIP_CHARS:
-            rest = command[len(head) :].strip(" /·、,，") + " ─ " + description
+            tail = command[len(head) :].strip(" /·、,，：:；;")
+            rest = f"{tail} ─ {description}" if tail else description
             return head, rest
         return "", text
     head, sep, tail = text.partition(" ")

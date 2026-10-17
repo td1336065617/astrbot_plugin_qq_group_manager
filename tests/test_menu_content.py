@@ -78,3 +78,29 @@ def test_every_menu_item_gets_a_chip():
         if not render.split_item(item)[0]
     ]
     assert not bad, f"这些菜单行没有指令胶囊（会看着像掉渲染）：{bad}"
+
+
+def test_menu_item_descriptions_have_no_separator():
+    """说明里不允许再出现 " ─ "（那是命令与说明的分隔符，混在说明里就是结构写歪了）。"""
+    commands, _ = _modules()
+    render = _render()
+    bad = [
+        item
+        for _title, items in commands.MENU_SECTIONS
+        for item in items
+        if " ─ " in render.split_item(item)[1]
+    ]
+    assert not bad, f"这些行的说明里混进了分隔符：{bad}"
+
+
+def test_menu_chips_are_bare_command_names():
+    """胶囊里只放命令词（可并列），参数与解释都进说明——各行风格必须一致。"""
+    commands, _ = _modules()
+    render = _render()
+    loose = []
+    for _title, items in commands.MENU_SECTIONS:
+        for item in items:
+            chip = render.split_item(item)[0]
+            if any(mark in chip for mark in ("<", "[", "0.0", "@")):
+                loose.append((chip, item))
+    assert not loose, f"这些胶囊里还塞着参数（应移到说明）：{loose}"

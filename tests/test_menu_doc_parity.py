@@ -69,7 +69,7 @@ def _section_tokens() -> set[str]:
     tokens: set[str] = set()
     for _title, items in _menu_sections():
         for item in items:
-            for token in re.split(r"[\s/·、,，（(]+", item.split("─")[0].strip()):
+            for token in re.split(r"[\s/·、,，（）()；;|＝=]+", item.strip()):
                 if token:
                     tokens.add(token)
     return tokens
