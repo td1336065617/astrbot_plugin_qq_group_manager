@@ -7,6 +7,27 @@
 
 ---
 
+## [0.15.13] - 2026-10-17
+
+### 修复：管理员通知「配了却收不到」
+
+- 起因：生产 `notify_session` 被填成**裸会话 ID**（0 个冒号），而 SDK `MessageSession.from_str` 用 `split(":", 2)` 要求三段，
+  因此每次都抛 `ValueError: not enough values to unpack (expected 3, got 1)`，`_notify` 静默退化成写日志 ⇒ **管理员通知全部发不出去**。
+- 新增 `is_valid_umo()`（与 SDK 同源：`split(":", 2)` 三段 + 首尾段非空 + 中段 ∈ `{GroupMessage, FriendMessage, OtherMessage}`；
+  **会话 ID 允许含冒号**，避免比 SDK 更严而把可用会话拦死）。
+- `_notify` 先做预校验，不盲调 `send_message`；**失败可见**：格式不合法 / 平台未匹配 / 异常 / webhook 失败都写
+  `capability=notify`（`err_code=invalid_session|send_failed|webhook_failed`）+ 明确 warning，并保留 `[通知:kind] …` 日志回退。
+  返回值由 `None` 改为 `(bool, detail)`——四个既有调用点都不使用返回值，对外语义不变。
+- 新增管理员指令「**群管通知测试**」与面板「发送测试通知」按钮：回显「已送出 / 发送失败：原因 / 格式不合法 + 当前值 + 冒号个数」。
+
+### 新增：通知会话候选与兜底通道
+
+- 面板通知会话字段：格式提示（`id="notify-warn"`，纳入渲染冒烟必查串）+ **候选 datalist**（平台实例 + AstrBot 会话库 + 最近见过的会话，
+  群聊与私聊都会记录，去重、上限 200，非法 UMO 不进候选）。
+- 新增 `notify_webhook_url` / `notify_webhook_timeout`：会话不可用时 POST JSON 兜底；**默认空 ⇒ 行为与旧版一致**（不发起任何请求）。
+  实现用标准库 `urllib.request` + `asyncio.to_thread`，仓库仍然零第三方依赖，且不阻塞审核主流程。
+- `docs/CONFIG.md` 新增「管理员通知」一节（该文件此前连 `notify_session` 都没写）。
+
 ## [0.15.12] - 2026-10-17
 
 ### 修复：含图消息与头像复核不再被纯文本模型盲判

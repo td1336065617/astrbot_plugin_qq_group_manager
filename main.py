@@ -107,6 +107,7 @@ from .src.moderator import (
     should_fallback,
 )
 from .src.normalize import skeleton_text
+from .src.notify_sessions import collect_db_sessions, platform_entries, session_entries
 from .src.platforms.router import ChannelRouter
 from .src.policy import ApprovalPolicyService
 from .src.profiles import ApplicantProfileService
@@ -141,7 +142,7 @@ from .src.utils import (
 from .src.web_api import EventBus, WebApi
 
 PLUGIN_NAME = "astrbot_plugin_qq_group_manager"
-VERSION = "0.15.12"
+VERSION = "0.15.13"
 
 STATE_FLUSH_INTERVAL = 30.0
 MAINTENANCE_INTERVAL = 3600.0
@@ -158,6 +159,24 @@ DEFAULT_MUTE_SECONDS = 600
 #: 否则 2 分钟以上的消息会「回溯成功 → 平台拒绝」，用户看到平台错误而非明确说明。
 RECALL_LOOKBACK_SECONDS = 120
 RECENT_MSG_PER_GROUP = 40
+
+
+def _webhook_post(url: str, body: bytes, timeout: float) -> tuple[bool, str]:
+    """标准库实现（仓库零第三方依赖）；返回 (是否 2xx, 说明)。"""
+    import urllib.error
+    import urllib.request
+
+    request = urllib.request.Request(
+        url, data=body, headers={"Content-Type": "application/json"}, method="POST"
+    )
+    try:
+        with urllib.request.urlopen(request, max(1.0, timeout)) as resp:
+            code = int(getattr(resp, "status", 0) or 0)
+            return (200 <= code < 300), f"HTTP {code}"
+    except urllib.error.HTTPError as exc:
+        return False, f"HTTP {exc.code}"
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"
 
 
 class QQGroupManager(Star):
@@ -966,6 +985,28 @@ class QQGroupManager(Star):
         except (TypeError, ValueError):
             return 0.7
 
+    async def _post_webhook(self, kind: str, payload: dict[str, Any], text: str) -> tuple[bool, str]:
+        """把通知推到 webhook；未配置时直接返回（不发起任何请求）。
+
+        poster 可注入（测试用）：签名 (url, body_bytes, timeout) -> (ok, detail)。
+        """
+        url = str(self.store.get_setting("notify_webhook_url") or "").strip()
+        if not url:
+            return False, ""
+        try:
+            timeout = float(self.store.get_setting("notify_webhook_timeout", 5) or 5)
+        except (TypeError, ValueError):
+            timeout = 5.0
+        body = json.dumps(
+            {"kind": kind, "text": text, "payload": payload}, ensure_ascii=False
+        ).encode("utf-8")
+        poster = getattr(self, "poster", None) or _webhook_post
+        try:
+            ok, detail = await asyncio.to_thread(poster, url, body, timeout)
+        except Exception as exc:  # pragma: no cover - 兜底通道不得影响主流程
+            return False, f"{type(exc).__name__}: {exc}"
+        return (True, "") if ok else (False, f"webhook 返回 {detail}")
+
     async def _record_notify_failure(self, kind: str, err_code: str, note: str) -> None:
         """通知失败也要留痕（否则「配了却收不到」外部看不出来）。"""
         audit = getattr(self, "audit", None)
@@ -1009,6 +1050,12 @@ class QQGroupManager(Star):
                 reason = f"{type(exc).__name__}: {exc}"
             await self._record_notify_failure(kind, "send_failed", f"{session[:48]}|{reason}"[:150])
             self.logger.warning("通知发送失败（%s）：%s", session, reason)
+        wok, wdetail = await self._post_webhook(kind, payload, text)
+        if wok:
+            return True, "已通过 webhook 送达"
+        if wdetail:
+            await self._record_notify_failure(kind, "webhook_failed", wdetail[:120])
+            self.logger.warning("通知 webhook 失败：%s", wdetail)
         self.logger.info("[通知:%s] %s", kind, text.replace("\n", " | "))
         if not session:
             return False, "未配置通知会话"
@@ -1130,6 +1177,7 @@ class QQGroupManager(Star):
         """
         try:
             self._bind_event(event)
+            self._remember_session(event)
             if await self._handle_onebot_request(event):
                 return
             group_id = event.get_group_id() or ""
@@ -1213,6 +1261,7 @@ class QQGroupManager(Star):
         """私聊入口：群管理指令只作用于群聊，这里给出明确回复（而不是静默无响应）。"""
         try:
             self._bind_event(event)
+            self._remember_session(event)
             text = normalize_command(event.message_str or "")
             name, _args = match_command(text)
             if not name:
@@ -2556,6 +2605,49 @@ class QQGroupManager(Star):
         await self.store.update_trusted(group_id, trusted)
         verb = "已加入" if name == "信任" else "已移出"
         return [f"{verb}审核豁免名单：{member_name or mask_openid(openid)}"]
+
+    def _remember_session(self, event: Any) -> None:
+        """记录最近见过的会话（群聊与私聊都要），供「通知会话」候选使用。"""
+        umo = str(getattr(event, "unified_msg_origin", "") or "").strip()
+        if not umo:
+            return
+        seen = getattr(self, "_seen_sessions", None)
+        if seen is None:
+            seen = []
+            self._seen_sessions = seen
+        if umo in seen:
+            return
+        seen.append(umo)
+        del seen[:-200]
+
+    async def sessions_candidates(self) -> dict[str, Any]:
+        """通知会话候选：平台实例 + 会话库 + 最近见过的会话（全部容错）。"""
+        db_sessions = await collect_db_sessions(self.context, limit=200)
+        entries = session_entries(self._seen_sessions, db_sessions)
+        valid = [item for item in entries if is_valid_umo(item["umo"])]
+        return {
+            "items": valid[:200],
+            "platform_ids": [item["id"] for item in platform_entries(self.context)],
+            "observed": len(self._seen_sessions),
+        }
+
+    async def notify_test_once(self) -> list[str]:
+        """发一条测试通知并返回可读结果（指令与面板按钮共用）。"""
+        session = str(self.store.get_setting("notify_session") or "").strip()
+        if not session and not str(self.store.get_setting("notify_webhook_url") or "").strip():
+            return ["未配置「管理员通知会话（会话 ID）」，也没配 webhook，请在管理台「策略」页填写。"]
+        if session and not is_valid_umo(session):
+            return [
+                "通知会话格式不合法，未发送。",
+                "应形如 平台实例ID:消息类型:会话ID（消息类型取 GroupMessage / FriendMessage / OtherMessage）；",
+                f"当前值：{session[:40]}（冒号 {session.count(':')} 个）",
+            ]
+        ok, detail = await self._notify(
+            "notify_test", {"group_id": "", "ts": to_iso(now_ts())}
+        )
+        if ok:
+            return [f"测试通知已送出（{detail or session or 'webhook'}），请确认是否收到。"]
+        return [f"发送失败：{detail}", f"目标：{session or '（仅 webhook）'}"]
 
     async def _cmd_notify_test(self) -> list[str]:
         """向配置的通知会话发一条测试消息并回显结果（仅管理员）。"""

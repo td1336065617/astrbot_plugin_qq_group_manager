@@ -170,3 +170,112 @@ def test_u9b_missing_audit_attribute_does_not_break_notify():
     ok, _detail = run(main.QQGroupManager._notify(svc, "moderation", {"group_id": "g1"}))
     assert ok is False, "没有 audit 属性也不能抛异常"
 
+
+class FakePlatform:
+    def __init__(self, pid, name=""):
+        self._meta = type("M", (), {"id": pid, "name": name or pid})()
+
+    def meta(self):
+        return self._meta
+
+
+class FakeConversation:
+    def __init__(self, umo):
+        self.user_id = umo
+
+
+class FakeDB:
+    def __init__(self, umos):
+        self.umos = list(umos)
+        self.calls = []
+
+    async def get_all_conversations(self, page=1, page_size=20):
+        self.calls.append((page, page_size))
+        return [FakeConversation(u) for u in self.umos]
+
+
+def make_ctx_with_sessions(umos, platform_ids=("爱莉希雅",), with_db=True):
+    class Ctx:
+        pass
+
+    ctx = Ctx()
+    if with_db:
+        ctx.get_db = lambda: FakeDB(umos)
+    ctx.platform_manager = type("PM", (), {"platform_insts": [FakePlatform(p) for p in platform_ids]})()
+    return ctx
+
+
+def test_u3_sessions_candidates_merges_sources_and_filters_invalid():
+    svc = make_service(GOOD)
+    svc.context = make_ctx_with_sessions([GOOD, "a:FriendMessage:x:y", "BROKEN", "a:b:c"])
+    svc._seen_sessions = ["爱莉希雅:GroupMessage:G1", GOOD]
+    data = run(main.QQGroupManager.sessions_candidates(svc))
+    umos = [item["umo"] for item in data["items"]]
+    assert GOOD in umos and "a:FriendMessage:x:y" in umos
+    assert "BROKEN" not in umos and "a:b:c" not in umos, "非法会话不得进候选"
+    assert len(umos) == len(set(umos)), "候选要去重"
+    assert data["platform_ids"] == ["爱莉希雅"]
+    assert all(item["label"] for item in data["items"]), "每项都要有展示名"
+
+
+def test_u4_sessions_candidates_tolerates_missing_db():
+    svc = make_service(GOOD)
+    svc.context = make_ctx_with_sessions([], with_db=False)
+    svc._seen_sessions = []
+    data = run(main.QQGroupManager.sessions_candidates(svc))
+    assert data["items"] == []
+    assert data["platform_ids"] == ["爱莉希雅"]
+
+
+def test_u10_webhook_not_configured_makes_no_request():
+    svc = make_service(GOOD)
+    svc.store = FakeStore({"notify_session": GOOD, "notify_webhook_url": ""})
+    calls = []
+    svc.poster = lambda url, body, timeout: calls.append((url, body, timeout)) or (True, "HTTP 200")
+    ok, _detail = run(main.QQGroupManager._notify(svc, "moderation", {"group_id": "g1"}))
+    assert ok is True
+    assert calls == [], "未配置 webhook 不得发起任何请求"
+
+
+def test_u11_webhook_delivers_when_session_fails():
+    import json as _json
+
+    svc = make_service(GOOD, reply=False)
+    svc.store = FakeStore({
+        "notify_session": GOOD,
+        "notify_webhook_url": "https://example.invalid/hook",
+        "notify_webhook_timeout": 3,
+    })
+    seen = {}
+
+    def poster(url, body, timeout):
+        seen["url"] = url
+        seen["timeout"] = timeout
+        seen["body"] = _json.loads(body.decode("utf-8"))
+        return True, "HTTP 200"
+
+    svc.poster = poster
+    ok, detail = run(main.QQGroupManager._notify(svc, "moderation", {"group_id": "g1", "reason": "测试"}))
+    assert ok is True and "webhook" in detail
+    assert seen["url"] == "https://example.invalid/hook" and seen["timeout"] == 3.0
+    assert set(seen["body"]) == {"kind", "text", "payload"}
+    assert seen["body"]["kind"] == "moderation" and "内容审核告警" in seen["body"]["text"]
+    assert seen["body"]["payload"]["reason"] == "测试"
+
+
+def test_u11b_webhook_failure_is_recorded_not_raised():
+    svc = make_service(GOOD, reply=False)
+    svc.store = FakeStore({"notify_session": GOOD, "notify_webhook_url": "https://example.invalid/hook"})
+    svc.poster = lambda url, body, timeout: (False, "HTTP 500")
+    ok, _detail = run(main.QQGroupManager._notify(svc, "moderation", {"group_id": "g1"}))
+    assert ok is False
+    codes = [c.get("err_code") for c in svc.audit.capabilities]
+    assert "send_failed" in codes and "webhook_failed" in codes, codes
+
+
+def test_u12b_notify_test_once_supports_webhook_only_setup():
+    svc = make_service("")
+    svc.store = FakeStore({"notify_session": "", "notify_webhook_url": "https://example.invalid/hook"})
+    svc.poster = lambda url, body, timeout: (True, "HTTP 200")
+    out = run(main.QQGroupManager.notify_test_once(svc))
+    assert any("送出" in line or "成功" in line for line in out), out

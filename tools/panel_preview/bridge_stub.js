@@ -14,6 +14,9 @@
     onContext: function () { return function () {}; },
     apiGet: function (endpoint, params) {
       if (endpoint === "config") return getConfig();
+      if (endpoint === 'sessions/list') {
+        return Promise.resolve({ items: [], platform_ids: [] });
+      }
       if (endpoint === "joins") {
         return getConfig().then(function (cfg) {
           var gid = (params && params.group_id) || ((cfg.groups || [])[0] || {}).group_id || "g1";

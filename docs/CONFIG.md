@@ -286,3 +286,16 @@ key = settings（值为 {"val": {...}} 包裹）。
   属于**已知漏判面**；换取的是「不因图片能力不足而整条不审」。
 - 能力**未知**（未配置 `modalities`）的模型一律按「支持图片」处理，所以上面的剔除只对**显式标注过**的模型生效。
 - 头像复核与纯图消息共用同一过滤，但头像的结局是「复核失败 → 保留原判定」，**不产生** `api_error` 事件（入群链路不写 mod_events）。
+
+## 管理员通知（notify_session / webhook）
+
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `notify_session` | 空 | 管理员通知会话（UMO）。格式：**平台实例ID:消息类型:会话ID**，消息类型取 `GroupMessage` / `FriendMessage` / `OtherMessage`（**大小写敏感**）。例：`爱莉希雅:FriendMessage:FADFF069…`。**只填最后一段会话 ID 是不合法的**，会发不出去。 |
+| `notify_webhook_url` | 空 | 可选兜底通道：会话未配置或发送失败时，POST JSON（`{kind, text, payload}`）到该地址。留空则完全不发起网络请求。 |
+| `notify_webhook_timeout` | 5 | webhook 超时（秒，范围 1~60）。 |
+
+- 面板「策略」页该字段下方会实时提示格式是否合法；候选会话来自「平台实例 + AstrBot 会话库 + 最近见过的会话」，输入框带 datalist 可选。
+- 发送失败（格式不合法 / 平台未匹配 / 抛异常 / webhook 失败）都会**写审计**（能力表 `capability=notify`，
+  `err_code` 取 `invalid_session` / `send_failed` / `webhook_failed`），并保留原有的 `[通知:kind] …` 日志回退，不会静默消失。
+- 自检方式：群内发「**群管通知测试**」（仅 AstrBot 管理员），或点面板上的「发送测试通知」按钮，会回显成功或失败原因。

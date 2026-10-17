@@ -184,6 +184,7 @@ def normalize_settings(raw: Any) -> dict[str, Any]:
         settings["action_matrix"] = default_settings()["action_matrix"]
     for key in (
         "notify_session",
+        "notify_webhook_url",
         "db_path",
         "group_rules_brief",
         "prompt_system",

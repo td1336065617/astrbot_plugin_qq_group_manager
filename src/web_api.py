@@ -212,6 +212,8 @@ class WebApi:
             (f"/{PLUGIN_NAME}/logs/clear", self.logs_clear, ["POST"], "清空日志"),
             (f"/{PLUGIN_NAME}/logs/export", self.logs_export, ["GET"], "导出日志"),
             (f"/{PLUGIN_NAME}/events/stream", self.events_stream, ["GET"], "实时日志流(SSE)"),
+            (f"/{PLUGIN_NAME}/sessions/list", self.sessions_list, ["GET"], "通知会话候选"),
+            (f"/{PLUGIN_NAME}/notify/test", self.notify_test, ["POST"], "发送测试通知"),
             (f"/{PLUGIN_NAME}/dryrun", self.dryrun, ["POST"], "审核链路试跑（不执行动作）"),
             (f"/{PLUGIN_NAME}/rules/test", self.rules_test, ["POST"], "本地规则命中测试"),
             (f"/{PLUGIN_NAME}/mutes", self.mutes, ["GET"], "禁言台账"),
@@ -279,6 +281,19 @@ class WebApi:
     # ------------------------------------------------------------------
     # 工具
     # ------------------------------------------------------------------
+    async def sessions_list(self):
+        """通知会话候选（平台实例 / 会话库 / 最近见过的会话）。"""
+        if not self._service_ready():
+            return error_response("插件尚未初始化完成，请稍后重试")
+        return json_response(await self.service.sessions_candidates())
+
+    async def notify_test(self):
+        """发送一条测试通知（面板按钮与指令共用）。"""
+        if not self._service_ready():
+            return error_response("插件尚未初始化完成，请稍后重试")
+        lines = await self.service.notify_test_once()
+        return json_response({"ok": any(("成功" in ln or "送出" in ln) for ln in lines), "lines": lines})
+
     def _service_ready(self) -> bool:
         return bool(getattr(self.service, "initialized", False))
 

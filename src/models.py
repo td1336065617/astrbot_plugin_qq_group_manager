@@ -589,6 +589,8 @@ def default_settings() -> dict[str, Any]:
         "join_answer_action": "manual",
         "join_answer_case_sensitive": False,
         "notify_session": "",
+        "notify_webhook_url": "",
+        "notify_webhook_timeout": 5,
         # 申诉闭环：默认接受申诉；误判自学习白名单默认关（避免被社工利用）
         "appeal_enabled": True,
         "appeal_auto_whitelist": False,
@@ -650,4 +652,5 @@ NUMERIC_BOUNDS: dict[str, tuple[float, float]] = {
     "spam_flood_cooldown": (0, 3600),
     "probe_full_msg_interval": (300, 86400),
     "join_pending_expire_days": (0, 90),
+    "notify_webhook_timeout": (1, 60),
 }

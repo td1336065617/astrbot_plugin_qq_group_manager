@@ -234,6 +234,10 @@ function shortId(value) {
 async function loadConfig(force) {
   if (state.config && !force) return state.config;
   state.config = await bridge.apiGet('config');
+  try {
+    const sessions = await bridge.apiGet('sessions/list');
+    state.sessions = (sessions && sessions.items) || [];
+  } catch (error) { state.sessions = []; }
   return state.config;
 }
 
@@ -1033,6 +1037,10 @@ async function viewPolicy(root) {
   const breaker = numField('熔断阈值（连续失败）', settings.circuit_break_threshold, 1, 50, 1);
   const maxMuteDays = numField('最长禁言（天）', settings.max_mute_days, 1, 30, 1);
   const notifySession = el('input', { type: 'text', value: settings.notify_session || '', placeholder: '平台实例ID:GROUP_MESSAGE:会话ID' });
+  notifySession.setAttribute('list', 'notify-sessions');
+  notifySession.setAttribute('data-sessions', String((state.sessions || []).length));
+  const notifyWebhook = el('input', { type: 'text', value: settings.notify_webhook_url || '', placeholder: '可选：遇到通知失败时的兜底 Webhook（POST JSON）' });
+  const notifyWebhookTimeout = numField('Webhook 超时（秒）', settings.notify_webhook_timeout, 1, 60, 1);
 
   const conditions = el('div', { class: 'row' });
   Object.keys(CONDITION_LABELS).forEach((key) => {
@@ -1151,6 +1159,8 @@ async function viewPolicy(root) {
       circuit_break_threshold: Number(breaker.input.value),
       max_mute_days: Number(maxMuteDays.input.value),
       notify_session: notifySession.value.trim(),
+      notify_webhook_url: notifyWebhook.value.trim(),
+      notify_webhook_timeout: Number(notifyWebhookTimeout.input.value) || 5,
       action_matrix: { violation: matrixPayload },
       send_conditions: conditionsWithRisk(
         Array.from(conditions.querySelectorAll('input'))
@@ -1256,6 +1266,9 @@ async function viewPolicy(root) {
       ? el('div', { class: 'hint' }, ['当前使用自定义提示词，本次判词更新（PROMPT_VERSION）不会生效；清空下面两个输入框即可恢复默认。'])
       : null,
     el('label', { class: 'field' }, [el('span', { text: '管理员通知会话（会话 ID）' }), notifySession]),
+    el('datalist', { id: 'notify-sessions' }, (state.sessions || []).map((item) => el('option', { value: item.umo, text: item.label || item.umo }))),
+    el('label', { class: 'field' }, [el('span', { text: '通知兜底 Webhook（可选）' }), notifyWebhook]),
+    el('div', { class: 'field-actions' }, [notifyWebhookTimeout.node, el('button', { class: 'btn', text: '发送测试通知', onclick: async function () { try { const out = await bridge.apiPost('notify/test', {}); toast(((out && out.lines) || ['无返回']).join(' / ')); } catch (error) { toast('测试失败：' + error.message); } } })]),
     state.config && state.config.notify && !state.config.notify.valid
       ? el('p', { class: 'hint', id: 'notify-warn', text: state.config.notify.hint })
       : null,
