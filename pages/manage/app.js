@@ -597,6 +597,9 @@ function cellValue(kind, key, row) {
   if (key === 'group_id' || key === 'target_openid') return shortId(value);
   if (key === 'ok') return value ? '成功' : '失败';
   if (key === 'dry_run') return value ? 'dry-run' : '';
+  if (key === 'verdict') return VERDICT_LABELS[value] || (value === null || value === undefined ? '—' : String(value));
+  if (key === 'action') return ACTION_LABELS[value] || (value ? String(value) : '—');
+  if (key === 'capability') return CAPABILITY_LABELS[value] || (value ? String(value) : '—');
   if (key === 'confidence' && typeof value === 'number') return value.toFixed(2);
   if (key === 'path') return String(value || '').replace('/v2/groups/{group_openid}', '');
   if (key === 'appeal_state') {
@@ -681,7 +684,7 @@ async function viewLogs(root) {
   ]));
 
   if (!data) {
-    root.appendChild(notice('暂无数据或加载失败。'));
+    root.appendChild(notice('暂无数据或加载失败：可稍后重试，或到「系统」页查看运行状态与最近错误。'));
     return;
   }
 
@@ -705,7 +708,7 @@ async function viewLogs(root) {
   root.appendChild(card('记录（共 ' + (data.total || 0) + ' 条）', null, [
     el('div', { class: 'table-wrap' }, [
       el('table', {}, [
-        el('thead', {}, [el('tr', {}, columns.map((column) => el('th', { text: column })))]),
+        el('thead', {}, [el('tr', {}, columns.map((column) => el('th', { text: LOG_COLUMN_LABELS[column] || column })))]),
         tbody,
       ]),
     ]),
@@ -883,6 +886,14 @@ const CAPABILITY_LABELS = {
   bot_state: '机器人状态',
   join_review: '入群审批',
 };
+const LOG_COLUMN_LABELS = {
+  ts: '时间', ts_unix: '时间', group_id: '群', sender_name: '发送者', verdict: '判定', category: '类别',
+  severity: '严重度', confidence: '置信度', reason: '原因', appeal_state: '申诉状态', action: '动作',
+  target_openid: '对象', ok: '结果', err_code: '原因码', dry_run: '试运行', method: '方法', path: '路径',
+  caller: '来源', duration_ms: '耗时(ms)', capability: '能力', note: '说明',
+};
+const VERDICT_LABELS = { allow: '合规', review: '待复核', violation: '违规' };
+
 const ACTION_LABELS = {
   warn: '警告',
   recall: '撤回',
@@ -1007,7 +1018,7 @@ async function viewPolicy(root) {
   const cacheTtl = numField('结果缓存（秒）', settings.cache_ttl, 0, 86400, 30);
   const breaker = numField('熔断阈值（连续失败）', settings.circuit_break_threshold, 1, 50, 1);
   const maxMuteDays = numField('最长禁言（天）', settings.max_mute_days, 1, 30, 1);
-  const notifySession = el('input', { type: 'text', value: settings.notify_session || '', placeholder: '如 爱莉希雅:GROUP_MESSAGE:xxxx' });
+  const notifySession = el('input', { type: 'text', value: settings.notify_session || '', placeholder: '平台实例ID:GROUP_MESSAGE:会话ID' });
 
   const conditions = el('div', { class: 'row' });
   Object.keys(CONDITION_LABELS).forEach((key) => {
@@ -1228,7 +1239,7 @@ async function viewPolicy(root) {
     el('div', { class: 'row' }, [aiThrottleLimit.node, aiThrottleWindow.node]),
   ]));
 
-  root.appendChild(card('处置矩阵', 'verdict = violation 时按 severity 执行的动作；lenient 模式只会保留警告与上报。', [matrixBox]));
+  root.appendChild(card('处置矩阵', '按严重度（1–5，1 最轻）执行的动作；lenient 模式只会保留警告与上报。', [matrixBox]));
 
   root.appendChild(card('提示词', '留空使用内置默认值；修改后建议先在下方试跑验证。', [promptHint, systemPrompt, userPrompt]));
 
