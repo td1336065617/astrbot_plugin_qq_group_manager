@@ -10,6 +10,7 @@ import asyncio
 
 import pytest
 
+from src.join_review import validate_join_text
 from src.models import (
     JOIN_GLOBAL_ONLY_KEYS,
     JOIN_GROUP_OVERRIDABLE_KEYS,
@@ -747,13 +748,18 @@ class _PvInst:
 class _Resp:
     completion_text = "ok"
 
+    def __init__(self, text="ok"):
+        self.completion_text = text
+
 
 class _ProviderCtx:
     """最小 context 替身：只实现 _llm_call / list_providers 真正用到的接口。"""
 
-    def __init__(self, ids):
+    def __init__(self, ids, reply=None, replies=None):
         self.ids = list(ids)
         self.used = []
+        self.reply = reply
+        self.replies = dict(replies or {})
 
     def get_all_providers(self):
         return [_PvInst(pid) for pid in self.ids]
@@ -763,14 +769,15 @@ class _ProviderCtx:
 
     async def llm_generate(self, *, chat_provider_id, **kwargs):
         self.used.append(chat_provider_id)
-        return _Resp()
+        fallback = self.reply if self.reply is not None else "ok"
+        return _Resp(self.replies.get(chat_provider_id, fallback))
 
     async def get_using_provider_async(self, umo=None):
         return None
 
 
-def _bind_service(plugin_main, LLMModerator, store, ids):
-    ctx = _ProviderCtx(ids)
+def _bind_service(plugin_main, LLMModerator, store, ids, reply=None, replies=None):
+    ctx = _ProviderCtx(ids, reply=reply, replies=replies)
     service = object.__new__(plugin_main.QQGroupManager)
     service.store = store
     service.context = ctx
@@ -797,10 +804,14 @@ def test_join_provider_empty_override_follows_moderation_model():
         await store.set_group_follow_global("g1", False)
         await store.update_join_overrides("g1", {"join_llm_provider_id": ""})
         service, ctx = _bind_service(
-            plugin_main, LLMModerator, store, ["A-发言审核", "B-入群全局", "SESSION"]
+            plugin_main,
+            LLMModerator,
+            store,
+            ["A-发言审核", "B-入群全局", "SESSION"],
+            reply=DECISION_OK,
         )
         await plugin_main.QQGroupManager._join_judge_call(
-            service, "系统", "用户", group_id="g1"
+            service, "系统", "用户", group_id="g1", validate=validate_join_text
         )
         assert ctx.used[-1] == "A-发言审核", "关态空值必须跟随发言审核模型"
         assert service._last_join_provider_id == "A-发言审核"
@@ -820,7 +831,11 @@ def test_llm_call_records_actual_provider_and_isolates_last_used():
             {"llm_provider_id": "A-发言审核", "join_llm_provider_id": "B-入群全局"}
         )
         service, _ctx = _bind_service(
-            plugin_main, LLMModerator, store, ["A-发言审核", "B-入群全局", "SESSION"]
+            plugin_main,
+            LLMModerator,
+            store,
+            ["A-发言审核", "B-入群全局", "SESSION"],
+            reply=DECISION_OK,
         )
         request = plugin_main.ModerationRequest(group_id="g1", text="x", umo="")
         await plugin_main.QQGroupManager._llm_call(service, request, "系统", "用户")
@@ -828,7 +843,7 @@ def test_llm_call_records_actual_provider_and_isolates_last_used():
         assert service._last_provider_id == "A-发言审核"
 
         await plugin_main.QQGroupManager._join_judge_call(
-            service, "系统", "用户", group_id="g1"
+            service, "系统", "用户", group_id="g1", validate=validate_join_text
         )
         assert service._last_provider_id == "A-发言审核", "入群链路不得覆写发言审核的最近使用"
         assert service._last_join_provider_id == "B-入群全局"
@@ -840,3 +855,194 @@ def test_llm_call_records_actual_provider_and_isolates_last_used():
 
     run(scenario())
 
+
+# --- 批 2（#2）：入群判定接校验后的回归点（T9/T10/T11/T5b）与校验单元 ---
+
+BAD_JSON = "这不是 JSON"
+DECISION_OK = '{"decision": "approve", "confidence": 0.99, "reason": "ok"}'
+AVATAR_OK = '{"risk": false, "confidence": 0.9, "reason": "ok"}'
+AVATAR_RISK = '{"risk": true, "confidence": 0.9, "reason": "疑似营销头像"}'
+
+
+def test_validate_join_text_requires_decision_field():
+    from src.join_review import validate_join_text
+
+    assert validate_join_text(DECISION_OK) is True
+    assert validate_join_text(AVATAR_OK) is False, "头像形状没有 decision，不能挂入群校验"
+    assert validate_join_text(BAD_JSON) is False
+    assert validate_join_text("") is False
+
+
+def test_t9_join_bad_json_primary_falls_back_to_valid_backup():
+    plugin_main = _plugin_main()
+    from src.moderator import LLMModerator
+
+    store = make_store(groups=("g1",))
+
+    async def scenario():
+        await store.update_settings({
+            "llm_provider_id": "A-发言审核",
+            "join_llm_provider_id": "B-入群全局",
+            "join_llm_fallback_provider_ids": ["C-入群备用"],
+        })
+        await store.set_group_follow_global("g1", False)
+        service, ctx = _bind_service(
+            plugin_main,
+            LLMModerator,
+            store,
+            ["B-入群全局", "C-入群备用", "SESSION"],
+            replies={"B-入群全局": BAD_JSON, "C-入群备用": DECISION_OK},
+        )
+        text = await plugin_main.QQGroupManager._join_judge_call(
+            service, "系统", "用户", group_id="g1", validate=validate_join_text
+        )
+        assert ctx.used[:2] == ["B-入群全局", "C-入群备用"], "主链输出不可解析必须切到备用"
+        assert "decision" in text
+
+    run(scenario())
+
+
+def test_t10_join_all_unparseable_goes_to_manual_without_auto_decision():
+    plugin_main = _plugin_main()
+    from src.join_review import JoinReviewer
+    from src.moderator import LLMModerator
+
+    store = make_store(groups=("g1",))
+
+    async def scenario():
+        await store.update_settings({
+            "llm_provider_id": "A-发言审核",
+            "join_llm_provider_id": "B-入群全局",
+            "join_llm_fallback_provider_ids": ["C-入群备用"],
+        })
+        await store.set_group_follow_global("g1", False)
+        service, _ctx = _bind_service(
+            plugin_main,
+            LLMModerator,
+            store,
+            ["B-入群全局", "C-入群备用", "SESSION"],
+            reply=BAD_JSON,
+        )
+        text = await plugin_main.QQGroupManager._join_judge_call(
+            service, "系统", "用户", group_id="g1", validate=validate_join_text
+        )
+        reviewer = JoinReviewer(api=None, store=store, audit=None)
+        decision = reviewer.parse_decision(text, {}, settings={}, mode="auto")
+        assert decision.auto is False, "全部不可解析时必须转人工，不得自动裁决"
+        assert decision.source == "manual"
+        assert decision.op == "approve"
+
+    run(scenario())
+
+
+def test_t10b_valid_json_without_decision_is_treated_as_unparseable():
+    plugin_main = _plugin_main()
+    from src.moderator import LLMModerator
+
+    store = make_store(groups=("g1",))
+
+    async def scenario():
+        await store.update_settings({
+            "llm_provider_id": "A-发言审核",
+            "join_llm_provider_id": "B-入群全局",
+            "join_llm_fallback_provider_ids": ["C-入群备用"],
+        })
+        await store.set_group_follow_global("g1", False)
+        service, ctx = _bind_service(
+            plugin_main,
+            LLMModerator,
+            store,
+            ["B-入群全局", "C-入群备用", "SESSION"],
+            replies={"B-入群全局": AVATAR_OK, "C-入群备用": DECISION_OK},
+        )
+        await plugin_main.QQGroupManager._join_judge_call(service, "系统", "用户", group_id="g1", validate=validate_join_text)
+        assert ctx.used[:2] == ["B-入群全局", "C-入群备用"], "合法 JSON 但缺 decision 也应切备用（更严更安全）"
+
+    run(scenario())
+
+
+def test_t11_join_valid_primary_stays_on_primary():
+    plugin_main = _plugin_main()
+    from src.moderator import LLMModerator
+
+    store = make_store(groups=("g1",))
+
+    async def scenario():
+        await store.update_settings({
+            "llm_provider_id": "A-发言审核",
+            "join_llm_provider_id": "B-入群全局",
+            "join_llm_fallback_provider_ids": ["C-入群备用"],
+        })
+        await store.set_group_follow_global("g1", False)
+        service, ctx = _bind_service(
+            plugin_main,
+            LLMModerator,
+            store,
+            ["B-入群全局", "C-入群备用", "SESSION"],
+            replies={"B-入群全局": DECISION_OK, "C-入群备用": DECISION_OK},
+        )
+        await plugin_main.QQGroupManager._join_judge_call(service, "系统", "用户", group_id="g1", validate=validate_join_text)
+        assert ctx.used == ["B-入群全局"], "主链可用时不得无谓切链"
+
+    run(scenario())
+
+
+def test_t5b_avatar_review_still_works_with_risk_only_output():
+    from src.join_review import JoinReviewer
+
+    async def judge_call(system_prompt, user_prompt, **kw):
+        assert "validate" not in kw, "头像那次调用不能挂入群校验"
+        return AVATAR_RISK
+
+    store = make_store(groups=("g1",))
+    reviewer = JoinReviewer(api=None, store=store, audit=None, judge_call=judge_call)
+    settings = {"join_avatar_only_below": 0.95, "join_min_confidence": 0.8}
+    decision = reviewer.parse_decision(
+        '{"decision": "approve", "confidence": 0.9, "reason": "ok"}', {}, settings=settings, mode="auto"
+    )
+    out = run(reviewer._avatar_review(decision, "/tmp/avatar.jpg", {}, settings))
+    assert out.op == "decline", "头像复核判定有风险时应收紧为拒绝（证明新校验没把它拦掉）"
+
+
+def test_t12_decision_call_site_passes_validator_avatar_call_does_not():
+    """源码契约（与仓库既有风格一致）：入群判定那次调用必须挂校验，头像那次不挂。
+
+    删掉调用点的 validate=validate_join_text 会让本用例变红。
+    """
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parent.parent / "src" / "join_review.py"
+    src = path.read_text(encoding="utf-8")
+    assert "validate=validate_join_text" in src, "入群判定调用点必须挂校验"
+    i = src.index("AVATAR_SYSTEM_PROMPT, prompt, [avatar], group_id")
+    block = src[i : i + 120]
+    assert "validate=" not in block, "头像调用不能挂入群校验（其输出没有 decision）"
+    assert "image_required=True" in block, "头像调用必须声明只能靠图片判断"
+
+
+def test_t13_call_judge_forwards_validate_to_supported_judge_call():
+    from src.join_review import JoinReviewer, validate_join_text
+
+    seen = {}
+
+    async def judge_call(system_prompt, user_prompt, **kw):
+        seen.update(kw)
+        return "x"
+
+    reviewer = JoinReviewer(
+        api=None, store=make_store(groups=("g1",)), audit=None, judge_call=judge_call
+    )
+    run(reviewer._call_judge("sys", "user", [], "g1", validate=validate_join_text))
+    assert seen.get("validate") is validate_join_text, "校验必须被透传到判定调用"
+
+
+def test_t13b_legacy_judge_call_without_validate_param_still_works():
+    from src.join_review import JoinReviewer, validate_join_text
+
+    async def legacy_judge_call(system_prompt, user_prompt, image_urls=None, group_id=""):
+        return "x"
+
+    reviewer = JoinReviewer(
+        api=None, store=make_store(groups=("g1",)), audit=None, judge_call=legacy_judge_call
+    )
+    assert run(reviewer._call_judge("sys", "user", [], "g1", validate=validate_join_text)) == "x"

@@ -130,6 +130,17 @@ class JoinStats:
         }
 
 
+def validate_join_text(text: str) -> bool:
+    """入群判定专用校验：能 extract_json_object 且含 decision 字段。
+
+    与 parse_decision 基于同一个 extract_json_object；本校验更严（额外要求 decision）——
+    parse_decision 对缺 decision 的 JSON 会默认 decline。
+    头像复核的输出是 {risk,confidence,reason}（没有 decision），所以头像那次调用不挂本校验。
+    """
+    payload = extract_json_object(text or "")
+    return bool(payload) and "decision" in payload
+
+
 class JoinReviewer:
     """入群申请轮询 + 判定 + 审批。"""
 
@@ -531,7 +542,11 @@ class JoinReviewer:
         first_images = [avatar] if (avatar and avatar_mode == "always") else []
         try:
             raw = await self._call_judge(
-                JOIN_SYSTEM_PROMPT, user_prompt, first_images, group_id
+                JOIN_SYSTEM_PROMPT,
+                user_prompt,
+                first_images,
+                group_id,
+                validate=validate_join_text,
             )
         except Exception as exc:
             self.stats.failed += 1
