@@ -42,4 +42,5 @@ def test_panel_renders_three_views_without_runtime_error():
     # 逐视图断言：防止「三个视图渲染冒烟通过」这句话在循环被删掉后仍然为真（第四轮审计抓到的 P0）
     for label in ("总览", "策略", "入群审批"):
         assert f"[OK] {label}" in out, f"冒烟没有真正渲染「{label}」视图：\n{out}"
-    assert "[OK] 360px 视口" in out, f"360px 宽度断言没有执行：\n{out}"
+    assert "[OK] 360px 视口（策略）" in out, f"策略页 360px 断言没有执行：\n{out}"
+    assert "[OK] 360px 视口（入群审批）" in out, f"入群审批页 360px 断言没有执行：\n{out}"
