@@ -75,3 +75,11 @@ def test_doc_index_declares_current_version():
         f"docs/文档索引.md 的校对基准不是当前版本 {version}"
     )
     assert "v0.15." in index, "索引里没有版本行"
+
+
+def test_readme_declares_current_version():
+    """README 顶部的「文档校对」标头也必须跟版本走 —— 它曾停在 v0.15.16 好几版（守门只查 CONFIG 与索引时漏掉）。"""
+    readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
+    assert f"文档校对：v{_plugin_version()}" in readme, (
+        f"README 的文档校对标头不是当前版本 {_plugin_version()}"
+    )

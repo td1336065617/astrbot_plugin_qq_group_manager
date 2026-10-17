@@ -52,7 +52,7 @@ def _menu_html() -> str:
     render = _render_module()
     return render.menu_html(
         version="0.0.0-smoke",
-        requested_at="2026-10-18 04:00",
+        requested_at="2026-10-17 04:00",
         requester="冒烟",
         group_name="冒烟群",
     )
