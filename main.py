@@ -97,6 +97,7 @@ from .src.models import (
 from .src.moderator import (
     LLMModerator,
     ModerationRequest,
+    NoImageCapableProvider,
     choose_provider_chain,
     classify_failure,
     looks_like_refusal,
@@ -545,6 +546,13 @@ class QQGroupManager(Star):
             return True
         return True
 
+    def _filter_image_required(self, chain: list[str]) -> list[str]:
+        """只需要图片才能判断时，剔除「显式声明不支持图片输入」的候选。
+
+        能力未知（未设置 modalities）仍按支持处理，避免因未知而漏审。
+        """
+        return [pid for pid in chain if self._provider_supports_image(pid)]
+
 
     def available_provider_ids(self) -> list[str]:
         """当前可用的对话模型 ID 列表（供审核模型选择与校验）。"""
@@ -727,6 +735,7 @@ class QQGroupManager(Star):
         provider_setting: str = "llm_provider_id",
         provider_override: str | None = None,
         validate: Callable[[str], bool] | None = None,
+        image_required: bool | None = None,
     ) -> str:
         """调用 AstrBot 已配置的 LLM（复用官方 SDK）。
 
@@ -763,6 +772,28 @@ class QQGroupManager(Star):
             image_ok = [pid for pid in chain if self._provider_supports_image(pid)]
             rest = [pid for pid in chain if pid not in image_ok]
             chain = image_ok + rest  # 支持图片的排前；其余留作最后兜底（不失审）
+        # 只靠图片判断的调用（纯图消息、头像复核）：剔除「显式声明不支持图片输入」的候选。
+        # 能力未知（未配置 modalities）仍按支持处理，避免因未知而漏审；若一个都不剩，
+        # 宁可"不调用、记 api_error"也不送进纯文本模型盲判（那才是真漏放）。
+        if image_required is None:
+            image_required = bool(list(request.image_urls)) and not (request.text or "").strip()
+        if image_required:
+            capable = self._filter_image_required(chain)
+            if not capable:
+                audit = getattr(self, "audit", None)
+                if audit is not None:
+                    try:
+                        audit.record_capability(
+                            group_id=request.group_id,
+                            capability="image_filter",
+                            ok=False,
+                            err_code="no_image_provider",
+                            note=",".join(chain[:6]),
+                        )
+                    except Exception:  # pragma: no cover - 审计失败不影响审核
+                        pass
+                raise NoImageCapableProvider("无支持图片的候选，未调用模型")
+            chain = capable
         circuit_check = getattr(self.moderator, "provider_circuit_open", None)
         if circuit_check is not None:
             usable = [pid for pid in chain if not circuit_check(pid)]
@@ -801,9 +832,10 @@ class QQGroupManager(Star):
                     # 计进去会在阈值后被熔断，导致后续安全拒绝被静默回退掉（那等于把违规放进来）。
                     if should_fallback(code):
                         hop_failed_code = code
-                    if self.audit is not None:
+                    audit = getattr(self, "audit", None)
+                    if audit is not None:
                         try:
-                            self.audit.record_capability(
+                            audit.record_capability(
                                 group_id=request.group_id,
                                 capability="llm_judge",
                                 ok=False,
@@ -832,9 +864,10 @@ class QQGroupManager(Star):
                             return text
                         hop_failed_code = "parse_error"
                         last_text = text
-                        if self.audit is not None:
+                        audit = getattr(self, "audit", None)
+                        if audit is not None:
                             try:
-                                self.audit.record_capability(
+                                audit.record_capability(
                                     group_id=request.group_id,
                                     capability="llm_hop",
                                     ok=False,
@@ -885,6 +918,9 @@ class QQGroupManager(Star):
         user_prompt: str,
         image_urls: list[str] | None = None,
         group_id: str = "",
+        *,
+        image_required: bool = False,
+        validate: Callable[[str], bool] | None = None,
     ) -> str:
         """入群申请审核的 LLM 调用（无事件上下文；与内容审核共享日预算/熔断/限频/并发）。"""
         blocked = self.moderator.gate_reason()
@@ -909,6 +945,8 @@ class QQGroupManager(Star):
                 request, system_prompt, user_prompt,
                 provider_setting="join_llm_provider_id",
                 provider_override=provider_override,
+                image_required=image_required,
+                validate=validate,
             )
             ok = True
             return text

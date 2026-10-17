@@ -572,8 +572,15 @@ class JoinReviewer:
         user_prompt: str,
         image_urls: list[str] | None = None,
         group_id: str = "",
+        *,
+        image_required: bool = False,
+        validate: Callable[[str], bool] | None = None,
     ) -> str:
-        """调用判定模型；按签名兼容只接受部分参数的旧替身/自定义实现。"""
+        """调用判定模型；按签名兼容只接受部分参数的旧替身/自定义实现。
+
+        image_required：该次调用「只能靠图片判断」（头像复核）时为 True，用于剔除
+        显式不支持图片的候选；validate：该次调用的输出校验（入群判定用；头像不用）。
+        """
         if self.judge_call is None:
             raise RuntimeError("未配置可用的对话模型")
         wanted: dict[str, Any] = {}
@@ -581,6 +588,10 @@ class JoinReviewer:
             wanted["image_urls"] = list(image_urls)
         if group_id:
             wanted["group_id"] = group_id
+        if image_required:
+            wanted["image_required"] = True
+        if validate is not None:
+            wanted["validate"] = validate
         accepts = self._judge_accepts()
         if accepts is not None:
             wanted = {key: value for key, value in wanted.items() if key in accepts}
@@ -608,7 +619,9 @@ class JoinReviewer:
             )
         )
         try:
-            raw = await self._call_judge(AVATAR_SYSTEM_PROMPT, prompt, [avatar], group_id)
+            raw = await self._call_judge(
+                AVATAR_SYSTEM_PROMPT, prompt, [avatar], group_id, image_required=True
+            )
         except Exception as exc:
             if self.logger is not None:
                 self.logger.debug("头像复核失败（保留原判定）：%s", exc)

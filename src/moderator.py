@@ -734,6 +734,9 @@ class LLMModerator:
                     self.provider_call(request, system_prompt, user_prompt),  # type: ignore[misc]
                     timeout=budget,
                 )
+        except NoImageCapableProvider as exc:
+            # 能力过滤为空：不是 provider 的失败，不计连续失败、不触发熔断
+            return Verdict.review(str(exc) or "无支持图片的候选，未调用模型", source="llm", stage="api_error")
         except Exception as exc:
             self._record_failure(f"{type(exc).__name__}: {exc}")
             return Verdict.review(f"模型调用失败：{type(exc).__name__}", source="llm", stage="api_error")
@@ -875,6 +878,13 @@ def looks_like_refusal(text: str) -> bool:
         return False
     lowered = stripped.lower()
     return any(marker in lowered for marker in TEXT_REFUSAL_MARKERS)
+
+
+class NoImageCapableProvider(RuntimeError):
+    """消息（或头像）只能靠图片判断，但候选链里没有一个支持图片输入的模型。
+
+    单独成类：judge() 必须把它与 provider 调用失败区分开（不计失败、不触发熔断）。
+    """
 
 
 def validate_llm_text(text: str) -> bool:
