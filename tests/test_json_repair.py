@@ -89,3 +89,37 @@ def test_repair_cannot_manufacture_a_verdict():
     assert verdict.parse_error is True
     assert verdict.stage == "parse_error"
     assert verdict.verdict == "review"
+
+#: 4 条生产样例的"形状"回归（原样内容已脱敏为中性文本，只保留缺开引号的形状）
+PROD_SHAPED = [
+    # ① analysis 中间字段漏开引号（生产 id=8010 形态：三个 analysis 之一）
+    '{\n  "analysis": 这条消息只是发了个表情，属于群内常见互动,",\n  "verdict": "allow",\n'
+    '  "category": "无",\n  "severity": 1,\n  "confidence": 0.98,\n  "reason": "无违规内容",\n  "suggested_action": "none"\n}',
+    # ② analysis 末字段漏开引号
+    '{\n  "verdict": "allow",\n  "category": "无",\n  "severity": 1,\n  "confidence": 0.95,\n'
+    '  "reason": "日常闲聊",\n  "analysis": 群里在接梗，没有人被引导做事"\n}',
+    # ③ analysis 值里含中文标点与空格（容易被误伤的形态）
+    '{\n  "analysis": 内容包含 冒号: 与逗号, 以及引号以外的标点,",\n  "verdict": "review",\n'
+    '  "category": "其他",\n  "severity": 2,\n  "confidence": 0.6,\n  "reason": "信息不足",\n  "suggested_action": "none"\n}',
+    # ④ reason 漏开引号（生产 id=8010 的原始形态）
+    '{\n  "analysis": "只是情绪表达",\n  "verdict": "allow",\n  "category": "无",\n  "severity": 1,\n'
+    '  "confidence": 0.98,\n  "reason": 仅为发送一张普通表情包，无任何违规内容或行为引导。",\n  "suggested_action": "none"\n}',
+]
+
+
+def test_production_shaped_samples_are_repaired():
+    """4 条生产样例形状：修复后必须拿到真判定，且修复只补引号、不改值内容。"""
+    expect_key = ["analysis", "analysis", "analysis", "reason"]
+    expect_verdict = ["allow", "allow", "review", "allow"]
+    for index, raw in enumerate(PROD_SHAPED):
+        assert extract_json_object(raw) is None, (index, "本该解析失败")
+        fixed = repair_json_text(raw)
+        payload = extract_json_object(fixed)
+        assert payload is not None, (index, "修复后仍无法解析")
+        key = expect_key[index]
+        assert payload[key] and not payload[key].startswith(" "), (index, "值被破坏", payload[key])
+        assert '"' not in payload[key], (index, "值里不该残留引号")
+        verdict = parse_verdict(raw)
+        assert verdict.parse_error is False, (index, "应被救回")
+        assert verdict.stage == "judged", (index, verdict.stage)
+        assert verdict.verdict == expect_verdict[index], (index, verdict.verdict)
