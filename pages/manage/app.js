@@ -319,13 +319,24 @@ async function viewDashboard(root) {
   clear(root);
   const stages = stats.stages || {};
   const degraded = stats.degraded_total || 0;
+  const legacyTimeout = stats.legacy_timeout || 0;
+  const lowConfidence = stats.low_confidence || 0;
+  const judgedEffective = stats.judged_effective != null ? stats.judged_effective : (stages.judged || 0);
+  const missed = degraded + legacyTimeout;
+  const providerRows = (stats.providers || []).filter((row) => row.provider_id);
+  const parseErrByProvider = providerRows.filter((row) => row.stage === 'parse_error');
+  const providerHint = providerRows.length
+    ? '按模型：' + providerRows.slice(0, 4).map((row) => (row.provider_id.split('/').pop() || row.provider_id) + ' ' + row.count).join('  ·  ')
+      + (parseErrByProvider.length ? '（其中解析失败 ' + parseErrByProvider.reduce((acc, row) => acc + row.count, 0) + ' 条）' : '')
+    : '';
   root.appendChild(card('判定构成（近 1 天）', '「判定成功」= AI 给出了结论；「没审成」= 超时/熔断/解析失败等没能得出结论', [
     el('div', { class: 'grid cols-4' }, [
-      statCard('判定成功', (stages.judged || 0) + (stages.judged_kv || 0), '含降级解析 ' + (stages.judged_kv || 0) + ' 条'),
+      statCard('判定成功', judgedEffective + (stages.judged_kv || 0), lowConfidence ? '其中低置信 ' + lowConfidence + ' 条（处置已封顶）' : '含降级解析 ' + (stages.judged_kv || 0) + ' 条'),
       statCard('规则/刷屏/人工', (stages.rule || 0) + (stages.flood || 0) + (stages.manual || 0)),
-      statCard('没审成', degraded, '超时/熔断/低置信等'),
-      statCard('可用性', stats.events_total ? Math.round(((stats.events_total - degraded) / stats.events_total) * 100) + '%' : '-'),
+      statCard('没审成', missed, legacyTimeout ? '含历史超时 ' + legacyTimeout + ' 条' : '超时/熔断/解析失败'),
+      statCard('可用性', stats.events_total ? Math.round(((stats.events_total - missed) / stats.events_total) * 100) + '%' : '-'),
     ]),
+    providerHint ? el('div', { class: 'hint', text: providerHint }) : null,
     el('div', { class: 'hint', text: Object.keys(stages).map((key) => (STAGE_LABELS[key] || key) + ' ' + stages[key]).join('  ·  ') || '暂无数据' }),
   ]));
   root.appendChild(card('运行状态', '插件当前配置与平台连通性', [

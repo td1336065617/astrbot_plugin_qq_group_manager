@@ -83,6 +83,40 @@ def test_events_actions_and_summary(tmp_path):
     run(scenario())
 
 
+def test_summary_reports_provider_and_low_confidence_dimensions(tmp_path):
+    """B2（R3-3/R3-4）：总览要能回答「哪个模型解析失败多」「低置信多少条」「历史超时多少条」。"""
+
+    async def scenario():
+        store = await make_store(tmp_path)
+        store.record_event(
+            group_id="g1", source="llm", verdict="violation", category="广告引流",
+            severity=3, confidence=0.4, reason="低置信", provider_id="A/x", stage="judged",
+        )
+        store.record_event(
+            group_id="g1", source="llm", verdict="allow", category="无",
+            severity=1, confidence=0.9, provider_id="A/x", stage="judged",
+        )
+        store.record_event(
+            group_id="g1", source="llm", verdict="review", category="无", severity=1,
+            confidence=0.0, reason="TimeoutError: 模型调用失败", provider_id="B/y", stage="judged",
+        )
+        store.record_event(
+            group_id="g1", source="llm", verdict="review", category="无", severity=1,
+            confidence=0.0, reason="模型未按 JSON 输出（已降级）", provider_id="B/y", stage="parse_error",
+        )
+        await store.flush()
+        summary = await store.summary(1, low_confidence_below=0.7)
+        assert summary["low_confidence"] == 1, "非 allow 且低置信只算真判定的那条"
+        assert summary["legacy_timeout"] == 1, "0.15.3 前的超时行要单独数出来"
+        assert summary["judged_effective"] == summary["stages"]["judged"] - 1, "历史超时要从判定成功里扣除"
+        providers = {(row["provider_id"], row["stage"]): row["count"] for row in summary["providers"]}
+        assert providers[("B/y", "parse_error")] == 1
+        assert providers[("A/x", "judged")] == 2
+        await store.close()
+
+    run(scenario())
+
+
 def test_capability_log_and_db_info(tmp_path):
     async def scenario():
         store = await make_store(tmp_path)

@@ -1225,8 +1225,16 @@ class AuditStore:
         total = int(total_rows[0]["total"]) if total_rows else 0
         return {"items": items, "total": total, "page": page, "page_size": page_size}
 
-    async def summary(self, days: int = 1) -> dict[str, Any]:
-        """近 N 天概览统计（供 WebUI 总览使用）。"""
+    async def summary(self, days: int = 1, *, low_confidence_below: float = 0.7) -> dict[str, Any]:
+        """近 N 天概览统计（供 WebUI 总览使用）。
+
+        B2（R3-3/R3-4）：新增两个维度 ——
+        · providers：按 provider × stage 的计数（用来定位「哪个模型的解析失败多」）；
+        · low_confidence：真判定（stage=judged）里「非 allow 且 0 < 置信度 < 阈值」的条数（confidence=0 的行单独算历史异常），
+          取代旧的 low_confidence *stage*（A2 之后新代码不再产生该 stage，历史值仍在 stages 里可见）；
+        · legacy_timeout / judged_effective：0.15.3 之前的超时行被写成 stage=judged 且 confidence=0，
+          这里单独数出来并从「判定成功」里扣除，避免数字虚高；degraded_total 不变（历史超时另计）。
+        """
         since = now_ts() - max(1, int(days)) * 86400
         events = await self._fetch_all(
             "SELECT verdict, COUNT(*) AS n FROM mod_events WHERE ts_unix >= ?" + AI_EVENT_EXCLUDE + " GROUP BY verdict",
@@ -1253,6 +1261,26 @@ class AuditStore:
             "FROM mod_events WHERE ts_unix >= ?" + AI_EVENT_EXCLUDE + " GROUP BY 1 ORDER BY n DESC",
             (since,),
         )
+        providers = await self._fetch_all(
+            "SELECT ifnull(provider_id, " + chr(39) + chr(39) + ") AS provider_id, "
+            "ifnull(stage, " + chr(39) + chr(39) + ") AS stage, COUNT(*) AS n "
+            "FROM mod_events WHERE ts_unix >= ?" + AI_EVENT_EXCLUDE + " GROUP BY 1, 2 ORDER BY n DESC LIMIT 12",
+            (since,),
+        )
+        low_conf = await self._fetch_all(
+            "SELECT COUNT(*) AS n FROM mod_events WHERE ts_unix >= ? AND stage = " + chr(39) + "judged" + chr(39)
+            + " AND verdict != " + chr(39) + "allow" + chr(39) + " AND confidence > 0 AND confidence < ?"
+            + AI_EVENT_EXCLUDE,
+            (since, float(low_confidence_below)),
+        )
+        legacy_rows = await self._fetch_all(
+            "SELECT COUNT(*) AS n FROM mod_events WHERE ts_unix >= ? AND stage = " + chr(39) + "judged" + chr(39)
+            + " AND confidence = 0 AND (reason LIKE " + chr(39) + "%TimeoutError%" + chr(39)
+            + " OR reason LIKE " + chr(39) + "%模型调用失败%" + chr(39) + ")" + AI_EVENT_EXCLUDE,
+            (since,),
+        )
+        low_confidence_total = int(low_conf[0]["n"]) if low_conf else 0
+        legacy_timeout = int(legacy_rows[0]["n"]) if legacy_rows else 0
         by_verdict = {str(row["verdict"]): int(row["n"]) for row in events}
         by_stage = {str(row["stage"]): int(row["n"]) for row in stages}
         # review 语义拆分：真判定（judged/judged_kv）与规则/刷屏/人工 vs 降级（没审成）
@@ -1269,6 +1297,17 @@ class AuditStore:
             "verdicts": by_verdict,
             "stages": by_stage,
             "degraded_total": degraded_total,
+            "providers": [
+                {
+                    "provider_id": str(row["provider_id"]),
+                    "stage": str(row["stage"]),
+                    "count": int(row["n"]),
+                }
+                for row in providers
+            ],
+            "low_confidence": low_confidence_total,
+            "legacy_timeout": legacy_timeout,
+            "judged_effective": max(0, int(by_stage.get("judged", 0)) - legacy_timeout),
             "events_total": sum(by_verdict.values()),
             "actions": by_action,
             "api_errors": [

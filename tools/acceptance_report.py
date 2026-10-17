@@ -56,6 +56,16 @@ def build_report(db: pathlib.Path, since_deploy: str, days: int = 1) -> dict:
             "select stage, count(*) from mod_events where ts < ? group by 1 order by 2 desc limit 6",
             (since_deploy,),
         )
+        try:
+            post_parse_by_provider = _rows(
+                conn,
+                "select ifnull(provider_id, ''), count(*) from mod_events "
+                "where ts >= ? and stage = 'parse_error' group by 1 order by 2 desc limit 5",
+                (since_deploy,),
+            )
+        except sqlite3.Error:
+            # 老库可能没有 provider_id 列：验收工具必须能在旧库上跑通（退化为空）
+            post_parse_by_provider = []
         post_mutes_with_id = _rows(
             conn,
             "select count(*), sum(case when event_id is not null then 1 else 0 end) from mutes "
@@ -127,6 +137,7 @@ def build_report(db: pathlib.Path, since_deploy: str, days: int = 1) -> dict:
             "stages": sorted({str(row[0]) for row in post_events}),
         },
         "pre_top_stages": [[str(r[0]), int(r[1])] for r in pre_events],
+        "parse_error_by_provider": [[str(r[0]), int(r[1])] for r in post_parse_by_provider],
         "join_states": [[str(r[0]), int(r[1])] for r in join_states],
         "checks": checks,
         "warnings": warnings,
@@ -149,6 +160,8 @@ def main(argv: list[str]) -> int:
 
     post = report['post']
     print(f"部署后窗口 {report['since_deploy']}：事件 {post['events']} 条（降级 {post['degraded']}）")
+    parse_err = report.get("parse_error_by_provider") or []
+    print("  按 provider 的解析失败：" + ("；".join(f"{pid or '(空)'} {n} 条" for pid, n in parse_err) if parse_err else "无"))
     print(f"  备用模型生效次数 {post['fallback_used']}；最大延迟 {post['latency_max_ms']}ms；stage {post['stages']}")
     print(f"  部署前对照 stage top：{report['pre_top_stages']}")
     print(f"  入群申请：{report['join_states']}")

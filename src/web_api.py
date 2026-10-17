@@ -426,7 +426,10 @@ class WebApi:
             return error_response("插件尚未初始化完成，请稍后重试")
         days = self._int_arg("days", 1, 1, 90)
         audit = self.service.audit
-        stats = await audit.summary(days) if audit is not None else {}
+        threshold = float(self.service.store.get_setting("llm_min_confidence", 0.7) or 0.7)
+        stats = (
+            await audit.summary(days, low_confidence_below=threshold) if audit is not None else {}
+        )
         return json_response(
             {
                 "runtime": self.service.runtime_status(),
