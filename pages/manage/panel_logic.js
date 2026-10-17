@@ -99,3 +99,28 @@ export function matchProviders(items, keyword) {
     return hay.indexOf(text) >= 0;
   });
 }
+
+
+/** B3（P1-e）：风险分阈值只住在 send_conditions 的 risk>=N 里 —— 面板从条件串读，不再有影子键。 */
+export function riskThresholdFromConditions(conditions, fallback) {
+  const list = Array.isArray(conditions) ? conditions : [];
+  for (let i = 0; i < list.length; i += 1) {
+    const item = String(list[i] || '');
+    if (item.indexOf('risk>=') === 0) {
+      const value = Number(item.slice('risk>='.length));
+      if (Number.isFinite(value)) return value;
+    }
+  }
+  return typeof fallback === 'number' ? fallback : 60;
+}
+
+/** B3（P1-e）：启用时把 risk>=N 写进条件串，关闭时移除；其它条件原样保留、顺序不重排。 */
+export function conditionsWithRisk(conditions, enabled, value) {
+  const list = (Array.isArray(conditions) ? conditions : [])
+    .map(function (item) { return String(item || ''); })
+    .filter(function (item) { return item && item.indexOf('risk>=') !== 0; });
+  if (!enabled) return list;
+  const n = Math.max(1, Math.round(Number(value) || 0));
+  return list.concat(['risk>=' + String(n)]);
+}
+

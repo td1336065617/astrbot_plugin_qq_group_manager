@@ -17,6 +17,8 @@ import {
   providerDisplay,
   selectionLabel,
   toggleProvider,
+  conditionsWithRisk,
+  riskThresholdFromConditions,
 } from './panel_logic.js';
 
 const bridge = window.AstrBotPluginPage;
@@ -963,7 +965,6 @@ async function viewPolicy(root) {
   const allowNoFull = checkField('允许未开启「接收全部消息」时启用审核（不建议）', settings.allow_without_full_msg);
   const blockLlm = checkField('违规消息阻断后续 LLM 对话', settings.block_llm_on_violation);
   const repeatMul = checkField('重复违规时长累加（≤3 倍）', settings.repeat_offense_multiplier);
-  const autoBlacklist = checkField('自动拉黑（内邀能力）', settings.auto_blacklist);
   const autoRemove = checkField('自动移除成员（内邀能力，风险高）', settings.auto_remove);
   /* AI 能力（工具） */
   const aiToolsOn = checkField('开启 AI 工具（只读：群信息 / 审核状态 / 统计 / 日志）', settings.qqgm_ai_tools_enabled !== false);
@@ -1042,10 +1043,21 @@ async function viewPolicy(root) {
   riskBox.checked = (settings.send_conditions || []).some((item) => String(item).indexOf('risk>=') === 0);
   riskBox.dataset.key = '__risk__';
   conditions.appendChild(el('label', { class: 'switch' }, [riskBox, el('span', { text: '本地风险分达到阈值' })]));
-  const riskField = numField('风险分阈值（达到即送审）', settings.risk_send_threshold || 60, 10, 100, 5);
+  const riskEnabled = (settings.send_conditions || []).some((item) => String(item).indexOf('risk>=') === 0);
+  const riskThreshold = riskThresholdFromConditions(settings.send_conditions, 60);
+  const riskField = numField('风险分阈值（达到即送审）', riskThreshold, 10, 100, 5);
+  const riskHint = el('span', { class: 'muted', text: riskEnabled ? '当前生效：' + String(riskThreshold) : '未启用' });
+  const syncRiskHint = () => {
+    riskHint.textContent = riskBox.checked ? '当前生效：' + String(Number(riskField.input.value) || 60) : '未启用';
+    riskField.input.disabled = riskBox.checked ? null : 'disabled';
+  };
+  riskBox.onchange = syncRiskHint;
+  riskField.input.oninput = syncRiskHint;
+  syncRiskHint();
+  conditions.appendChild(riskField.node);
+  conditions.appendChild(riskHint);
 
   /* 规则增强参数 */
-  const normalizeOn = checkField('启用文本归一化（识别形近字/插符号/全角变体）', settings.normalize_enabled !== false);
   const homoglyphOn = checkField('启用形近字表', settings.homoglyph_enabled !== false);
   const templateOn = checkField('启用广告模板（动作词 × 诱饵词）', settings.template_enabled !== false);
   const pinyinOn = checkField('启用同音匹配（需已安装 pypinyin）', settings.pinyin_enabled);
@@ -1120,7 +1132,6 @@ async function viewPolicy(root) {
       allow_without_full_msg: allowNoFull.input.checked,
       block_llm_on_violation: blockLlm.input.checked,
       repeat_offense_multiplier: repeatMul.input.checked,
-      auto_blacklist: autoBlacklist.input.checked,
       auto_remove: autoRemove.input.checked,
       mode: modeSelect.value,
       llm_provider_id: providerSelect.value,
@@ -1138,12 +1149,13 @@ async function viewPolicy(root) {
       max_mute_days: Number(maxMuteDays.input.value),
       notify_session: notifySession.value.trim(),
       action_matrix: { violation: matrixPayload },
-      send_conditions: Array.from(conditions.querySelectorAll('input'))
-        .filter((box) => box.checked && box.dataset.key !== '__risk__')
-        .map((box) => box.dataset.key)
-        .concat(riskBox.checked ? ['risk>=' + String(riskField.input.value)] : []),
-      risk_send_threshold: Number(riskField.input.value),
-      normalize_enabled: normalizeOn.input.checked,
+      send_conditions: conditionsWithRisk(
+        Array.from(conditions.querySelectorAll('input'))
+          .filter((box) => box.checked && box.dataset.key !== '__risk__')
+          .map((box) => box.dataset.key),
+        riskBox.checked,
+        riskField.input.value
+      ),
       homoglyph_enabled: homoglyphOn.input.checked,
       template_enabled: templateOn.input.checked,
       pinyin_enabled: pinyinOn.input.checked,
@@ -1195,8 +1207,8 @@ async function viewPolicy(root) {
 
   root.appendChild(card('规则增强（变体识别 / 风险分）',
     '归一化让规则"看得见"形近字、插符号、全角与拼音变体；风险分把多个弱信号累加，达到阈值即送审（不影响纯闲聊）。', [
-    el('div', { class: 'row' }, [normalizeOn.node, homoglyphOn.node, templateOn.node, pinyinOn.node]),
-    el('div', { class: 'row' }, [fuzzyDist.node, riskField.node, dupWindow.node, dupMembers.node]),
+    el('div', { class: 'row' }, [homoglyphOn.node, templateOn.node, pinyinOn.node, fuzzyDist.node]),
+    el('div', { class: 'row' }, [dupWindow.node, dupMembers.node]),
     el('div', { class: 'row' }, [spamOn.node, spamCount.node, spamWindow.node, spamCooldown.node]),
     el('div', { class: 'row' }, [autoEnforce.node]),
     pinyinHint,
@@ -1235,7 +1247,7 @@ async function viewPolicy(root) {
     el('div', { class: 'row' }, [imageMax.node]),
     imageHint,
     el('div', { class: 'row' }, [qpmField.node, concurrency.node, budget.node, cacheTtl.node, breaker.node]),
-    el('div', { class: 'row' }, [maxMuteDays.node, repeatMul.node, autoBlacklist.node, autoRemove.node]),
+    el('div', { class: 'row' }, [maxMuteDays.node, repeatMul.node, autoRemove.node]),
     (systemPrompt.value.trim() || userPrompt.value.trim())
       ? el('div', { class: 'hint' }, ['当前使用自定义提示词，本次判词更新（PROMPT_VERSION）不会生效；清空下面两个输入框即可恢复默认。'])
       : null,

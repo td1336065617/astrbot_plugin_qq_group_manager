@@ -60,8 +60,8 @@
 | `image_review` | off | 图片是否送审：off 不送 / with_text 仅图文混排送图 / always 纯图片也送 |
 | `image_review_max` | 1 | 单条消息最多送审几张图（1~4） |
 | `send_conditions` | rule_hit + risk>=60 | 送审条件；`risk>=N` 表示本地风险分达到 N 才送审 |
-| `risk_send_threshold` | 60 | 风险分阈值（WebUI 勾选"本地风险分达到阈值"时使用） |
-| `normalize_enabled` | true | 文本归一化（形近字/插符号/全角/拼音），关闭即回到旧行为 |
+| ~~`risk_send_threshold`~~ | — | **已删除**（0.15.9）：风险分阈值只住在 `send_conditions` 的 `risk>=N` 里，面板直接从条件串读取 |
+| ~~`normalize_enabled`~~ | — | **已删除**（0.15.9）：文本归一化（形近字/插符号/全角/拼音）一直是常开的，开关从未被读取 |
 | `homoglyph_enabled` | true | 形近字表 |
 | `template_enabled` | true | 广告模板规则 |
 | `pinyin_enabled` | false | 同音匹配（需环境已安装 pypinyin） |

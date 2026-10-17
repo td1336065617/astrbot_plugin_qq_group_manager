@@ -52,3 +52,11 @@ const cfg = ["gone/stale"];
 const items = L.mergeProviders(cfg, [{ id: "x", model: "m1" }]);
 const dec = L.decorateProviders(cfg, items);
 eq("decorate_missing", dec.map((i) => i.missing), [true]);
+
+// B3（P1-e）：阈值单一真源
+eq("risk_from_conditions", L.riskThresholdFromConditions(["rule_hit", "risk>=70"], 60), 70);
+eq("risk_from_conditions_default", L.riskThresholdFromConditions(["rule_hit"], 60), 60);
+eq("risk_write", L.conditionsWithRisk(["rule_hit"], true, 85), ["rule_hit", "risk>=85"]);
+eq("risk_off_removes", L.conditionsWithRisk(["rule_hit", "risk>=85"], false, 85), ["rule_hit"]);
+eq("risk_replace_keeps_order", L.conditionsWithRisk(["rule_hit", "risk>=10", "flood"], true, 20), ["rule_hit", "flood", "risk>=20"]);
+
