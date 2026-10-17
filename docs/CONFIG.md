@@ -1,5 +1,9 @@
 # 配置说明（面向用户）
 
+> **校对版本：v0.15.16（2026-10-18）**｜与插件 0.15.16 同步。
+> 完整的 **86 项配置项速查**见文末「附：完整配置项速查」；面板改不到的键见「10. 只能直接改 KV 的键」。
+> 本文按 WebUI 视图组织，读完「5. 关键配置项」+ 速查表基本就够了。
+
 配置入口：**AstrBot WebUI → 插件管理 → QQ群管理 → 管理台**。
 配置保存在 AstrBot 插件 KV 中（`settings` / `groups` / `keywords` / `trusted` 等键），审计数据保存在
 `data/plugin_data/astrbot_plugin_qq_group_manager/moderation.db`（SQLite）。
@@ -111,7 +115,7 @@
 - 群内指令：`审核模式 标准` 加 `dry-run 关闭`（单独发送 `dry-run` 查看当前状态，`dry-run 开启` 随时回退）。
 - 管理台：「策略」页把默认模式改为标准、取消勾选「dry-run」，保存。
 
-## 6.1 图片与语音怎么审
+### 6.1 图片与语音怎么审
 
 ### 6.2 变体与黑话识别能力（v0.4+）
 
@@ -141,7 +145,7 @@
 > 若动作被模式或 dry-run 拦下，插件日志会输出「以下动作未执行：['recall']（模式=lenient，dry_run=True）」，
 > 群内警告文案也会附带一句说明。
 
-## 6. 审核链路（策略 / 关键词视图）
+## 7. 审核链路（策略 / 关键词视图）
 
 | 视图 | 内容 |
 | --- | --- |
@@ -153,7 +157,7 @@
 | 策略 → 试跑 | 粘贴一段文本，完整走「规则 → LLM → 动作规划」但不执行任何动作 |
 | 关键词 | 硬规则（命中即处置）/ 软规则（提升关注）两栏，支持正则、作用域（全局/单群）、启用开关、命中测试 |
 
-## 6.3 申诉闭环与误判白名单（申诉视图）
+### 7.1 申诉闭环与误判白名单（申诉视图）
 
 - **提交申诉**：成员**回复被处置的消息**发送 `申诉 <理由>`。插件优先按 Reply 关联到那条消息对应的审核事件；
   取不到引用时才回退"该成员在本群最近一条被处置记录"（插件日志会打印 `申诉 Reply 关联失败 … 回退最近一条`）。
@@ -166,7 +170,7 @@
   白名单条目在管理台「规则增强」页展示并可**撤销**；该开关默认关闭，避免被社工利用。
 - **只降权/只跳过送审**：域名白名单只取消 link 分，误判白名单只跳过送审；两者都**不豁免规则命中与处置矩阵**。
 
-## 7. 成员与入群（成员与禁言 / 入群审批视图）
+## 8. 成员与入群（成员与禁言 / 入群审批视图）
 
 - **禁言台账**：展示本地记录（成员、到期时间、来源、理由），支持单条/批量解禁与「与平台对账」。
 - **黑名单**：平台黑名单（内邀接口）与本地黑名单分栏展示；平台不可用时自动落到本地（仅影响插件判定）。
@@ -175,7 +179,7 @@
 - **入群审批**：待审列表（含头像、QQ 等级、账号年龄、验证消息、风险提示、机器建议）→ 通过/拒绝（可填理由、可同时拉黑）；「立即拉取申请」手动触发轮询；
   下方展示官方策略列表（启停 / 全量扫描 / 白名单维护）与冲突提示。
 
-### 7.1 入群申请人画像（0.12+）
+### 8.1 入群申请人画像（0.12+）
 
 | 配置项 | 默认 | 说明 |
 | --- | --- | --- |
@@ -209,7 +213,7 @@
 - 门槛只在字段**确有值**时命中：协议端不返回等级/注册时间时，等级与年龄规则不会触发。
 - 头像复核结论**只能把「拟放行」收紧为拒绝**，不会反向放行；模型不支持图片时自动降级为纯文本判定。
 
-### 7.2 入群分群规则：跟随全局与本群配置（0.14+）
+### 8.2 入群分群规则：跟随全局与本群配置（0.14+）
 
 入群审批页顶部有一个醒目的**「跟随全局配置（不含审批模式）」总开关**，每个群一份：
 
@@ -236,7 +240,7 @@
 `groups[group_id]` 内，不新增顶层键；旧版本数据缺这两个字段时按「跟随全局」处理（升级零迁移）。
 **回退注意**：回退旧版本前请恢复 KV 备份，旧版本会忽略这两个字段。
 
-## 8. 常见问题
+## 9. 常见问题
 
 **Q：为什么群信息显示"平台未返回"？**
 A：群信息与群状态接口目前**仅对白名单机器人开放**（`err_code=11253`），需要向 QQ 开放平台申请；不影响其它功能。
@@ -250,7 +254,7 @@ A：这 5 个接口官方标注"该能力正在内邀接入中"。插件会调�
 **Q：日志数据存在哪里？会不会无限增长？**
 A：`data/plugin_data/astrbot_plugin_qq_group_manager/moderation.db`，按上表的保留期每日自动裁剪，可在工具页手动裁剪/备份/清空。
 
-## 只能直接改 KV 的键（面板暂无控件）
+## 10. 只能直接改 KV 的键（面板暂无控件）
 
 以下键在 default_settings() 里有效，但面板目前**不提供控件**（2026-10-17 复核实测，N5）：
 
@@ -287,7 +291,7 @@ key = settings（值为 {"val": {...}} 包裹）。
 - 能力**未知**（未配置 `modalities`）的模型一律按「支持图片」处理，所以上面的剔除只对**显式标注过**的模型生效。
 - 头像复核与纯图消息共用同一过滤，但头像的结局是「复核失败 → 保留原判定」，**不产生** `api_error` 事件（入群链路不写 mod_events）。
 
-## 管理员通知（notify_session / webhook）
+## 11. 管理员通知（notify_session / webhook）
 
 | 键 | 默认 | 说明 |
 |---|---|---|
@@ -299,3 +303,146 @@ key = settings（值为 {"val": {...}} 包裹）。
 - 发送失败（格式不合法 / 平台未匹配 / 抛异常 / webhook 失败）都会**写审计**（能力表 `capability=notify`，
   `err_code` 取 `invalid_session` / `send_failed` / `webhook_failed`），并保留原有的 `[通知:kind] …` 日志回退，不会静默消失。
 - 自检方式：群内发「**群管通知测试**」（仅 AstrBot 管理员），或点面板上的「发送测试通知」按钮，会回显成功或失败原因。
+
+## 附：完整配置项速查（校对到本版本，共 88 项）
+
+> 默认值直接取自 `src/models.py::default_settings()`；`tests/test_docs_config_coverage.py` 会检查「每个键都被写到」，漏写就红。
+> 面板能直接改的项见上面各视图章节；`10. 只能直接改 KV 的键` 一节列出面板改不到的键。
+
+### 总开关与模式
+
+| 键 | 默认 | 说明 |
+| --- | --- | --- |
+| `enabled` | `true` | 插件总开关（关掉后完全不工作） |
+| `dry_run` | `true` | 演练模式：只记录 + 警告，不真的撤回 / 禁言 |
+| `dry_run_warn` | `true` | 演练期间是否仍然发警告与上报 |
+| `default_moderation_enabled` | `false` | 新群默认是否开启审核（false ⇒ 新群默认不审） |
+| `allow_without_full_msg` | `false` | 允许在群未开启「接收全部消息」时也启用审核（不建议，会漏大量非 @ 消息） |
+| `mode` | `lenient` | 处置强度：strict / standard / lenient / log_only |
+| `sample_rate` | `1.0` | 送审抽样比例（1.0 = 全部送审；调低可省模型调用） |
+| `send_conditions` | `["rule_hit", "risk>=60"]` | 送审条件（rule_hit / risk>=N / has_link / long_text / new_member / flood …），一条都不选按 rule_hit 处理 |
+
+### 变体识别与防刷屏
+
+| 键 | 默认 | 说明 |
+| --- | --- | --- |
+| `homoglyph_enabled` | `true` | 变体识别：形近字 / 插符号 / 全角等还原 |
+| `template_enabled` | `true` | 变体识别：广告模板匹配 |
+| `pinyin_enabled` | `false` | 变体识别：拼音还原（默认关，误伤略高） |
+| `fuzzy_max_distance` | `1` | 模糊匹配允许的编辑距离（0 = 关闭模糊） |
+| `auto_enforce_normalized` | `false` | 变体命中是否直接处置（默认只送审，交给模型判） |
+| `duplicate_flood_window` | `300` | 重复内容统计窗口（秒） |
+| `duplicate_flood_members` | `3` | 多少人发同一内容才算「多人重复」 |
+| `spam_flood_enabled` | `true` | 防刷屏总开关（同一个人短时间重复发同一内容） |
+| `spam_flood_count` | `5` | 刷屏判定条数（达到 2 倍按更重一档处置） |
+| `spam_flood_window` | `60` | 刷屏统计窗口（秒） |
+| `spam_flood_cooldown` | `300` | 同档刷屏动作冷却（秒，0 = 关闭；升档不受冷却限制） |
+| `flood_threshold` | `8` | 消息洪水阈值（短时间内条数） |
+| `domain_allowlist_enabled` | `true` | 竞赛域名白名单降权（白名单内链接不计 link 分，仍会送审） |
+| `domain_allowlist` | `["ac.nowcoder.com", "nowcoder.com", "codeforces.com", "atcoder.jp", "luogu.com.cn", "luogu.com", "xcpc.link", "xcpc.ink", "vjudge.net", "codechef.com", "icpc.global", "hdu.edu.cn"]` | 白名单域名列表（按点边界后缀匹配） |
+
+### 模型与限额
+
+| 键 | 默认 | 说明 |
+| --- | --- | --- |
+| `llm_min_confidence` | `0.7` | 全局置信度门槛（按群可用「审核阈值」覆盖） |
+| `llm_timeout` | `20` | 单次模型调用超时（秒） |
+| `llm_qpm_per_group` | `20` | 每群每分钟最多调用多少次模型 |
+| `llm_max_concurrency` | `4` | 全局同时进行的模型调用上限 |
+| `llm_daily_budget` | `0` | 每日模型调用预算（0 = 不限） |
+| `llm_provider_id` | `空` | 审核用模型；留空跟随会话默认模型 |
+| `llm_fallback_provider_ids` | `[]` | 备用模型列表：主模型超时 / 限流 / 服务端错误或输出无法解析时按顺序重试 |
+| `image_review` | `off` | 图片是否送审：off / with_text（仅图文混排）/ always |
+| `image_review_max` | `1` | 单条消息最多解析几张图 |
+| `cache_ttl` | `600` | 判定结果缓存时间（秒） |
+| `circuit_break_threshold` | `5` | 连续失败多少次触发熔断（熔断期间跳过模型） |
+| `llm_context_messages` | `8` | 送审时附带多少条上下文消息 |
+| `block_llm_on_violation` | `false` | 违规后是否阻断该用户后续的模型对话 |
+
+### 处置与成员
+
+| 键 | 默认 | 说明 |
+| --- | --- | --- |
+| `action_matrix` | `{"violation": {"1": ["warn"], "2": ["warn"], "3": ["warn", "mute"], "4": ["recall", "mute"], "5": ["recall", "mute", "report"]}}` | 处置矩阵：严重度 1–5 分别执行什么动作（面板「策略」页可改） |
+| `mute_steps` | `{"3": 600, "4": 3600, "5": 86400}` | 各严重度对应的禁言时长（秒） |
+| `max_mute_days` | `30` | 禁言时长上限（天） |
+| `repeat_offense_multiplier` | `true` | 重复违规时长累加（最多 3 倍） |
+| `auto_remove` | `false` | 自动移除成员（需内邀能力，风险高） |
+
+### AI 工具（给模型用）
+
+| 键 | 默认 | 说明 |
+| --- | --- | --- |
+| `qqgm_ai_tools_enabled` | `true` | 允许模型使用群管工具（查群信息 / 审核状态等） |
+| `qqgm_ai_tools_read_enabled` | `true` | 允许只读工具 |
+| `qqgm_ai_tools_write_enabled` | `false` | 允许写工具（禁言 / 解禁等，默认关） |
+| `qqgm_ai_throttle_limit` | `5` | 每窗口内最多几次工具调用 |
+| `qqgm_ai_throttle_window` | `60` | 工具调用限流窗口（秒） |
+| `qqgm_ai_respect_lenient` | `true` | lenient 模式下写工具是否降级为只报告 |
+
+### 入群审批
+
+| 键 | 默认 | 说明 |
+| --- | --- | --- |
+| `join_llm_provider_id` | `空` | 入群审批使用的模型；留空跟随发言审核模型（可按群单独配置） |
+| `join_llm_fallback_provider_ids` | `[]` | 入群审批的备用模型列表（主模型失败时按顺序重试） |
+| `join_review_mode` | `off` | 入群审批模式：off / strict / standard / manual |
+| `join_poll_interval` | `60` | 拉取入群申请的间隔（秒） |
+| `join_min_confidence` | `0.8` | 入群判定置信度门槛（低于则转人工） |
+| `join_decline_blacklist` | `true` | 拒绝入群时是否自动拉黑 |
+| `join_trust_inviter` | `false` | 邀请人可信时是否放宽（默认关） |
+| `join_profile_enabled` | `true` | 是否启用申请人画像门槛（OneBot 通道） |
+| `join_min_account_days` | `0` | 账号最小年龄（天，0 = 不限） |
+| `join_min_qq_level` | `0` | QQ 等级下限（0 = 不限） |
+| `join_require_qid` | `false` | 是否要求设置 QID |
+| `join_gate_action` | `decline` | 画像不达标时的动作：decline / manual |
+| `join_profile_missing` | `manual` | 拿不到画像时的处理：manual（转人工）/ allow / decline |
+| `join_avatar_review` | `off` | 头像复核：off / always / below（低置信度时） |
+| `join_avatar_only_below` | `0.95` | 头像复核的触发阈值（置信度低于此值才复核） |
+| `join_profile_cache_days` | `7` | 画像缓存天数 |
+| `join_pending_expire_days` | `7` | 待审申请多久自动标记过期（天，0 = 不清理） |
+| `join_profile_qpm` | `30` | 画像查询每分钟次数上限 |
+| `join_profile_concurrency` | `2` | 画像查询并发上限 |
+| `join_expected_answer` | `空` | 入群问题期望答案（精确匹配） |
+| `join_answer_keywords` | `[]` | 入群问题关键词白名单 |
+| `join_answer_regex` | `空` | 入群问题正则 |
+| `join_answer_action` | `manual` | 答案不匹配时的动作：manual / decline |
+| `join_answer_case_sensitive` | `false` | 答案比对是否区分大小写 |
+
+### 管理员通知
+
+| 键 | 默认 | 说明 |
+| --- | --- | --- |
+| `notify_session` | `空` | 管理员通知会话（格式 平台实例ID:消息类型:会话ID） |
+| `notify_webhook_url` | `空` | 通知兜底 webhook（留空则不发任何请求） |
+| `notify_webhook_timeout` | `5` | webhook 超时（秒） |
+
+### 申诉闭环
+
+| 键 | 默认 | 说明 |
+| --- | --- | --- |
+| `appeal_enabled` | `true` | 是否接受成员申诉 |
+| `appeal_auto_whitelist` | `false` | 申诉通过是否自动加入误判白名单 |
+| `appeal_notify` | `true` | 处理结果是否回执申诉人 |
+
+### 审计库与存储
+
+| 键 | 默认 | 说明 |
+| --- | --- | --- |
+| `db_path` | `空` | 审计库路径（留空用默认位置） |
+| `retention_events_days` | `30` | 审核事件保留天数 |
+| `retention_api_days` | `7` | 平台调用记录保留天数 |
+| `retention_capability_days` | `30` | 能力探测记录保留天数 |
+| `retention_join_days` | `90` | 入群申请记录保留天数 |
+| `store_text` | `false` | 是否保存消息正文（隐私敏感，开启后库会明显变大） |
+| `audit_queue_maxsize` | `5000` | 审计写入队列上限（满时丢弃最旧的） |
+
+### 提示词与运维
+
+| 键 | 默认 | 说明 |
+| --- | --- | --- |
+| `group_rules_brief` | `空` | 本群规则简述（注入提示词用，留空用默认） |
+| `prompt_system` | `空` | 自定义系统提示词（留空用内置） |
+| `prompt_user` | `空` | 自定义用户提示词模板（留空用内置） |
+| `menu_image` | `true` | 「群管理菜单」是否以图片卡片返回 |
+| `probe_full_msg_interval` | `1800` | 「接收全部消息」能力探测间隔（秒） |

@@ -7,6 +7,27 @@
 
 ---
 
+## [0.15.16] - 2026-10-18
+
+### 文档：把落后几个版本的说明补齐，并加测试守门
+
+- 用户反馈「有的文档落后几个版本、文档是给人读的」。逐份核对结果：
+  - `docs/CONFIG.md` 有 22 个配置项**从未被提及**（spam_flood 四项、llm_timeout / llm_daily_budget / cache_ttl / circuit_break_threshold、
+    block_llm_on_violation、action_matrix、max_mute_days、qqgm_ai_* 六项、repeat_offense_multiplier、auto_remove、join_pending_expire_days、
+    prompt_system / prompt_user），并且有**两个 `## 6.` 重复编号**。
+  - `menu.md`（群内菜单文案）停在 2026-09-29，缺 0.15.13 新增的「群管通知测试」。
+  - `intro.md`、`README.md` 没写管理员通知 / webhook / 通知测试 / 失败可见性。
+  - `docs/设计方案.md`、`docs/判定规则优化方案.md` 只校对到 0.15.9。
+- 修复：
+  - `docs/CONFIG.md`：修正重复编号与标题层级，顶部加「校对版本」，文末新增**全部 88 项配置速查表**
+    （默认值直接 import `default_settings()` 生成，不再手抄，避免再次漂移）。
+  - `README.md`：顶部加校对行；新增「🔔 管理员通知」功能块；指令表补 `群管通知测试`；
+    配置表补 notify 三项与 `store_text`；「相关文档」改成带用途的索引表。
+  - `menu.md` 补「群管通知测试」；`intro.md` 新增「管理员通知」一节。
+  - 新增 `docs/文档索引.md`：每份文档的用途、校对版本，以及「改了什么要同步哪份文档」。
+  - `docs/设计方案.md` / `docs/判定规则优化方案.md`：追加「文档校对与增量（0.15.10–0.15.16）」章节。
+- 新增守门测试 `tests/test_docs_config_coverage.py`（3 条）：每个配置项必须出现在 CONFIG.md、速查表必须列出每个键、
+  CONFIG.md 顶部校对版本必须与 `metadata.yaml` 一致 ⇒ 以后文档再落后会直接测试红。
 ## [0.15.15] - 2026-10-18
 
 ### 优化：策略页卡片顺序（按使用频率 + 因果链）
