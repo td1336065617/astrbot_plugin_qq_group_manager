@@ -58,5 +58,29 @@ eq("risk_from_conditions", L.riskThresholdFromConditions(["rule_hit", "risk>=70"
 eq("risk_from_conditions_default", L.riskThresholdFromConditions(["rule_hit"], 60), 60);
 eq("risk_write", L.conditionsWithRisk(["rule_hit"], true, 85), ["rule_hit", "risk>=85"]);
 eq("risk_off_removes", L.conditionsWithRisk(["rule_hit", "risk>=85"], false, 85), ["rule_hit"]);
+
+/* ---------------- 通知会话候选（显式选择器） ---------------- */
+const SESSIONS = [
+  { umo: "爱莉希雅:GroupMessage:C8D6272C4A0007EE7AF4A8EF4E781AA9", label: "爱莉希雅 · 群聊 C8D6272C4A00" },
+  { umo: "爱莉希雅2:FriendMessage:418181734", label: "爱莉希雅2 · 私聊 418181734" },
+];
+
+eq("label_kind", L.sessionOptionLabel(SESSIONS[0]), "爱莉希雅 · 群聊 C8D6272C4A00…");
+eq("label_short", L.sessionOptionLabel(SESSIONS[1]), "爱莉希雅2 · 私聊 418181734");
+eq("label_weird", L.sessionOptionLabel({ umo: "BROKEN" }), "BROKEN");
+eq("shortid_keeps_colons", L.shortSessionId("a:FriendMessage:x:y", 12), "x:y");
+eq("shortid_truncates", L.shortSessionId("a:FriendMessage:0123456789ABCDEF", 4), "0123…");
+
+eq("filter_none", L.filterSessions(SESSIONS, "").length, 2);
+eq("filter_platform", L.filterSessions(SESSIONS, "爱莉希雅2").length, 1);
+eq("filter_by_umo", L.filterSessions(SESSIONS, "C8D6272C").length, 1);
+eq("filter_by_kind", L.filterSessions(SESSIONS, "私聊").length, 1);
+eq("filter_case", L.filterSessions(SESSIONS, "friendmessage").length, 1);
+eq("filter_miss", L.filterSessions(SESSIONS, "zzz").length, 0);
+eq("filter_bad_input", L.filterSessions(null, "x").length, 0);
+
+eq("hint_empty", L.sessionPickerHint(0, 0).indexOf("暂无候选") >= 0, true);
+eq("hint_miss", L.sessionPickerHint(31, 0).indexOf("没有匹配") >= 0, true);
+eq("hint_count", L.sessionPickerHint(31, 12).indexOf("31") >= 0, true);
 eq("risk_replace_keeps_order", L.conditionsWithRisk(["rule_hit", "risk>=10", "flood"], true, 20), ["rule_hit", "flood", "risk>=20"]);
 

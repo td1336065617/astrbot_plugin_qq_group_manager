@@ -127,3 +127,46 @@ export function conditionsWithRisk(conditions, enabled, value) {
   return list.concat(['risk>=' + String(n)]);
 }
 
+
+
+/* ---------------- 通知会话候选（显式选择器用） ---------------- */
+
+const SESSION_KIND_LABELS = { GroupMessage: "群聊", FriendMessage: "私聊", OtherMessage: "其他" };
+
+/** 会话 ID 太长时截断展示（完整值仍用于填入）。 */
+export function shortSessionId(umo, keep) {
+  const parts = String(umo || "").split(":");
+  if (parts.length < 3) return String(umo || "");
+  const sid = parts.slice(2).join(":");
+  const n = keep || 12;
+  return sid.length > n ? sid.slice(0, n) + "…" : sid;
+}
+
+/** 候选展示名：平台实例 · 消息类型 短会话 ID。 */
+export function sessionOptionLabel(item) {
+  const umo = String((item && item.umo) || "");
+  const parts = umo.split(":");
+  if (parts.length >= 3) {
+    const kind = SESSION_KIND_LABELS[parts[1]] || parts[1];
+    return parts[0] + " · " + kind + " " + shortSessionId(umo, 12);
+  }
+  return String((item && item.label) || umo);
+}
+
+/** 关键词过滤：匹配原始 UMO、后端标签或展示名。 */
+export function filterSessions(items, keyword) {
+  const list = Array.isArray(items) ? items : [];
+  const key = String(keyword || "").trim().toLowerCase();
+  if (!key) return list.slice();
+  return list.filter((item) => {
+    const hay = (String(item && item.umo) + " " + String(item && item.label) + " " + sessionOptionLabel(item)).toLowerCase();
+    return hay.indexOf(key) >= 0;
+  });
+}
+
+/** 选择器底部提示：空列表 / 无匹配 / 计数。 */
+export function sessionPickerHint(total, shown) {
+  if (!total) return "暂无候选：先在群里或私聊发一条消息，然后点「刷新候选」。";
+  if (!shown) return "没有匹配的会话（共 " + total + " 条候选）。";
+  return "共 " + total + " 条候选，显示 " + shown + " 条。";
+}

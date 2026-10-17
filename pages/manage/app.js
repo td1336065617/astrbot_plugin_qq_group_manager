@@ -10,15 +10,18 @@
  */
 
 import {
+  conditionsWithRisk,
   decorateProviders,
+  filterSessions,
   matchProviders,
   mergeProviders,
   moveProvider,
   providerDisplay,
-  selectionLabel,
-  toggleProvider,
-  conditionsWithRisk,
   riskThresholdFromConditions,
+  selectionLabel,
+  sessionOptionLabel,
+  sessionPickerHint,
+  toggleProvider,
 } from './panel_logic.js';
 
 const bridge = window.AstrBotPluginPage;
@@ -231,13 +234,20 @@ function shortId(value) {
   return text.length > 14 ? text.slice(0, 6) + '…' + text.slice(-4) : text;
 }
 
+/** 拉取通知会话候选（进入策略页时强制刷新，避免插件重启后列表过期）。容错：异常一律退化为空列表。 */
+async function refreshSessions(force) {
+  if (!force && Array.isArray(state.sessions)) return state.sessions;
+  try {
+    const data = await bridge.apiGet('sessions/list');
+    state.sessions = (data && data.items) || [];
+    state.platformIds = (data && data.platform_ids) || [];
+  } catch (error) { state.sessions = []; state.platformIds = []; }
+  return state.sessions;
+}
+
 async function loadConfig(force) {
   if (state.config && !force) return state.config;
   state.config = await bridge.apiGet('config');
-  try {
-    const sessions = await bridge.apiGet('sessions/list');
-    state.sessions = (sessions && sessions.items) || [];
-  } catch (error) { state.sessions = []; }
   return state.config;
 }
 
@@ -960,6 +970,7 @@ function checkField(label, value) {
 
 async function viewPolicy(root) {
   const config = await loadConfig();
+  await refreshSessions(true);
   const settings = Object.assign({}, config.settings || {});
   const options = config.options || {};
   clear(root);
@@ -1037,10 +1048,41 @@ async function viewPolicy(root) {
   const breaker = numField('熔断阈值（连续失败）', settings.circuit_break_threshold, 1, 50, 1);
   const maxMuteDays = numField('最长禁言（天）', settings.max_mute_days, 1, 30, 1);
   const notifySession = el('input', { type: 'text', value: settings.notify_session || '', placeholder: '平台实例ID:GROUP_MESSAGE:会话ID' });
-  notifySession.setAttribute('list', 'notify-sessions');
   notifySession.setAttribute('data-sessions', String((state.sessions || []).length));
   const notifyWebhook = el('input', { type: 'text', value: settings.notify_webhook_url || '', placeholder: '可选：遇到通知失败时的兜底 Webhook（POST JSON）' });
   const notifyWebhookTimeout = numField('Webhook 超时（秒）', settings.notify_webhook_timeout, 1, 60, 1);
+
+  /* 通知会话选择器：显式候选列表（原生 datalist 只显示 UMO 原文，且被 label 包裹时要点两次才弹） */
+  const pickerSearch = el('input', { type: 'text', id: 'notify-picker-search', placeholder: '搜索：平台实例 / 群号 / 会话 ID' });
+  const pickerList = el('div', { class: 'picker-list', id: 'notify-picker-list' }, []);
+  const pickerHint = el('p', { class: 'hint', id: 'notify-picker-hint' });
+  const pickerBox = el('div', { class: 'picker', id: 'notify-picker', hidden: 'hidden' }, [pickerSearch, pickerList, pickerHint]);
+  function paintPicker(keyword) {
+    const all = state.sessions || [];
+    const shown = filterSessions(all, keyword);
+    clear(pickerList);
+    shown.slice(0, 200).forEach((item) => {
+      const chosen = item.umo === String(notifySession.value || '').trim();
+      pickerList.appendChild(el('button', {
+        type: 'button',
+        class: chosen ? 'picker-item active' : 'picker-item',
+        title: item.umo,
+        text: sessionOptionLabel(item),
+        onclick: function () {
+          notifySession.value = item.umo;
+          paintPicker(pickerSearch.value);
+          toast('已选择会话：' + item.umo);
+        },
+      }));
+    });
+    const instances = (state.platformIds || []).join('、');
+    pickerHint.textContent = sessionPickerHint(all.length, shown.length) + (instances ? '（平台实例：' + instances + '）' : '');
+  }
+  function togglePicker() {
+    pickerBox.hidden = !pickerBox.hidden;
+    if (!pickerBox.hidden) { paintPicker(pickerSearch.value); pickerSearch.focus(); }
+  }
+  pickerSearch.oninput = function () { paintPicker(pickerSearch.value); };
 
   const conditions = el('div', { class: 'row' });
   Object.keys(CONDITION_LABELS).forEach((key) => {
@@ -1265,8 +1307,15 @@ async function viewPolicy(root) {
     (systemPrompt.value.trim() || userPrompt.value.trim())
       ? el('div', { class: 'hint' }, ['当前使用自定义提示词，本次判词更新（PROMPT_VERSION）不会生效；清空下面两个输入框即可恢复默认。'])
       : null,
-    el('label', { class: 'field' }, [el('span', { text: '管理员通知会话（会话 ID）' }), notifySession]),
-    el('datalist', { id: 'notify-sessions' }, (state.sessions || []).map((item) => el('option', { value: item.umo, text: item.label || item.umo }))),
+    el('div', { class: 'field-block' }, [
+      el('span', { class: 'field-label', text: '管理员通知会话（会话 ID）' }),
+      el('div', { class: 'field-inline' }, [
+        notifySession,
+        el('button', { type: 'button', class: 'btn small ghost', id: 'notify-picker-toggle', text: '选择会话…', onclick: togglePicker }),
+        el('button', { type: 'button', class: 'btn small ghost', text: '刷新候选', onclick: async function () { await refreshSessions(true); paintPicker(pickerSearch.value); toast('已刷新候选：' + (state.sessions || []).length + ' 条'); } }),
+      ]),
+      pickerBox,
+    ]),
     el('label', { class: 'field' }, [el('span', { text: '通知兜底 Webhook（可选）' }), notifyWebhook]),
     el('div', { class: 'field-actions' }, [notifyWebhookTimeout.node, el('button', { class: 'btn', text: '发送测试通知', onclick: async function () { try { const out = await bridge.apiPost('notify/test', {}); toast(((out && out.lines) || ['无返回']).join(' / ')); } catch (error) { toast('测试失败：' + error.message); } } })]),
     state.config && state.config.notify && !state.config.notify.valid

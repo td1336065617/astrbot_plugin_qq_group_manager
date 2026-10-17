@@ -15,7 +15,13 @@
     apiGet: function (endpoint, params) {
       if (endpoint === "config") return getConfig();
       if (endpoint === 'sessions/list') {
-        return Promise.resolve({ items: [], platform_ids: [] });
+        return Promise.resolve({
+          items: [
+            { umo: "爱莉希雅:GroupMessage:C8D6272C4A0007EE7AF4A8EF4E781AA9", label: "爱莉希雅 · 群聊 C8D6272C4A00" },
+            { umo: "爱莉希雅:FriendMessage:FADFF069C2349B38B93EC67E37D101A0", label: "爱莉希雅 · 私聊 FADFF069C234" },
+          ],
+          platform_ids: ["爱莉希雅"],
+        });
       }
       if (endpoint === "joins") {
         return getConfig().then(function (cfg) {

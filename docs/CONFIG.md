@@ -295,7 +295,7 @@ key = settings（值为 {"val": {...}} 包裹）。
 | `notify_webhook_url` | 空 | 可选兜底通道：会话未配置或发送失败时，POST JSON（`{kind, text, payload}`）到该地址。留空则完全不发起网络请求。 |
 | `notify_webhook_timeout` | 5 | webhook 超时（秒，范围 1~60）。 |
 
-- 面板「策略」页该字段下方会实时提示格式是否合法；候选会话来自「平台实例 + AstrBot 会话库 + 最近见过的会话」，输入框带 datalist 可选。
+- 面板「策略」页该字段下方会实时提示格式是否合法；点「选择会话…」打开候选列表（来源：平台实例 + AstrBot 会话库 + 最近见过的会话，可搜索、点击填入），另有「刷新候选」按钮（进入策略页会自动刷新，插件重启后也不会拿到过期列表）。
 - 发送失败（格式不合法 / 平台未匹配 / 抛异常 / webhook 失败）都会**写审计**（能力表 `capability=notify`，
   `err_code` 取 `invalid_session` / `send_failed` / `webhook_failed`），并保留原有的 `[通知:kind] …` 日志回退，不会静默消失。
 - 自检方式：群内发「**群管通知测试**」（仅 AstrBot 管理员），或点面板上的「发送测试通知」按钮，会回显成功或失败原因。

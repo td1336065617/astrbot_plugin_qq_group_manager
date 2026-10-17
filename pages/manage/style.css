@@ -232,3 +232,12 @@ input:disabled, select:disabled, textarea:disabled {
 .picker-tag { color: var(--muted); font-size: 12px; white-space: nowrap; }
 
 .row > .switch { flex: 0 0 auto; }
+
+
+/* 通知会话选择器（候选列表） */
+.picker { margin-top: 8px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; }
+.picker input { width: 100%; }
+.picker-list { max-height: 220px; overflow: auto; margin-top: 8px; display: flex; flex-direction: column; gap: 4px; }
+.picker-item { text-align: left; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--text); cursor: pointer; font-size: 12px; word-break: break-all; }
+.picker-item:hover { filter: brightness(1.15); }
+.picker-item.active { border-color: var(--muted); font-weight: 600; }
