@@ -26,19 +26,23 @@
   - `intro.md` 新增「管理员通知」一节。
   - 修正本批自己引入的一处不一致：初版把「群管通知测试」写进了 `menu.md`，但群内菜单的真源是
     `src/commands.py::MENU_SECTIONS`（文字版与图片版菜单都由它渲染），于是出现「文档说菜单里有、机器人却不显示」。
-    已撤回该行 —— 该指令本身仍然可用（面板有「发送测试通知」按钮，README / intro / CONFIG 也都写了它），
+    已撤回该行 —— 通知自检仍然可用（面板「发送测试通知」按钮；该指令已在 0.15.16 连同常量与分派一起删除），
     只是不进群内菜单：菜单列的是「在本群里能做的事」，而通知通道是插件级配置（与哪个群无关）。
     并新增 `tests/test_menu_doc_parity.py`（2 条）守住两者一致：menu.md 里出现的命令词，真源里必须有。
   - 新增 `docs/文档索引.md`：每份文档的用途、校对版本，以及「改了什么要同步哪份文档」。
   - `docs/设计方案.md` / `docs/判定规则优化方案.md`：追加「文档校对与增量（0.15.10–0.15.16）」章节。
 - 新增守门测试 `tests/test_docs_config_coverage.py`（4 条）：每个配置项必须出现在 CONFIG.md、速查表必须列出每个键、
   速查表行集合必须与 `default_settings()` 完全相等、顶部校对版本必须与 `metadata.yaml` 一致。
+- 删除 0.15.13 遗留的死指令「群管通知测试」：它只进了 `NOTIFY_TEST_COMMANDS` 常量、没进 `ALL_COMMANDS` 注册表，
+  实测 `match_command` 返回 `("", [])`，永远匹配不到；连同常量、导入、分派分支与实现方法一起删除。
+  通知自检只保留管理台「发送测试通知」按钮（POST `/notify/test` → `notify_test_once()`）。
+- 新增 `tests/test_commands_registry.py`（2 条）：`*_COMMANDS` 里的名字必须能被 `match_command` 解析、`ALL_COMMANDS` 不得有出处不明的名字；
+  并修好 `tests/test_menu_doc_parity.py`（补 `import re`、分词补括号），复跑变异：伪造菜单条目与删光关键词行都能被抓住。
 - 互审逐条核对内容后修掉 8 处**说明写错**（漏写能被测试拦住，写错只能靠人读）：`audit_queue_maxsize` 队列满时丢弃的是**新来的**那条；
   `join_review_mode` 的取值是 `human`（不是 manual）；`join_avatar_review` 是 `off / approve_only / always`；
   `join_profile_missing` / `join_gate_action` / `join_answer_action` 都含 `pass`；`llm_min_confidence` 只看全局（不按群覆盖）；
   `group_rules_brief` 是「全局默认，群级可覆盖」。并把「86 项」更正为 **88 项**。
 - 恢复本批初版误删的 README「开发」段两条说明（测试宿主需 Python ≥ 3.12；`tests/test_audit_write_order.py` 运行期列序用例恒 skip）。
-  CONFIG.md 顶部校对版本必须与 `metadata.yaml` 一致 ⇒ 以后文档再落后会直接测试红。
 ## [0.15.15] - 2026-10-18
 
 ### 优化：策略页卡片顺序（按使用频率 + 因果链）
