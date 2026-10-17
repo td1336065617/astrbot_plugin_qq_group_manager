@@ -30,7 +30,7 @@ _STYLE = """
   }
   .emoji { font-family: "Noto Color Emoji", "Segoe UI Emoji", sans-serif; font-variant-emoji: emoji; }
   .page {
-    width: %(width)dpx; margin: 0 auto; padding: 46px 60px 56px; position: relative; overflow: hidden;
+    width: 100%%; max-width: %(width)dpx; margin: 0 auto; padding: 46px 60px 56px; position: relative; overflow: hidden;
     background:
       radial-gradient(circle at 92%% 8%%, rgba(255,177,218,.26), transparent 24%%),
       radial-gradient(circle at 6%% 90%%, rgba(145,223,247,.20), transparent 25%%),

@@ -181,3 +181,15 @@ def test_menu_command_sends_image_not_text():
     event = asyncio.run(run())
     assert event.images == ["https://example.com/menu.jpg"]
     assert "QQ群管理" not in "".join(event.texts)
+
+
+def test_menu_style_formatting_is_sane():
+    """样式层加固：格式化残留、宽度、花括号配平（渲染坏了要当场红，而不是上线后回落文字）。"""
+    from src.menu_render import _STYLE, CARD_WIDTH
+
+    rendered = _STYLE % {"width": CARD_WIDTH}
+    assert "%%" not in rendered, "样式里残留了未成对的 %%（格式化会漏字或抛错）"
+    assert f"max-width: {CARD_WIDTH}px" in rendered, "卡片宽度声明丢了"
+    # 花括号在 % 格式化后必须配平（CSS 块完整）
+    assert rendered.count("{") == rendered.count("}"), "CSS 花括号不配平"
+    assert "background: #21162d" in rendered, "页面底色丢了"
