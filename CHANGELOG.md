@@ -28,7 +28,7 @@
     `src/commands.py::MENU_SECTIONS`（文字版与图片版菜单都由它渲染），于是出现「文档说菜单里有、机器人却不显示」。
     已撤回该行 —— 通知自检仍然可用（面板「发送测试通知」按钮；该指令已在 0.15.16 连同常量与分派一起删除），
     只是不进群内菜单：菜单列的是「在本群里能做的事」，而通知通道是插件级配置（与哪个群无关）。
-    并新增 `tests/test_menu_doc_parity.py`（2 条）守住两者一致：menu.md 里出现的命令词，真源里必须有。
+    并新增 `tests/test_menu_doc_parity.py`（3 条）守住两者一致：menu.md 里出现的命令词，真源里必须有。
   - 新增 `docs/文档索引.md`：每份文档的用途、校对版本，以及「改了什么要同步哪份文档」。
   - `docs/设计方案.md` / `docs/判定规则优化方案.md`：追加「文档校对与增量（0.15.10–0.15.16）」章节。
 - 新增守门测试 `tests/test_docs_config_coverage.py`（4 条）：每个配置项必须出现在 CONFIG.md、速查表必须列出每个键、
@@ -36,9 +36,10 @@
 - 删除 0.15.13 遗留的死指令「群管通知测试」：它只进了 `NOTIFY_TEST_COMMANDS` 常量、没进 `ALL_COMMANDS` 注册表，
   实测 `match_command` 返回 `("", [])`，永远匹配不到；连同常量、导入、分派分支与实现方法一起删除。
   通知自检只保留管理台「发送测试通知」按钮（POST `/notify/test` → `notify_test_once()`）。
-- 新增 `tests/test_commands_registry.py`（2 条）：`*_COMMANDS` 里的名字必须能被 `match_command` 解析、`ALL_COMMANDS` 不得有出处不明的名字；
+- 新增 `tests/test_commands_registry.py`（3 条）：`*_COMMANDS` 里的名字必须能被 `match_command` 解析、`ALL_COMMANDS` 不得有出处不明的名字；
+  第三条守的是反向问题：每个叶子 `*_COMMANDS` 元组都必须在 `main.py` 里有分派（能匹配却没人处理＝静默空转）；
+  变异：把 `main.py` 里任意一条分派整块删掉 ⇒ 该断言红（已复跑还原）。
   并修好 `tests/test_menu_doc_parity.py`（补 `import re`、分词补括号），复跑变异：伪造菜单条目与删光关键词行都能被抓住。
-  （`tests/test_menu_doc_parity.py` 与 `tests/test_commands_registry.py` 现各 3 条断言。）
 - **群管理菜单图片换风格**：对齐同类群管插件的菜单观感 —— 深紫底 + 粉/青径向光晕 + 磨砂白面板 + 粉色指令胶囊，
   宽度 660 → **1080px**、正文字号 13.5 → 19px（手机上看更清楚）；分区标题加圆点，管理员区加「仅 AstrBot 管理员」徽标；
   数据仍来自 `MENU_SECTIONS`、文字版菜单不受影响，渲染失败仍回落文字。仅方言观感与配色，未引入任何外部依赖。
