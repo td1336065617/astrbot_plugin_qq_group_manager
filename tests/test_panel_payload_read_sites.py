@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import pathlib
+import re
 
 from tests.test_s3_panel_payload import _main_panel_payload_keys
 
@@ -23,7 +24,15 @@ READ_PATTERNS = (
     "settings().get('{key}'",
     'get_setting("{key}"',
     "get_setting('{key}'",
+    'effective.get("{key}"',
+    "effective.get('{key}'",
 )
+
+#: 少量键的读取点写法确实不在上面的模式里；豁免必须带上 file:line 证据，
+#: 否则这道护栏会退化成"什么都放过"。
+EVIDENCE_EXEMPTIONS = {
+    "join_llm_fallback_provider_ids": "main.py:750/758 用动态键 get_setting(provider_setting/fallback_key) 读取；src/store.py:178 归一化列表",
+}
 
 
 def _read_sites(key: str) -> list[str]:
@@ -47,3 +56,19 @@ def test_every_panel_editable_key_is_read_by_backend():
     assert len(keys) >= 45, f"抽出的键太少（{len(keys)} 个）：提取器可能退化了，护栏会静默失效"
     missing = [key for key in keys if not _read_sites(key)]
     assert not missing, "面板能改但后端从不读取的键（死键）：" + "、".join(missing)
+
+
+def _join_field_spec_keys() -> set[str]:
+    """从面板 app.js 的 JOIN_FIELD_SPECS 抽出「入群审批页」可编辑的键。"""
+    text = (ROOT / "pages" / "manage" / "app.js").read_text(encoding="utf-8")
+    start = text.index("const JOIN_FIELD_SPECS = {")
+    end = text.index(chr(10) + "};", start)
+    return set(re.findall(r"^  ([a-z_][a-z0-9_]*): [{]", text[start:end], flags=re.M))
+
+
+def test_join_spec_keys_are_read_by_backend():
+    """护栏扩展（审计建议）：入群审批页能编辑的键，后端也必须有真实读取点。"""
+    keys = sorted(_join_field_spec_keys())
+    assert len(keys) >= 20, f"抽出的入群键太少（{len(keys)} 个）：提取器可能退化了"
+    missing = [key for key in keys if not _read_sites(key) and key not in EVIDENCE_EXEMPTIONS]
+    assert not missing, f"入群页能编辑但后端从不读的键：{missing}"

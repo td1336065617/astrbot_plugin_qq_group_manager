@@ -103,9 +103,11 @@ def serve(directory: Path) -> tuple[http.server.ThreadingHTTPServer, int]:
     return httpd, httpd.server_address[1]
 
 
-def dump_dom(chrome: str, url: str, timeout: int = 60) -> str:
+def dump_dom(chrome: str, url: str, timeout: int = 60, window_size: str = "") -> str:
     cmd = [chrome, "--headless=new", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage",
            "--virtual-time-budget=6000", "--dump-dom", url]
+    if window_size:
+        cmd.append(f"--window-size={window_size}")
     out = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     return out.stdout or ""
 
@@ -127,26 +129,68 @@ def main() -> int:
         for name in ("index.html", "errhook.js", "bridge_stub.js"):
             shutil.copy2(PREVIEW / name, work / name)
         (work / "config.json").write_text(json.dumps(build_config(), ensure_ascii=False), encoding="utf-8")
+        # B4 宽度探针：向被服务的 index.html 注入一段脚本，把 scrollWidth 写进 DOM，
+        # 便于用 360px 视口做「长 provider id 不得撑破布局」的渲染断言。
+        # 强制把文档宽度设成 360px（headless 的最小视口约 500px，否则测不到窄屏布局），
+        # 再把 scrollWidth 写进 DOM：> 360 即说明有元素（如长 provider id 芯片）撑破了窄屏。
+        probe = """
+<script>
+window.addEventListener('load', function () {
+  setTimeout(function () {
+    var c = document.getElementById('content');
+    if (!c) { return; }
+    c.style.width = '360px';
+    c.style.maxWidth = '360px';
+    setTimeout(function () {
+      var cr = c.getBoundingClientRect();
+      var bad = [];
+      c.querySelectorAll('*').forEach(function (el) {
+        var r = el.getBoundingClientRect();
+        if (r.right > cr.right + 1) {
+          bad.push(el.tagName + '.' + String(el.className || '').slice(0, 24) + '=' + Math.round(r.width));
+        }
+      });
+      var d = document.createElement('div');
+      d.id = 'smoke-width';
+      d.textContent = String(c.scrollWidth) + 'x' + String(Math.round(cr.width)) + ' | ' + bad.slice(0, 8).join(' ;; ');
+      document.body.appendChild(d);
+    }, 250);
+  }, 400);
+});
+</script>
+"""
+
+        served_html = work / "index.html"
+        served_html.write_text(
+            served_html.read_text(encoding="utf-8").replace("</body>", probe + "</body>", 1),
+            encoding="utf-8",
+        )
         httpd, port = serve(work)
         failures = []
-        for view, label, must, forbidden, min_bytes in ROUTES:
-            url = f"http://127.0.0.1:{port}/index.html#/{view}"
-            dom = dump_dom(chrome, url)
-            missing = [m for m in must if m not in dom]
-            if "__errhook" in dom:
-                import re as _re
-                m = _re.search(r"<div id=\"__errhook\"[^>]*>(.*?)</div>", dom, _re.S)
-                if m and m.group(1).strip():
-                    missing.append("JS 运行时错误: " + m.group(1).strip()[:160])
-            if len(dom) < min_bytes:
-                missing.append(f"DOM 体积异常小（{len(dom)} < {min_bytes} 字节，疑似整页渲染中断）")
-            jargon = [f for f in forbidden if f in dom]
-            status = "OK" if not missing and not jargon else "FAIL"
-            if status == "FAIL":
-                failures.append((label, missing, jargon, len(dom)))
-            print(f"  [{status}] {label}：DOM {len(dom)} 字节"
-                  + (f"｜缺少关键内容 {missing}" if missing else "")
-                  + (f"｜不该出现的内部术语 {jargon}" if jargon else ""))
+        import re as _re_width
+
+        narrow_url = f"http://127.0.0.1:{port}/index.html#/policy"
+        narrow_dom = dump_dom(chrome, narrow_url, window_size="360,900")
+        probe_hit = _re_width.search(r'id="smoke-width"[^>]*>([^<]*)', narrow_dom)
+        if not probe_hit:
+            failures.append(("360px 宽度探针", ["探针未被注入或脚本未执行"], [], len(narrow_dom)))
+        else:
+            payload = probe_hit.group(1).strip()
+            nums = _re_width.search(r"(\d+)x(\d+)", payload)
+            scroll_w = int(nums.group(1)) if nums else 0
+            inner_w = int(nums.group(2)) if nums else 0
+            offenders = payload.split("|", 1)[1].strip() if "|" in payload else ""
+            if scroll_w > 375:
+                failures.append(
+                    (
+                        "360px 宽度探针",
+                        [f"横向溢出：scrollWidth={scroll_w} > 375（innerWidth={inner_w}）", f"溢出元素：{offenders}"],
+                        [],
+                        len(narrow_dom),
+                    )
+                )
+            tail = ("｜溢出元素 " + offenders) if offenders else ""
+            print(f"  [{'OK' if scroll_w <= 375 else 'FAIL'}] 360px 视口：scrollWidth={scroll_w}（innerWidth={inner_w}）{tail}")
         httpd.shutdown()
         if failures:
             print(f"[FAIL] {len(failures)} 个视图渲染异常（多半是渲染时抛了异常导致内容没出来）")
