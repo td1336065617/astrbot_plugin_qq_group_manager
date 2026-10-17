@@ -9,6 +9,17 @@
 ---
 
 
+## [0.15.26] - 2026-10-18
+
+### 改进
+
+- ⚙️ **审计里的失败文案改成人话**：此前是裸异常名（例如「模型调用失败：PermissionDeniedError」），现按分类映射为可读描述（`safety_refused` ⇒「模型安全审核拒绝（内容侧风控）」、`timeout` ⇒「模型超时」、`rate_limited` ⇒「模型限流（429）」、`server_error` ⇒「模型服务错误（5xx）」、`provider_not_found` ⇒「模型不存在（配置已失效）」…）。原始异常名仍写进 `_record_failure` 日志，便于排障。
+- 说明：`safety_refused` **按设计不回退**（不换模型、不重试），避免用备用模型绕过内容策略；该情形落 `stage=api_error` + `verdict=review` ⇒ 转人工。
+
+### 测试
+
+- 新增 `tests/test_failure_reason_text.py`（5 条：安全拒绝/客户端错误/超时文案、未知码回落、文案里不得出现裸异常名）。
+
 ## [0.15.25] - 2026-10-18
 
 ### 修复

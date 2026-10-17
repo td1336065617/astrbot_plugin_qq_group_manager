@@ -740,7 +740,7 @@ class LLMModerator:
             return Verdict.review(str(exc) or "无支持图片的候选，未调用模型", source="llm", stage="api_error")
         except Exception as exc:
             self._record_failure(f"{type(exc).__name__}: {exc}")
-            return Verdict.review(f"模型调用失败：{type(exc).__name__}", source="llm", stage="api_error")
+            return Verdict.review("模型调用失败：" + failure_reason_text(exc), source="llm", stage="api_error")
         finally:
             self.release()
 
@@ -939,6 +939,25 @@ def classify_failure(exc):
     if "bad gateway" in text or "server error" in text or "unavailable" in text:
         return "server_error"
     return "refuse_unknown"
+
+
+#: 失败码 → 给人看的文案（审计 reason 里用；原始异常名仍写进 _record_failure 日志）
+FAILURE_REASON_TEXT = {
+    "safety_refused": "模型安全审核拒绝（内容侧风控）",
+    "client_error": "模型请求被拒（参数或权限）",
+    "rate_limited": "模型限流（429）",
+    "timeout": "模型超时",
+    "server_error": "模型服务错误（5xx）",
+    "network": "网络错误",
+    "provider_not_found": "模型不存在（配置已失效）",
+    "refuse_unknown": "模型拒绝（原因未识别）",
+}
+
+
+def failure_reason_text(exc: BaseException | None) -> str:
+    """把异常翻成审计里给人看的一句话（不含正文，只含分类）。"""
+    code = classify_failure(exc)
+    return FAILURE_REASON_TEXT.get(code) or ("模型拒绝（" + code + "）")
 
 
 def should_fallback(code):
