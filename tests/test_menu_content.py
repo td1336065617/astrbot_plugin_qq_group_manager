@@ -104,3 +104,25 @@ def test_menu_chips_are_bare_command_names():
             if any(mark in chip for mark in ("<", "[", "0.0", "@")):
                 loose.append((chip, item))
     assert not loose, f"这些胶囊里还塞着参数（应移到说明）：{loose}"
+
+
+def test_menu_chips_are_not_whole_lines():
+    """胶囊不能等于整行（那就是「整行当命令」了，说明列会空掉）。"""
+    commands, _ = _modules()
+    render = _render()
+    bad = [
+        item
+        for _title, items in commands.MENU_SECTIONS
+        for item in items
+        if render.split_item(item)[0] == item.strip()
+    ]
+    assert not bad, f"这些行的胶囊等于整行：{bad}"
+
+
+def test_split_item_strips_full_width_spaces():
+    """兜底分支要剥掉全角空格/制表符，否则说明会以它们开头（全角空格肉眼看着像多一个缩进）。"""
+    render = _render()
+    long_command = "审核模式　严格/标准/宽松/仅记录/跟随"
+    chip, desc = render.split_item(f"{long_command} \u2500 说明")
+    assert chip == "审核模式", (chip, desc)
+    assert not desc.startswith((" ", "\t", "\u3000")), repr(desc[:6])
