@@ -203,7 +203,7 @@ def executor() -> ActionExecutor:
 def review_verdict(stage: str = "judged", category: str = "色情低俗") -> Verdict:
     return Verdict(verdict="review", category=category, severity=2, confidence=0.9, stage=stage)
 
-def test_default_settings_never_produce_actions_for_review_or_allow():
+def test_default_settings_report_for_judged_review_but_never_for_allow_or_kv():
     """A3 之后：真判定的 review 走既有 report 出口（severity>=2）；allow 与 judged_kv 仍不产生动作。"""
     settings = dict(default_settings())
     ex = executor()
@@ -264,4 +264,36 @@ def test_review_reports_only_for_judged_and_severity_two_plus():
     assert ex.plan_actions(verdict=one, settings=settings) == []
     assert ex.plan_actions(verdict=review_verdict(stage="judged_kv"), settings=settings) == []
     assert ex.plan_actions(verdict=review_verdict(stage="parse_error"), settings=settings) == []
+
+
+
+def test_moderation_report_targets_notify_session_not_source_group():
+    """上报不能发到「消息来源群」：_notify 会优先用 payload 里的 umo，所以它不该出现。"""
+    seen = {}
+
+    async def notifier(kind, payload):
+        seen["kind"] = kind
+        seen["payload"] = payload
+
+    ex = ActionExecutor(api=None, store=None)
+    ex.notifier = notifier
+    verdict = Verdict(
+        verdict="violation", category="广告引流", severity=3, confidence=0.9,
+        reason="含引流链接", stage="judged",
+    )
+    run(
+        ex._report(
+            group_id="g1",
+            config=GroupConfig(group_id="g1", name="测试群"),
+            verdict=verdict,
+            sender_name="某人",
+            sender_openid="u1",
+            msg_id="m1",
+            umo="PLATFORM:GROUP_MESSAGE:GROUP_X",
+            dry_run=False,
+        )
+    )
+    assert seen["kind"] == "moderation"
+    assert not seen["payload"].get("umo"), "payload 不得携带来源群 umo（否则上报会发进群里）"
+    assert seen["payload"].get("msg_id") == "m1"
 

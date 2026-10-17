@@ -1264,7 +1264,8 @@ class AuditStore:
         providers = await self._fetch_all(
             "SELECT ifnull(provider_id, " + chr(39) + chr(39) + ") AS provider_id, "
             "ifnull(stage, " + chr(39) + chr(39) + ") AS stage, COUNT(*) AS n "
-            "FROM mod_events WHERE ts_unix >= ?" + AI_EVENT_EXCLUDE + " GROUP BY 1, 2 ORDER BY n DESC LIMIT 12",
+            "FROM mod_events WHERE ts_unix >= ? AND ifnull(provider_id, " + chr(39) + chr(39) + ") != " + chr(39) + chr(39)
+            + AI_EVENT_EXCLUDE + " GROUP BY 1, 2 ORDER BY n DESC LIMIT 30",
             (since,),
         )
         low_conf = await self._fetch_all(

@@ -120,7 +120,10 @@ export function conditionsWithRisk(conditions, enabled, value) {
     .map(function (item) { return String(item || ''); })
     .filter(function (item) { return item && item.indexOf('risk>=') !== 0; });
   if (!enabled) return list;
-  const n = Math.max(1, Math.round(Number(value) || 0));
+  const parsed = Number(value);
+  const fallback = riskThresholdFromConditions(conditions, 60);
+  // 清空输入框不得变成 risk>=1（那等于几乎全量送审）：非法/过小一律回退到原阈值或默认 60
+  const n = Math.max(10, Math.round(Number.isFinite(parsed) && parsed > 0 ? parsed : fallback));
   return list.concat(['risk>=' + String(n)]);
 }
 

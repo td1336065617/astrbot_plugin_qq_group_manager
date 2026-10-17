@@ -27,9 +27,15 @@ READ_PATTERNS = (
 
 
 def _read_sites(key: str) -> list[str]:
+    """只认真正的代码行：注释/docstring 里出现 settings.get("key" 不算读取点。"""
     hits: list[str] = []
     for path in SRC_FILES:
-        text = path.read_text(encoding="utf-8")
+        lines = [
+            line
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if not line.lstrip().startswith("#")
+        ]
+        text = "\n".join(lines)
         if any(pattern.format(key=key) in text for pattern in READ_PATTERNS):
             hits.append(path.name)
     return hits
@@ -38,5 +44,6 @@ def _read_sites(key: str) -> list[str]:
 def test_every_panel_editable_key_is_read_by_backend():
     keys = sorted(_main_panel_payload_keys())
     assert keys, "没能从面板 payload 抽出键集合（契约测试的提取器改了？）"
+    assert len(keys) >= 45, "抽出的键太少（%d 个）：提取器可能退化了，护栏会静默失效" % len(keys)
     missing = [key for key in keys if not _read_sites(key)]
     assert not missing, "面板能改但后端从不读取的键（死键）：" + "、".join(missing)

@@ -100,7 +100,7 @@ from .src.moderator import (
     choose_provider_chain,
     classify_failure,
     should_fallback,
-    SAFETY_MARKERS,
+    looks_like_refusal,
     resolve_prompt_version,
 )
 from .src.normalize import skeleton_text
@@ -138,7 +138,7 @@ from .src.utils import (
 from .src.web_api import EventBus, WebApi
 
 PLUGIN_NAME = "astrbot_plugin_qq_group_manager"
-VERSION = "0.15.9"
+VERSION = "0.15.10"
 
 STATE_FLUSH_INTERVAL = 30.0
 MAINTENANCE_INTERVAL = 3600.0
@@ -445,7 +445,7 @@ class QQGroupManager(Star):
                 "join": settings["retention_join_days"],
             }
         )
-        stats = await self.audit.summary(1)
+        stats = await self.audit.summary(1, low_confidence_below=self._low_confidence_threshold())
         await self.audit.save_daily_stats(today, stats)
         self._last_prune_day = today
         self.logger.info("审计库维护完成：%s", deleted)
@@ -826,7 +826,7 @@ class QQGroupManager(Star):
                 else:
                     text = str(getattr(response, "completion_text", "") or "")
                     if validate is not None and not validate(text):
-                        if any(marker in text.lower() for marker in SAFETY_MARKERS):
+                        if looks_like_refusal(text):
                             # 文本级安全拒绝：不换模型（否则等于用备用模型绕开主模型的策略拒绝）
                             self.logger.warning("审核模型 %s 以自然语言拒绝，不回退", provider_id)
                             return text
@@ -839,7 +839,7 @@ class QQGroupManager(Star):
                                     capability="llm_hop",
                                     ok=False,
                                     err_code="parse_error",
-                                    note=digest_text(text),
+                                    note=provider_id + "|" + digest_text(text),
                                 )
                             except Exception:  # pragma: no cover - 审计失败不影响审核
                                 pass
@@ -918,6 +918,13 @@ class QQGroupManager(Star):
         finally:
             self.moderator.release()
             self.moderator.note_call(ok=ok, error=error)
+
+    def _low_confidence_threshold(self) -> float:
+        """总览/CLI 与面板用同一个阈值，避免两处数字不一致。"""
+        try:
+            return float(self.store.get_setting("llm_min_confidence", 0.7) or 0.7)
+        except (TypeError, ValueError):
+            return 0.7
 
     async def _notify(self, kind: str, payload: dict[str, Any]) -> None:
         """通知管理员（优先使用配置的会话，其次写日志）。"""
@@ -2337,7 +2344,11 @@ class QQGroupManager(Star):
     ) -> str:
         config = self.store.group_or_default(group_id)
         caps = config.capabilities
-        summary = await self.audit.summary(1) if self.audit is not None else {}
+        summary = (
+            await self.audit.summary(1, low_confidence_below=self._low_confidence_threshold())
+            if self.audit is not None
+            else {}
+        )
         return moderation_status_text(
             group_id=group_id,
             enabled=config.moderation_enabled,
@@ -2854,7 +2865,7 @@ class QQGroupManager(Star):
         days = 1
         if args and args[0] in ("7天", "7", "周"):
             days = 7
-        summary = await self.audit.summary(days)
+        summary = await self.audit.summary(days, low_confidence_below=self._low_confidence_threshold())
         return [stats_text(summary, days=days)]
 
     async def _cmd_appeal(
@@ -3899,4 +3910,4 @@ class QQGroupManager(Star):
         """统计汇总（WebUI 总览）。"""
         if self.audit is None:
             return {}
-        return await self.audit.summary(days)
+        return await self.audit.summary(days, low_confidence_below=self._low_confidence_threshold())

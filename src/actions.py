@@ -823,7 +823,8 @@ class ActionExecutor:
             "sender_name": sender_name,
             "sender_openid": sender_openid,
             "msg_id": msg_id,
-            "umo": umo,
+            # 不要把「消息来源会话」放进 payload：_notify 会优先用它，于是内容审核上报会发到群里，
+            # 而不是发给 notify_session（设计文档 §方案 396 明确 report -> notify_session）
         }
         if self.notifier is None:
             self.stats["skipped"] += 1

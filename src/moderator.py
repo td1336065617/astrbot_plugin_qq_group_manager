@@ -848,6 +848,35 @@ FALLBACK_CODES = frozenset({
 SAFETY_MARKERS = ("safety", "content_filter", "policy", "moderation", "blocked", "risk")
 
 
+#: 文本级拒绝的特征：比 SAFETY_MARKERS 严格得多，而且只在**短文本**里匹配
+#: （旧做法拿 SAFETY_MARKERS 里的 "risk"/"policy" 匹配长正文，会把模型正常讲道理误判成拒绝，B1 直接失效）
+TEXT_REFUSAL_MARKERS = (
+    "cannot help",
+    "can't help",
+    "cannot assist",
+    "can't assist",
+    "unable to help",
+    "against our policy",
+    "violates our policy",
+    "content policy",
+    "safety policy",
+    "无法协助",
+    "不能协助",
+    "无法回答这个问题",
+    "我无法提供",
+    "抱歉，我无法",
+)
+
+
+def looks_like_refusal(text: str) -> bool:
+    """不可解析的输出到底是「模型拒绝回答」还是「模型用自然语言讲道理」。"""
+    stripped = (text or "").strip()
+    if not stripped or len(stripped) > 300:
+        return False
+    lowered = stripped.lower()
+    return any(marker in lowered for marker in TEXT_REFUSAL_MARKERS)
+
+
 def validate_llm_text(text: str) -> bool:
     """B1（R3-1）：轻量校验输出能否解析成判定。
 
@@ -859,7 +888,11 @@ def validate_llm_text(text: str) -> bool:
         return False
     if extract_json_object(stripped) is not None:
         return True
-    return extract_kv_verdict(stripped) is not None
+    if extract_kv_verdict(stripped) is not None:
+        return True
+    # A1×B1 组合回归修复：能靠保守修补救回的文本也算「可解析」。
+    # 否则一旦配了备用模型，首跳本可救回的判定会被判为不可解析并丢弃（实测 stage 掉进 parse_error）。
+    return extract_json_object(repair_json_text(stripped)) is not None
 
 
 def classify_failure(exc):
