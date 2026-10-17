@@ -1054,9 +1054,9 @@ async function viewPolicy(root) {
 
   /* 通知会话选择器：显式候选列表（原生 datalist 只显示 UMO 原文，且被 label 包裹时要点两次才弹） */
   const pickerSearch = el('input', { type: 'text', id: 'notify-picker-search', placeholder: '搜索：平台实例 / 群号 / 会话 ID' });
-  const pickerList = el('div', { class: 'picker-list', id: 'notify-picker-list' }, []);
+  const pickerList = el('div', { class: 'notify-picker-list', id: 'notify-picker-list' }, []);
   const pickerHint = el('p', { class: 'hint', id: 'notify-picker-hint' });
-  const pickerBox = el('div', { class: 'picker', id: 'notify-picker', hidden: 'hidden' }, [pickerSearch, pickerList, pickerHint]);
+  const pickerBox = el('div', { class: 'notify-picker', id: 'notify-picker', hidden: 'hidden' }, [pickerSearch, pickerList, pickerHint]);
   function paintPicker(keyword) {
     const all = state.sessions || [];
     const shown = filterSessions(all, keyword);
@@ -1065,7 +1065,7 @@ async function viewPolicy(root) {
       const chosen = item.umo === String(notifySession.value || '').trim();
       pickerList.appendChild(el('button', {
         type: 'button',
-        class: chosen ? 'picker-item active' : 'picker-item',
+        class: chosen ? 'notify-picker-item active' : 'notify-picker-item',
         title: item.umo,
         text: sessionOptionLabel(item),
         onclick: function () {

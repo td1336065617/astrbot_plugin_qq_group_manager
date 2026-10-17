@@ -370,3 +370,22 @@ def test_u17_session_label_keeps_colons_in_session_id():
     mod = _pkg("src.notify_sessions")
     label = mod.session_label("a:FriendMessage:x:y")
     assert "x:y" in label, label
+
+
+def test_u18_policy_view_refreshes_sessions_on_open():
+    """契约：进入策略页必须重新拉候选（否则插件重启后候选会一直过期）。
+
+    这条是对「自动刷新」唯一有效的守卫——渲染冒烟测不到它（stub 永远返回候选）。
+    """
+    source = (PLUGIN_ROOT / "pages" / "manage" / "app.js").read_text(encoding="utf-8")
+    assert "async function refreshSessions(force)" in source, "refreshSessions 助手不见了"
+    start = source.index("async function viewPolicy(root) {")
+    body = source[start:source.index("\n}", start)]
+    # 只认开头几行：「刷新候选」按钮的 onclick 里也含同一句，不能作为通过依据
+    head_lines = body.splitlines()[:4]
+    assert any("await refreshSessions(true);" in line for line in head_lines), (
+        "viewPolicy 打开时必须强制刷新候选（应在函数开头 4 行内）"
+    )
+    load_start = source.index("async function loadConfig(force) {")
+    load_body = source[load_start:source.index("\n}", load_start)]
+    assert "sessions/list" not in load_body, "候选不应再在 loadConfig 里一次性拉取（会过期）"

@@ -151,19 +151,36 @@ window.addEventListener('load', function () {
     c.style.width = '360px';
     c.style.maxWidth = '360px';
     setTimeout(function () {
-      var cr = c.getBoundingClientRect();
-      var bad = [];
-      c.querySelectorAll('*').forEach(function (el) {
-        var r = el.getBoundingClientRect();
-        if (r.right > cr.right + 1) {
-          bad.push(el.tagName + '.' + String(el.className || '').slice(0, 24) + '=' + Math.round(r.width));
-        }
-      });
-      var d = document.createElement('div');
-      d.id = 'smoke-width';
-      d.textContent = String(c.scrollWidth) + 'x' + String(Math.round(cr.width)) + ' | ' + bad.slice(0, 8).join(' ;; ');
-      document.body.appendChild(d);
-    }, 250);
+      // 先把「选择会话…」展开，否则隐藏的候选列表 rect 全 0、宽度断言测不到它
+      var toggle = document.getElementById('notify-picker-toggle');
+      if (toggle) { toggle.click(); }
+      setTimeout(function () {
+        var cr = c.getBoundingClientRect();
+        var bad = [];
+        c.querySelectorAll('*').forEach(function (el) {
+          var r = el.getBoundingClientRect();
+          if (r.right > cr.right + 1) {
+            bad.push(el.tagName + '.' + String(el.className || '').slice(0, 24) + '=' + Math.round(r.width));
+          }
+        });
+        // 候选行数 + 单行内部横向溢出（长 UMO 必须换行，而不是撑破行）
+        var rows = c.querySelectorAll('.notify-picker-item');
+        var worst = 0;
+        var badWrap = 0;
+        rows.forEach(function (el) {
+          var over = el.scrollWidth - el.clientWidth;
+          if (over > worst) { worst = over; }
+          // 长 UMO 必须能换行：white-space: nowrap 会让长候选撑破窄屏
+          if (getComputedStyle(el).whiteSpace === 'nowrap') { badWrap += 1; }
+        });
+        var d = document.createElement('div');
+        d.id = 'smoke-width';
+        d.textContent = String(c.scrollWidth) + 'x' + String(Math.round(cr.width)) + ' | '
+          + String(rows.length) + ' | ' + String(Math.max(0, worst)) + ' | ' + String(badWrap) + ' | '
+          + bad.slice(0, 8).join(' ;; ');
+        document.body.appendChild(d);
+      }, 250);
+    }, 400);
   }, 400);
 });
 </script>
@@ -207,7 +224,29 @@ window.addEventListener('load', function () {
             nums = _re_width.search(r'(\d+)x(\d+)', payload)
             scroll_w = int(nums.group(1)) if nums else 0
             inner_w = int(nums.group(2)) if nums else 0
-            offenders = payload.split('|', 1)[1].strip() if '|' in payload else ''
+            parts = [p.strip() for p in payload.split('|')]
+            rows = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+            row_over = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
+            bad_wrap = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
+            offenders = parts[4] if len(parts) > 4 else ''
+            if _view == 'policy' and rows < 1:
+                failures.append(
+                    (
+                        f'360px 宽度探针（{_label}）',
+                        ['候选列表展开后一行都没有：选择器没渲染或候选没接上'],
+                        [],
+                        len(narrow_dom),
+                    )
+                )
+            if _view == 'policy' and bad_wrap:
+                failures.append(
+                    (
+                        f'360px 宽度探针（{_label}）',
+                        [f'{bad_wrap} 条候选行被设成 nowrap（长 UMO 无法换行，会撑破窄屏）'],
+                        [],
+                        len(narrow_dom),
+                    )
+                )
             if scroll_w > 375:
                 failures.append(
                     (
@@ -219,7 +258,8 @@ window.addEventListener('load', function () {
                 )
             tail = ('｜溢出元素 ' + offenders) if offenders else ''
             _w_status = 'OK' if scroll_w <= 375 else 'FAIL'
-            print(f'  [{_w_status}] 360px 视口（{_label}）：scrollWidth={scroll_w}（innerWidth={inner_w}）{tail}')
+            _extra = f'｜候选行 {rows} 行/溢出 {row_over}px/nowrap {bad_wrap} 条' if _view == 'policy' else ''
+            print(f'  [{_w_status}] 360px 视口（{_label}）：scrollWidth={scroll_w}（innerWidth={inner_w}）{tail}{_extra}')
         httpd.shutdown()
         if failures:
             print(f"[FAIL] {len(failures)} 个视图渲染异常（多半是渲染时抛了异常导致内容没出来）")
