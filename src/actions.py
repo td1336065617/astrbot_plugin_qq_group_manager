@@ -56,6 +56,15 @@ MATRIX_ACTIONS: tuple[str, ...] = (
     "remove",
 )
 
+#: 通知来源标签（仅用于「内容审核告警」文案，零行为影响）
+VIA_LABELS = {
+    "matrix": "处置矩阵（该等级配置）",
+    "hard_rule": "本地硬规则",
+    "review": "待复核（severity≥2）",
+    "low_confidence": "低置信封顶",
+    "boundary": "处罚边界（越界）",
+}
+
 #: lenient 模式允许的动作
 LENIENT_ACTIONS = {"warn", "report"}
 
@@ -76,6 +85,7 @@ class Decision:
     manual: bool = False
     code: str = ""
     notify: bool = True
+    via: str = ""  # 通知来源：matrix/hard_rule/review/low_confidence/boundary
 
 
 class ActionExecutor:
@@ -184,11 +194,11 @@ class ActionExecutor:
         """纯函数：先判越界（人工 / 静默），否则按矩阵算动作。零副作用。"""
         manual, code, notify = evaluate_boundary(verdict, settings, targets)
         if manual:
-            return Decision(actions=[], manual=True, code=code, notify=notify)
-        planned = self._plan(
+            return Decision(actions=[], manual=True, code=code, notify=notify, via="boundary")
+        planned, via = self._plan(
             verdict=verdict, settings=settings, hard_actions=hard_actions
         )
-        return Decision(actions=planned, manual=False, code="", notify=True)
+        return Decision(actions=planned, manual=False, code="", notify=True, via=via)
 
 
     def plan_actions(
@@ -211,14 +221,16 @@ class ActionExecutor:
         verdict: Verdict,
         settings: dict[str, Any],
         hard_actions: list[str] | None = None,
-    ) -> list[str]:
-        """内部：只算矩阵 / 硬规则 / 低置信封顶，不含越界门。"""
+    ) -> tuple[list[str], str]:
+        """内部：只算矩阵 / 硬规则 / 低置信封顶，不含越界门。返回 (动作, 通知来源)。"""
         actions: list[str] = []
         hard = [action for action in (hard_actions or []) if action in MATRIX_ACTIONS]
         if verdict.stage == "judged_kv" and verdict.is_violation and not hard:
             # KV 兜底无法区分「模型判定」与「用户正文被复述」：宁可只留审计，不产生动作
-            return []
+            return ([], "")
+        via = "matrix"
         if hard:
+            via = "hard_rule"
             actions.extend(hard)
             if verdict.verdict == "review" and "report" not in actions:
                 actions.append("report")
@@ -242,6 +254,7 @@ class ActionExecutor:
             # A3（W-R2-3）：review 的出口 —— 复用既有 report（只认真判定 + 达到严重度门槛）；
             # 放在硬规则分支之后（elif），避免与 actions.py 硬规则补 report 的那条重复。
             actions.append("report")
+            via = "review"
         # A2（W-R2-2）：低置信只降力度 —— 判定保留，动作封顶为「警告 + 上报」（不看矩阵，
         # 因为默认矩阵 sev4 不含 report，纯过滤会得到空集）
         if actions and not hard and verdict.source == "llm" and verdict.stage == "judged" and verdict.is_violation:
@@ -250,8 +263,8 @@ class ActionExecutor:
             except (TypeError, ValueError):
                 limit = 0.7
             if verdict.confidence < limit:
-                return ["warn", "report"]
-        return actions
+                return (["warn", "report"], "low_confidence")
+        return (actions, via if actions else "")
 
     def _mute_seconds(self, settings: dict[str, Any], severity: int, multiplier: int) -> int:
         steps = settings.get("mute_steps") or {}
@@ -316,6 +329,7 @@ class ActionExecutor:
             decision.code,
             decision.notify,
         )
+        notify_via = decision.via or "matrix"
 
         mode = str(config.mode or settings.get("mode") or "standard")
         actions = list(decision.actions)
@@ -417,6 +431,7 @@ class ActionExecutor:
                         "sender_openid": sender_openid,
                         "msg_id": msg_id,
                         "code": boundary_code,
+                        "via": "boundary",
                         "category": verdict.category,
                         "severity": verdict.severity,
                         "confidence": verdict.confidence,
@@ -444,6 +459,7 @@ class ActionExecutor:
                 send=send,
                 umo=umo,
                 note=limited_note,
+                via=notify_via,
 
                 event_id=event_id,
             )
@@ -617,6 +633,7 @@ class ActionExecutor:
         ledger_source: str = "auto",
         msg_id_override: str | None = None,
         event_id: int | None = None,
+        via: str = "",
     ) -> ActionResult:
         """幂等 → 分发 → 按结果决定是否落幂等键。
 
@@ -632,6 +649,7 @@ class ActionExecutor:
             return ActionResult(action=action, ok=True, message="重复推送，已跳过")
         result = await self._dispatch_action(
             action=action,
+            via=via,
             group_id=group_id,
             config=config,
             settings=settings,
@@ -672,6 +690,7 @@ class ActionExecutor:
         caller: str = "moderation",
         ledger_source: str = "auto",
         event_id: int | None = None,
+        via: str = "",
     ) -> ActionResult:
         dry_run = bool(self.api.dry_run()) if self.api is not None else True
         # dry-run 只拦截"破坏性动作"（撤回/禁言/拉黑/移除）；警告与上报是给用户/管理员的
@@ -729,6 +748,8 @@ class ActionExecutor:
                     umo=umo,
                     dry_run=dry_run,
                     dry_run_warn=dry_run_warn,
+            via=via,
+
                 )
         except Exception as exc:  # pragma: no cover - 单个动作失败不影响其它动作
             self.stats["failed"] += 1
@@ -926,6 +947,7 @@ class ActionExecutor:
         umo: str,
         dry_run: bool,
         dry_run_warn: bool = True,
+        via: str = "",
     ) -> ActionResult:
         payload = {
             "group_id": group_id,
@@ -938,6 +960,7 @@ class ActionExecutor:
             "sender_name": sender_name,
             "sender_openid": sender_openid,
             "msg_id": msg_id,
+            "via": via or "matrix",
             # 不要把「消息来源会话」放进 payload：_notify 会优先用它，于是内容审核上报会发到群里，
             # 而不是发给 notify_session（设计文档 §方案 396 明确 report -> notify_session）
         }

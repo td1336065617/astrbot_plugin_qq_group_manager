@@ -33,7 +33,7 @@ try:                      # AI 公共件（纯逻辑，四仓库各一份）
 except ImportError:       # 测试里以顶层模块导入
     import ai_common
 
-from .src.actions import ActionExecutor
+from .src.actions import VIA_LABELS, ActionExecutor
 from .src.api_client import BotpyTransport, QQApiError, QQGroupAPI
 from .src.audit import AuditStore
 from .src.commands import (
@@ -142,7 +142,7 @@ from .src.utils import (
 from .src.web_api import EventBus, WebApi
 
 PLUGIN_NAME = "astrbot_plugin_qq_group_manager"
-VERSION = "0.15.27"
+VERSION = "0.15.28"
 
 STATE_FLUSH_INTERVAL = 30.0
 MAINTENANCE_INTERVAL = 3600.0
@@ -1092,6 +1092,7 @@ class QQGroupManager(Star):
                 "判定：{verdict} / {category}（severity={severity}，置信度 {confidence}）\n"
                 "成员：{name}（{openid}）\n"
                 "理由：{reason}\n"
+                "触发来源：{via}\n"
                 "消息 ID：{msg_id}".format(
                     group=payload.get("group_name") or mask_openid(payload.get("group_id")),
                     verdict=payload.get("verdict"),
@@ -1101,6 +1102,7 @@ class QQGroupManager(Star):
                     name=payload.get("sender_name") or "未知",
                     openid=mask_openid(payload.get("sender_openid")),
                     reason=payload.get("reason") or "-",
+                    via=VIA_LABELS.get(str(payload.get("via") or ""), str(payload.get("via") or "-")),
                     msg_id=payload.get("msg_id") or "-",
                 )
             )

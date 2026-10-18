@@ -9,6 +9,18 @@
 ---
 
 
+## [0.15.28] - 2026-10-18
+
+### 改进（可观测性，零行为变更）
+
+- ⚙️ **内容审核告警文案新增「触发来源」一行**：处置矩阵 / 本地硬规则 / 待复核（severity≥2） / 低置信封顶 / 处罚边界（越界）。
+- 实现：`Decision` 增加 `via` 字段（`src/actions.py`），`_plan()` 返回 `(动作, 来源)`，`report` 动作的 payload 带上 `via`，`main._render_notification` 映射成中文。
+- **处置行为零变化**：动作集合与原实现逐条一致（`tests/test_notify_via.py::test_via_matches_plan_actions` 守着）。
+
+### 测试
+
+- 新增 `tests/test_notify_via.py`（10 条）：五种来源映射、无动作时不标来源、payload 携带 via、文案映射、动作集合与 `plan_actions` 一致。
+
 ## [0.15.27] - 2026-10-18
 
 ### 改进（判定口径）
