@@ -12,7 +12,7 @@ QQ 群消息 ──► 本地规则（形近字/黑话/模板，零成本）
 - **平台**：`qq_official` / `qq_official_webhook`（QQ 官方）+ `aiocqhttp`（OneBot v11）｜ **许可**：MIT；版本号与更新内容见 [CHANGELOG.md](CHANGELOG.md)
 - **零第三方依赖**：只用标准库 `sqlite3` + AstrBot 官方 SDK（`pypinyin` 为可选增强）
 
-> **文档校对：v0.15.26（2026-10-17）**｜配置项完整速查（90 项）见 [docs/CONFIG.md](docs/CONFIG.md)；每个版本的变更见 [CHANGELOG.md](CHANGELOG.md)；全部文档的「校对版本」一览见 [docs/文档索引.md](docs/文档索引.md)。
+> **文档校对：v0.15.27（2026-10-17）**｜配置项完整速查（90 项）见 [docs/CONFIG.md](docs/CONFIG.md)；每个版本的变更见 [CHANGELOG.md](CHANGELOG.md)；全部文档的「校对版本」一览见 [docs/文档索引.md](docs/文档索引.md)。
 
 ---
 
