@@ -122,7 +122,9 @@ def test_u3_notify_session_state_reports_hint():
     empty = notify_session_state({})
     assert ok["valid"] is True and ok["hint"].startswith("✅")
     assert bad["valid"] is False and bad["hint"].startswith("⚠️")
-    assert empty["configured"] is False and empty["valid"] is False
+    # 0.15.29 起：留空是合法选择（只想看日志），不再是「格式错误」
+    assert empty["configured"] is False and empty["enabled"] is False
+    assert empty["valid"] is True and "留空 = 不推送" in empty["hint"]
 
 
 def test_u5_notify_test_command_reports_success():

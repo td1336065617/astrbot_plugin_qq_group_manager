@@ -473,15 +473,29 @@ def is_valid_umo(value: Any) -> bool:
 
 
 def notify_session_state(settings: dict[str, Any]) -> dict[str, Any]:
-    """通知会话的派生状态（只用于回显，不写回配置）。"""
+    """通知会话的派生状态（只用于回显，不写回配置）。
+
+    留空是**合法选择**（只想看日志的用法）：此时 enabled=False、valid=True，
+    面板给中性提示而不是「格式错误」。
+    """
     session = str((settings or {}).get("notify_session") or "").strip()
+    if not session:
+        return {
+            "session": "",
+            "configured": False,
+            "enabled": False,
+            "valid": True,
+            "hint": "留空 = 不推送通知：判定与审计照常记录，只在「日志中心」与运行日志里可见（适合只想看日志、不想收上报的用法）。",
+        }
+    valid = is_valid_umo(session)
     return {
         "session": session,
-        "configured": bool(session),
-        "valid": is_valid_umo(session),
+        "configured": True,
+        "enabled": True,
+        "valid": valid,
         "hint": (
             "✅ 格式正确"
-            if is_valid_umo(session)
+            if valid
             else "⚠️ 不是合法会话 ID（应形如 平台实例ID:消息类型:会话ID，"
             "消息类型取 GroupMessage/FriendMessage/OtherMessage）"
         ),

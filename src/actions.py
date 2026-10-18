@@ -972,7 +972,19 @@ class ActionExecutor:
             return ActionResult(
                 action="report", ok=True, dry_run=True, message="dry-run：未实际通知"
             )
-        await self.notifier("moderation", payload)
+        outcome = await self.notifier("moderation", payload)
+        # 通知实现可能返回 (是否送达, 说明) 或什么都不返回（测试桩/自定义实现）
+        if isinstance(outcome, tuple) and len(outcome) == 2:
+            delivered, detail = bool(outcome[0]), str(outcome[1] or "")
+        else:
+            delivered, detail = True, ""
+        if not delivered:
+            self.stats["skipped"] += 1
+            return ActionResult(
+                action="report",
+                ok=True,
+                message=("未送达，仅写审计与运行日志：" + (detail or "未配置通知渠道"))[:150],
+            )
         self.stats["executed"] += 1
         return ActionResult(action="report", ok=True)
 

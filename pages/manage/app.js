@@ -1363,7 +1363,7 @@ async function viewPolicy(root) {
     ]),
     el('label', { class: 'field' }, [el('span', { text: '通知兜底 Webhook（可选）' }), notifyWebhook]),
     el('div', { class: 'field-actions' }, [notifyWebhookTimeout.node, el('button', { class: 'btn', text: '发送测试通知', onclick: async function () { try { const out = await bridge.apiPost('notify/test', {}); toast(((out && out.lines) || ['无返回']).join(' / ')); } catch (error) { toast('测试失败：' + error.message); } } })]),
-    state.config && state.config.notify && !state.config.notify.valid
+    state.config && state.config.notify && (!state.config.notify.valid || state.config.notify.enabled === false)
       ? el('p', { class: 'hint', id: 'notify-warn', text: state.config.notify.hint })
       : null,
     el('div', { class: 'field-actions' }, [el('span', { class: 'muted', text: '送审条件：' })]),
