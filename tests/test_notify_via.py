@@ -64,7 +64,7 @@ def test_via_low_confidence_cap() -> None:
     decision = make().decide(
         verdict=v("violation", "广告引流", 4, confidence=0.3), settings=settings
     )
-    assert decision.actions == ["warn", "report"]
+    assert decision.actions == ["report"]
     assert decision.via == "low_confidence"
 
 

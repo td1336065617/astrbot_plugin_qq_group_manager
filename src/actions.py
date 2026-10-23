@@ -255,7 +255,7 @@ class ActionExecutor:
             # 放在硬规则分支之后（elif），避免与 actions.py 硬规则补 report 的那条重复。
             actions.append("report")
             via = "review"
-        # A2（W-R2-2）：低置信只降力度 —— 判定保留，动作封顶为「警告 + 上报」（不看矩阵，
+        # A2（W-R2-2）：低置信只降力度 —— 判定保留，动作封顶为「只上报」（不看矩阵；0.15.30 起不再在群内警告，
         # 因为默认矩阵 sev4 不含 report，纯过滤会得到空集）
         if actions and not hard and verdict.source == "llm" and verdict.stage == "judged" and verdict.is_violation:
             try:
@@ -263,7 +263,7 @@ class ActionExecutor:
             except (TypeError, ValueError):
                 limit = 0.7
             if verdict.confidence < limit:
-                return (["warn", "report"], "low_confidence")
+                return (["report"], "low_confidence")
         return (actions, via if actions else "")
 
     def _mute_seconds(self, settings: dict[str, Any], severity: int, multiplier: int) -> int:

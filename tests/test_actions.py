@@ -78,7 +78,7 @@ def test_lenient_mode_only_warns_and_records_event():
         )
     )
     assert audit.events and audit.events[0]["verdict"] == "violation"
-    # lenient 模式只保留 warn/report（矩阵里的 recall/mute 被过滤）
+    # lenient 模式只保留 warn/report，并强制补一条 warn（低置信封顶此时只剩 report）
     assert [item["action"] for item in result["actions"]] == ["warn", "report"]
     assert len(sent) == 1 and "审核" in sent[0]  # lenient 模式会真正发出警告
     assert audit.actions[0]["ok"] is True
@@ -245,12 +245,12 @@ def test_review_with_hard_actions_still_reports():
     assert actions == ["warn", "report"]
 
 
-def test_low_confidence_caps_actions_to_warn_and_report():
-    """A2：低置信只降力度 —— 判定保留，动作封顶为 warn + report。"""
+def test_low_confidence_caps_actions_to_report_only():
+    """A2：低置信只降力度 —— 判定保留，动作封顶为只上报（0.15.30 起不再群内警告）。"""
     settings = dict(default_settings())
     ex = executor()
     low = Verdict(verdict="violation", category="色情低俗", severity=4, confidence=0.5, stage="judged")
-    assert ex.plan_actions(verdict=low, settings=settings) == ["warn", "report"]
+    assert ex.plan_actions(verdict=low, settings=settings) == ["report"]
     high = Verdict(verdict="violation", category="色情低俗", severity=4, confidence=0.95, stage="judged")
     assert ex.plan_actions(verdict=high, settings=settings) == ["recall", "mute"]
 
