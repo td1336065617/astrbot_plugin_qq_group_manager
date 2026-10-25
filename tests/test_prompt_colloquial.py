@@ -57,4 +57,4 @@ def test_screenshot_does_not_exempt_advertising() -> None:
 
 
 def test_prompt_version_bumped() -> None:
-    assert PROMPT_VERSION == "2026-10-18-b2"
+    assert PROMPT_VERSION == "2026-10-25-b3"
